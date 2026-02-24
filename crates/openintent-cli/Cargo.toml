@@ -1,0 +1,24 @@
+[package]
+name = "openintent-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI entry point for OpenIntentOS"
+
+[[bin]]
+name = "openintent"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+openintent-kernel = { workspace = true }
+openintent-store = { workspace = true }
+openintent-vault = { workspace = true }
+openintent-agent = { workspace = true }
+openintent-intent = { workspace = true }
+openintent-adapters = { workspace = true }

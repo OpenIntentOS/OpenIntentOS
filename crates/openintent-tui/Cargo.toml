@@ -1,0 +1,11 @@
+[package]
+name = "openintent-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Terminal UI for OpenIntentOS"
+
+[dependencies]
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }

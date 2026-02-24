@@ -1,0 +1,90 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/openintent-kernel",
+    "crates/openintent-store",
+    "crates/openintent-vault",
+    "crates/openintent-agent",
+    "crates/openintent-intent",
+    "crates/openintent-adapters",
+    "crates/openintent-auth-engine",
+    "crates/openintent-ui",
+    "crates/openintent-web",
+    "crates/openintent-tui",
+    "crates/openintent-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["OpenIntentOS Contributors"]
+license = "MIT"
+repository = "https://github.com/OpenIntentOS/OpenIntentOS"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+rkyv = { version = "0.8", features = ["bytecheck"] }
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled", "blob", "modern_sqlite"] }
+
+# Caching
+moka = { version = "0.12", features = ["future"] }
+
+# Crypto
+ring = "0.17"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
+
+# String matching
+aho-corasick = "1"
+regex = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Unique IDs
+uuid = { version = "1", features = ["v7", "serde"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Concurrent data structures
+crossbeam = "0.8"
+dashmap = "6"
+
+# Workspace crate references
+openintent-kernel = { path = "crates/openintent-kernel" }
+openintent-store = { path = "crates/openintent-store" }
+openintent-vault = { path = "crates/openintent-vault" }
+openintent-agent = { path = "crates/openintent-agent" }
+openintent-intent = { path = "crates/openintent-intent" }
+openintent-adapters = { path = "crates/openintent-adapters" }
+openintent-auth-engine = { path = "crates/openintent-auth-engine" }
+openintent-ui = { path = "crates/openintent-ui" }
+openintent-web = { path = "crates/openintent-web" }
+openintent-tui = { path = "crates/openintent-tui" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+opt-level = 3

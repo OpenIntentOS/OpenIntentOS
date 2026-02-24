@@ -1,0 +1,15 @@
+[package]
+name = "openintent-auth-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Authentication engine for OpenIntentOS — OAuth, API keys, session management"
+
+[dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+openintent-vault = { workspace = true }

@@ -1,0 +1,26 @@
+[general]
+name = "OpenIntentOS"
+data_dir = "data"
+log_level = "info"
+
+[llm]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+max_tokens = 4096
+temperature = 0.0
+
+[llm.anthropic]
+# Set via ANTHROPIC_API_KEY environment variable
+base_url = "https://api.anthropic.com"
+
+[kernel]
+max_concurrent_tasks = 16
+task_timeout_secs = 300
+
+[vault]
+db_path = "data/vault.db"
+
+[store]
+db_path = "data/openintent.db"
+mmap_size = 268435456
+cache_size = 64000

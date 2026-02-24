@@ -1,0 +1,30 @@
+# Build
+/target/
+**/*.rs.bk
+
+# Runtime data
+/data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Local models (use git-lfs or download separately)
+/models/*.onnx
+
+# Logs
+*.log
+
+# Claude Code local settings (personal, not shared)
+.claude/settings.local.json

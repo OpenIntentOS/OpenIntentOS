@@ -1,0 +1,17 @@
+[package]
+name = "openintent-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Storage engine for OpenIntentOS — SQLite, memory layers, caching"
+
+[dependencies]
+rusqlite = { workspace = true }
+moka = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }

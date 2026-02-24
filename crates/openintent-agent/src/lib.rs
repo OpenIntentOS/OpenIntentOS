@@ -1,0 +1,45 @@
+//! AI agent runtime for OpenIntentOS.
+//!
+//! This crate implements the intelligent core of OpenIntentOS: the agent that
+//! interprets user intents, reasons about how to fulfill them, and executes
+//! actions through tool adapters.
+//!
+//! ## Architecture
+//!
+//! ```text
+//! ┌─────────────┐     ┌──────────┐     ┌──────────┐
+//! │   Planner   │────>│ Executor │────>│ Adapters │
+//! │ (decompose) │     │ (run)    │     │ (tools)  │
+//! └──────┬──────┘     └────┬─────┘     └──────────┘
+//!        │                 │
+//!        └────── ReAct Loop ──────┐
+//!                │                │
+//!         ┌──────┴──────┐   ┌────┴─────┐
+//!         │  LLM Client │   │ Streaming│
+//!         │  (Anthropic)│   │  (SSE)   │
+//!         └─────────────┘   └──────────┘
+//! ```
+//!
+//! ## Modules
+//!
+//! - [`llm`] -- LLM client, model routing, streaming, and wire types.
+//! - [`runtime`] -- The ReAct loop and tool adapter trait.
+//! - [`planner`] -- Intent decomposition into executable plans.
+//! - [`executor`] -- Step-by-step plan execution with retries.
+//! - [`error`] -- Agent error types.
+
+pub mod error;
+pub mod executor;
+pub mod llm;
+pub mod planner;
+pub mod runtime;
+
+// Re-export the most commonly used types at the crate root.
+pub use error::{AgentError, Result};
+pub use executor::{Executor, ExecutorConfig, StepResult};
+pub use llm::{
+    ChatRequest, LlmClient, LlmClientConfig, LlmResponse, Message, ModelConfig, ModelRouter, Role,
+    ToolCall, ToolDefinition, ToolResult,
+};
+pub use planner::{Plan, Planner, PlannerConfig, Step, StepStatus};
+pub use runtime::{AgentConfig, AgentContext, AgentResponse, ToolAdapter, react_loop};
