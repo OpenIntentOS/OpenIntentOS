@@ -84,6 +84,7 @@ pub async fn cmd_run(session_name: Option<String>) -> Result<()> {
     let adapters = initialized.tool_adapters;
     let skill_prompt_ext = initialized.skill_prompt_ext;
     let skill_count = initialized.skill_count;
+    let wasm_plugin_count = initialized.wasm_plugin_count;
 
     info!(
         "adapters initialized (filesystem, shell, web_search, web_fetch, http_request, cron, memory, github, email, browser, feishu, calendar, telegram, discord)"
@@ -131,6 +132,9 @@ pub async fn cmd_run(session_name: Option<String>) -> Result<()> {
     println!("            github, email, browser, feishu, calendar, telegram, discord");
     if skill_count > 0 {
         println!("  Skills: {skill_count}");
+    }
+    if wasm_plugin_count > 0 {
+        println!("  WASM plugins: {wasm_plugin_count}");
     }
     if let Some(ref name) = session_name {
         println!("  Session: {name}");

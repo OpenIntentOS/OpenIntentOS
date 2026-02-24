@@ -11,6 +11,8 @@ mod adapters;
 mod bot;
 mod bridge;
 mod cli;
+mod dev_commands;
+mod dev_worker;
 mod helpers;
 mod repl;
 
@@ -38,6 +40,9 @@ use crate::helpers::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load .env file if present (silently ignore if missing).
+    dotenvy::dotenv().ok();
+
     let cli = Cli::parse();
 
     match cli.command {

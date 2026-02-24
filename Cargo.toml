@@ -86,6 +86,9 @@ iced = { version = "0.13", features = ["tokio"] }
 # Wasm sandbox
 wasmtime = "29"
 
+# Env
+dotenvy = "0.15"
+
 # Testing
 tempfile = "3"
 

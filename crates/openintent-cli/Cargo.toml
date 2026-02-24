@@ -25,7 +25,11 @@ openintent-agent = { workspace = true }
 openintent-intent = { workspace = true }
 openintent-adapters = { workspace = true }
 openintent-skills = { workspace = true }
+openintent-sandbox = { workspace = true }
 openintent-web = { workspace = true }
 openintent-tui = { workspace = true }
 openintent-ui = { workspace = true }
 reqwest = { workspace = true }
+futures = { workspace = true }
+url = { workspace = true }
+dotenvy = { workspace = true }

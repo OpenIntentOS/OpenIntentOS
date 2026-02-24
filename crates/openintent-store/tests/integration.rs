@@ -5,8 +5,8 @@
 //! database on disk (via tempfile).
 
 use openintent_store::{
-    Database, EpisodeKind, EpisodicMemory, MemoryCategory, NewMemory, SemanticMemory, SessionStore,
-    WorkingMemory,
+    Database, DevTaskStore, EpisodeKind, EpisodicMemory, MemoryCategory, NewMemory, SemanticMemory,
+    SessionStore, WorkingMemory,
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -418,4 +418,188 @@ async fn cache_layer_basic_operations() {
     cache.invalidate("key1").await;
     let val = cache.get("key1").await;
     assert!(val.is_none());
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  DevTaskStore full lifecycle (on-disk database)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn dev_task_full_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open_and_migrate(dir.path().join("test.db"))
+        .await
+        .unwrap();
+    let store = DevTaskStore::new(db);
+
+    // ── Create ──────────────────────────────────────────────────────
+    let task = store
+        .create("telegram", Some(12345), "add dark mode to the web UI")
+        .await
+        .unwrap();
+    assert_eq!(task.source, "telegram");
+    assert_eq!(task.chat_id, Some(12345));
+    assert_eq!(task.intent, "add dark mode to the web UI");
+    assert_eq!(task.status, "pending");
+    assert_eq!(task.retry_count, 0);
+    assert_eq!(task.max_retries, 3);
+    assert!(task.created_at > 0);
+
+    // ── Update status transitions ───────────────────────────────────
+    store
+        .update_status(&task.id, "branching", Some("creating git branch"))
+        .await
+        .unwrap();
+    let t = store.get(&task.id).await.unwrap().unwrap();
+    assert_eq!(t.status, "branching");
+    assert_eq!(t.current_step.as_deref(), Some("creating git branch"));
+
+    store
+        .update_status(&task.id, "coding", Some("implementing dark mode CSS"))
+        .await
+        .unwrap();
+    let t = store.get(&task.id).await.unwrap().unwrap();
+    assert_eq!(t.status, "coding");
+
+    // ── Append messages ─────────────────────────────────────────────
+    let msg1_id = store
+        .append_message(&task.id, "user", "please make the sidebar dark too")
+        .await
+        .unwrap();
+    assert!(msg1_id > 0);
+
+    let msg2_id = store
+        .append_message(&task.id, "agent", "understood, updating sidebar styles")
+        .await
+        .unwrap();
+    assert!(msg2_id > msg1_id);
+
+    let msg3_id = store
+        .append_message(&task.id, "progress", "sidebar CSS updated")
+        .await
+        .unwrap();
+    assert!(msg3_id > msg2_id);
+
+    // ── Get messages ────────────────────────────────────────────────
+    let messages = store.get_messages(&task.id, None).await.unwrap();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[0].role, "user");
+    assert_eq!(messages[0].content, "please make the sidebar dark too");
+    assert_eq!(messages[1].role, "agent");
+    assert_eq!(messages[2].role, "progress");
+
+    // Get with limit.
+    let recent = store.get_messages(&task.id, Some(2)).await.unwrap();
+    assert_eq!(recent.len(), 2);
+    assert_eq!(recent[0].role, "agent");
+    assert_eq!(recent[1].role, "progress");
+
+    // ── Append progress ─────────────────────────────────────────────
+    store
+        .append_progress(&task.id, "branch created: feat/dark-mode")
+        .await
+        .unwrap();
+    store
+        .append_progress(&task.id, "CSS changes committed")
+        .await
+        .unwrap();
+
+    let t = store.get(&task.id).await.unwrap().unwrap();
+    assert_eq!(
+        t.progress_log,
+        serde_json::json!(["branch created: feat/dark-mode", "CSS changes committed"])
+    );
+
+    // ── Set branch ──────────────────────────────────────────────────
+    store.set_branch(&task.id, "feat/dark-mode").await.unwrap();
+    let t = store.get(&task.id).await.unwrap().unwrap();
+    assert_eq!(t.branch.as_deref(), Some("feat/dark-mode"));
+
+    // ── Set PR URL ──────────────────────────────────────────────────
+    store
+        .set_pr_url(&task.id, "https://github.com/org/repo/pull/99")
+        .await
+        .unwrap();
+    let t = store.get(&task.id).await.unwrap().unwrap();
+    assert_eq!(
+        t.pr_url.as_deref(),
+        Some("https://github.com/org/repo/pull/99")
+    );
+
+    // ── List recoverable ────────────────────────────────────────────
+    // Current status is 'coding', which is recoverable.
+    let recoverable = store.list_recoverable().await.unwrap();
+    assert_eq!(recoverable.len(), 1);
+    assert_eq!(recoverable[0].id, task.id);
+
+    // Create another task in 'testing' status.
+    let task2 = store
+        .create("cli", None, "fix linting errors")
+        .await
+        .unwrap();
+    store
+        .update_status(&task2.id, "testing", Some("running cargo test"))
+        .await
+        .unwrap();
+
+    let recoverable = store.list_recoverable().await.unwrap();
+    assert_eq!(recoverable.len(), 2);
+
+    // ── Count by status ─────────────────────────────────────────────
+    assert_eq!(store.count_by_status("coding").await.unwrap(), 1);
+    assert_eq!(store.count_by_status("testing").await.unwrap(), 1);
+    assert_eq!(store.count_by_status("pending").await.unwrap(), 0);
+
+    // ── Set error ───────────────────────────────────────────────────
+    store
+        .set_error(
+            &task2.id,
+            "test failure: assertion failed in test_dark_mode",
+        )
+        .await
+        .unwrap();
+    let t2 = store.get(&task2.id).await.unwrap().unwrap();
+    assert_eq!(
+        t2.error.as_deref(),
+        Some("test failure: assertion failed in test_dark_mode")
+    );
+
+    // ── Increment retry ─────────────────────────────────────────────
+    let count = store.increment_retry(&task2.id).await.unwrap();
+    assert_eq!(count, 1);
+    let count = store.increment_retry(&task2.id).await.unwrap();
+    assert_eq!(count, 2);
+
+    // ── Cancel ──────────────────────────────────────────────────────
+    store.cancel(&task2.id).await.unwrap();
+    let t2 = store.get(&task2.id).await.unwrap().unwrap();
+    assert_eq!(t2.status, "cancelled");
+
+    // Cancelled tasks should not be in recoverable list.
+    let recoverable = store.list_recoverable().await.unwrap();
+    assert_eq!(recoverable.len(), 1);
+
+    // ── List by chat ────────────────────────────────────────────────
+    let chat_tasks = store.list_by_chat(12345, 10, 0).await.unwrap();
+    assert_eq!(chat_tasks.len(), 1);
+    assert_eq!(chat_tasks[0].id, task.id);
+
+    // ── Delete ──────────────────────────────────────────────────────
+    store.delete(&task.id).await.unwrap();
+    let fetched = store.get(&task.id).await.unwrap();
+    assert!(fetched.is_none());
+
+    // Messages should be cascade-deleted.
+    let messages = store.get_messages(&task.id, None).await.unwrap();
+    assert!(messages.is_empty());
+
+    // Delete the second task too.
+    store.delete(&task2.id).await.unwrap();
+    let fetched = store.get(&task2.id).await.unwrap();
+    assert!(fetched.is_none());
+
+    // Everything should be empty now.
+    assert_eq!(store.count_by_status("pending").await.unwrap(), 0);
+    assert_eq!(store.count_by_status("coding").await.unwrap(), 0);
+    assert_eq!(store.count_by_status("cancelled").await.unwrap(), 0);
 }

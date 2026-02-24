@@ -40,8 +40,10 @@
 //!     .build();
 //! ```
 
+pub mod bot_state;
 pub mod cache;
 pub mod db;
+pub mod dev_task_store;
 pub mod error;
 pub mod memory;
 pub mod migration;
@@ -51,8 +53,10 @@ pub mod workflow_store;
 
 // ── re-exports ───────────────────────────────────────────────────────
 
+pub use bot_state::BotStateStore;
 pub use cache::{CacheLayer, CacheLayerBuilder, CacheStats};
 pub use db::Database;
+pub use dev_task_store::{DevTask, DevTaskMessage, DevTaskStore};
 pub use error::{StoreError, StoreResult};
 pub use memory::{
     Episode, EpisodeKind, EpisodicMemory, Memory, MemoryCategory, NewMemory, SemanticMemory,

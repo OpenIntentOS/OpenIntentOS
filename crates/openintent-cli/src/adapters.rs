@@ -10,6 +10,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use openintent_adapters::Adapter;
 use openintent_agent::runtime::ToolAdapter;
+use openintent_sandbox::{PluginLoader, SandboxConfig};
 use openintent_store::Database;
 
 use crate::bridge::AdapterBridge;
@@ -27,6 +28,9 @@ pub struct InitializedAdapters {
 
     /// Prompt extension text from loaded skills.
     pub skill_prompt_ext: String,
+
+    /// Number of WASM plugins loaded.
+    pub wasm_plugin_count: usize,
 }
 
 /// Initialize and connect all adapters.
@@ -41,7 +45,7 @@ pub async fn init_adapters(
     let mut fs_adapter = openintent_adapters::FilesystemAdapter::new("filesystem", cwd.clone());
     fs_adapter.connect().await?;
 
-    let mut shell_adapter = openintent_adapters::ShellAdapter::new("shell", cwd);
+    let mut shell_adapter = openintent_adapters::ShellAdapter::new("shell", cwd.clone());
     shell_adapter.connect().await?;
 
     let mut web_search_adapter = openintent_adapters::WebSearchAdapter::new("web_search");
@@ -138,11 +142,42 @@ pub async fn init_adapters(
         tool_adapters.push(Arc::new(AdapterBridge::new(skill_adapter)));
     }
 
+    // Load WASM plugins from the plugins directory.
+    let plugins_dir = cwd.join("plugins");
+    let mut wasm_plugin_count = 0;
+    if plugins_dir.exists() {
+        match PluginLoader::new(plugins_dir.clone(), SandboxConfig::default()) {
+            Ok(mut loader) => match loader.load_all().await {
+                Ok(plugin_adapters) => {
+                    wasm_plugin_count = plugin_adapters.len();
+                    for pa in plugin_adapters {
+                        tool_adapters
+                            .push(Arc::new(AdapterBridge::new(WasmPluginRef(Arc::new(pa)))));
+                    }
+                    if wasm_plugin_count > 0 {
+                        tracing::info!(
+                            plugins = wasm_plugin_count,
+                            dir = %plugins_dir.display(),
+                            "WASM plugins loaded"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to load WASM plugins");
+                }
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to create WASM plugin loader");
+            }
+        }
+    }
+
     Ok(InitializedAdapters {
         tool_adapters,
         raw_adapters,
         skill_count,
         skill_prompt_ext,
+        wasm_plugin_count,
     })
 }
 
@@ -189,5 +224,50 @@ impl openintent_adapters::Adapter for RawAdapterRef {
 
     fn required_auth(&self) -> Option<openintent_adapters::AuthRequirement> {
         self.0.required_auth()
+    }
+}
+
+/// Wrapper that implements `Adapter` for an `Arc<PluginAdapter>`.
+///
+/// `PluginAdapter` already implements `Adapter`, but we need a wrapper to pass
+/// it through `AdapterBridge` without lifetime issues.
+struct WasmPluginRef(Arc<openintent_sandbox::PluginAdapter>);
+
+#[async_trait::async_trait]
+impl openintent_adapters::Adapter for WasmPluginRef {
+    fn id(&self) -> &str {
+        openintent_adapters::Adapter::id(self.0.as_ref())
+    }
+
+    fn adapter_type(&self) -> openintent_adapters::AdapterType {
+        openintent_adapters::Adapter::adapter_type(self.0.as_ref())
+    }
+
+    fn tools(&self) -> Vec<openintent_adapters::ToolDefinition> {
+        openintent_adapters::Adapter::tools(self.0.as_ref())
+    }
+
+    async fn connect(&mut self) -> openintent_adapters::Result<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&mut self) -> openintent_adapters::Result<()> {
+        Ok(())
+    }
+
+    async fn health_check(&self) -> openintent_adapters::Result<openintent_adapters::HealthStatus> {
+        openintent_adapters::Adapter::health_check(self.0.as_ref()).await
+    }
+
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> openintent_adapters::Result<serde_json::Value> {
+        openintent_adapters::Adapter::execute_tool(self.0.as_ref(), tool_name, arguments).await
+    }
+
+    fn required_auth(&self) -> Option<openintent_adapters::AuthRequirement> {
+        openintent_adapters::Adapter::required_auth(self.0.as_ref())
     }
 }
