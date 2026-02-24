@@ -107,6 +107,26 @@ static MIGRATIONS: &[Migration] = &[
             CREATE INDEX idx_session_messages_session ON session_messages(session_id);
         "#,
     },
+    Migration {
+        version: 3,
+        description: "multi-user support — users table and session user linkage",
+        sql: r#"
+            CREATE TABLE users (
+                id            TEXT PRIMARY KEY,
+                username      TEXT NOT NULL UNIQUE,
+                display_name  TEXT,
+                password_hash TEXT NOT NULL,
+                role          TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('admin', 'user', 'viewer')),
+                active        BOOLEAN DEFAULT 1,
+                created_at    INTEGER NOT NULL,
+                updated_at    INTEGER NOT NULL
+            );
+            CREATE INDEX idx_users_username ON users(username);
+
+            ALTER TABLE sessions ADD COLUMN user_id TEXT REFERENCES users(id);
+            CREATE INDEX idx_sessions_user ON sessions(user_id);
+        "#,
+    },
 ];
 
 // ── public API ───────────────────────────────────────────────────────
@@ -257,7 +277,7 @@ mod tests {
     }
 
     /// The expected latest migration version (update when adding migrations).
-    const LATEST_VERSION: u32 = 2;
+    const LATEST_VERSION: u32 = 3;
 
     #[test]
     fn run_all_on_fresh_db() {
@@ -304,5 +324,26 @@ mod tests {
         // v2 tables
         assert!(tables.contains(&"sessions".to_string()));
         assert!(tables.contains(&"session_messages".to_string()));
+        // v3 tables
+        assert!(tables.contains(&"users".to_string()));
+    }
+
+    #[test]
+    fn v3_users_table_has_correct_columns() {
+        let conn = setup_conn();
+        run_all(&conn).unwrap();
+
+        // Verify the users table can be queried with expected columns.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+
+        // Verify the user_id column was added to sessions.
+        conn.execute_batch(
+            "INSERT INTO sessions (id, name, model, message_count, token_count, created_at, updated_at, user_id) \
+             VALUES ('test', 'test', 'model', 0, 0, 0, 0, NULL)",
+        )
+        .unwrap();
     }
 }

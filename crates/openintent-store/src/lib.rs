@@ -4,7 +4,8 @@
 //!
 //! Provides SQLite-backed persistence with WAL mode and mmap for
 //! microsecond reads, a 3-layer memory system (working / episodic /
-//! semantic), and a lock-free hot cache via `moka`.
+//! semantic), a lock-free hot cache via `moka`, and multi-user
+//! account management with PBKDF2 password hashing.
 //!
 //! ## Architecture
 //!
@@ -16,6 +17,10 @@
 //! │  EpisodicMemory  (SQLite episodes)       │
 //! │  SemanticMemory  (SQLite memories + vec) │
 //! ├─────────────────────────────────────────┤
+//! │  UserStore     (multi-user, PBKDF2)      │
+//! │  SessionStore  (conversation history)    │
+//! │  WorkflowStore (persistent workflows)    │
+//! ├─────────────────────────────────────────┤
 //! │  Database (rusqlite WAL + mmap)          │
 //! │  Migrations (versioned, transactional)   │
 //! └─────────────────────────────────────────┘
@@ -24,10 +29,11 @@
 //! ## Quick start
 //!
 //! ```ignore
-//! use openintent_store::{Database, EpisodicMemory, CacheLayer};
+//! use openintent_store::{Database, EpisodicMemory, CacheLayer, UserStore};
 //!
 //! let db = Database::open_and_migrate("data/openintent.db").await?;
 //! let episodes = EpisodicMemory::new(db.clone());
+//! let users = UserStore::new(db.clone());
 //! let cache: CacheLayer<String> = CacheLayer::builder("strings")
 //!     .max_capacity(1000)
 //!     .ttl_seconds(60)
@@ -40,6 +46,7 @@ pub mod error;
 pub mod memory;
 pub mod migration;
 pub mod session;
+pub mod user_store;
 pub mod workflow_store;
 
 // ── re-exports ───────────────────────────────────────────────────────
@@ -52,4 +59,5 @@ pub use memory::{
     WorkingMemory,
 };
 pub use session::{Session, SessionMessage, SessionStore};
+pub use user_store::{User, UserRole, UserStore};
 pub use workflow_store::{StoredWorkflow, WorkflowStore};

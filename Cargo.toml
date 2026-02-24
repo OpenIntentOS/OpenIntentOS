@@ -8,6 +8,7 @@ members = [
     "crates/openintent-intent",
     "crates/openintent-adapters",
     "crates/openintent-auth-engine",
+    "crates/openintent-sandbox",
     "crates/openintent-ui",
     "crates/openintent-web",
     "crates/openintent-tui",
@@ -78,6 +79,12 @@ dashmap = "6"
 crossterm = "0.28"
 ratatui = "0.29"
 
+# Desktop GUI
+iced = { version = "0.13", features = ["tokio"] }
+
+# Wasm sandbox
+wasmtime = "29"
+
 # Testing
 tempfile = "3"
 
@@ -89,6 +96,7 @@ openintent-agent = { path = "crates/openintent-agent" }
 openintent-intent = { path = "crates/openintent-intent" }
 openintent-adapters = { path = "crates/openintent-adapters" }
 openintent-auth-engine = { path = "crates/openintent-auth-engine" }
+openintent-sandbox = { path = "crates/openintent-sandbox" }
 openintent-ui = { path = "crates/openintent-ui" }
 openintent-web = { path = "crates/openintent-web" }
 openintent-tui = { path = "crates/openintent-tui" }

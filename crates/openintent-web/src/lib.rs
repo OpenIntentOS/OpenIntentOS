@@ -6,13 +6,16 @@
 //! - A REST API for system status and adapter/tool discovery.
 //! - A WebSocket endpoint for real-time streaming of agent output.
 //! - An embedded single-page HTML frontend served at `/`.
+//! - An MCP (Model Context Protocol) endpoint for tool exposure to LLMs.
 
 pub mod api;
 pub mod frontend;
+pub mod mcp;
 pub mod server;
 pub mod state;
 pub mod ws;
 
+pub use mcp::McpServer;
 pub use server::WebServer;
 pub use state::AppState;
 

@@ -18,6 +18,7 @@ use openintent_store::{Database, SessionStore};
 use crate::WebConfig;
 use crate::api;
 use crate::frontend::INDEX_HTML;
+use crate::mcp;
 use crate::state::AppState;
 use crate::ws;
 
@@ -81,6 +82,8 @@ impl WebServer {
                 "/api/sessions/{id}/messages",
                 get(api::get_session_messages),
             )
+            // MCP (Model Context Protocol) endpoint.
+            .route("/mcp", post(mcp::handle_mcp_request))
             // WebSocket.
             .route("/ws", get(ws::ws_handler))
             .layer(cors)

@@ -4,9 +4,11 @@
 //! providing a uniform interface for tool discovery and execution.
 
 pub mod browser;
+pub mod calendar;
 pub mod cron;
 pub mod email;
 pub mod error;
+pub mod feishu;
 pub mod filesystem;
 pub mod github;
 pub mod http_request;
@@ -17,9 +19,11 @@ pub mod web_fetch;
 pub mod web_search;
 
 pub use browser::BrowserAdapter;
+pub use calendar::CalendarAdapter;
 pub use cron::{CronAdapter, CronJob};
 pub use email::EmailAdapter;
 pub use error::{AdapterError, Result};
+pub use feishu::FeishuAdapter;
 pub use filesystem::FilesystemAdapter;
 pub use github::GitHubAdapter;
 pub use http_request::HttpRequestAdapter;
