@@ -1,8 +1,9 @@
 //! WebSocket handler for streaming chat.
 //!
 //! Clients connect to `/ws` and exchange JSON messages.  Inbound messages
-//! carry user chat input; outbound messages stream the agent's reasoning,
-//! tool invocations, and final text response.
+//! carry user chat input with a session_id; outbound messages stream the
+//! agent's reasoning, tool invocations, and final text response.
+//! Messages are persisted to the session store.
 
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ use serde_json::Value;
 use openintent_adapters::Adapter;
 use openintent_agent::runtime::ToolAdapter;
 use openintent_agent::{AgentConfig, ChatRequest, LlmClient, LlmResponse, ToolDefinition};
+use openintent_store::SessionStore;
 
 use crate::state::AppState;
 
@@ -55,7 +57,6 @@ impl ToolAdapter for AdapterBridge {
                 tool_name: tool_name.to_owned(),
                 reason: e.to_string(),
             })?;
-        // Serialize the adapter's JSON output into a string for the LLM.
         Ok(serde_json::to_string(&result)?)
     }
 }
@@ -72,6 +73,8 @@ struct InboundMessage {
     msg_type: String,
     /// The user's message content.
     content: String,
+    /// Session ID for this conversation.
+    session_id: Option<String>,
 }
 
 /// Outbound message sent to the client.
@@ -162,7 +165,6 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
         let text = match msg {
             Message::Text(t) => t,
             Message::Close(_) => break,
-            // Ignore binary, ping, pong.
             _ => continue,
         };
 
@@ -183,13 +185,21 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
             continue;
         }
 
-        if let Err(e) =
-            handle_chat_message(&mut socket, &state.llm, &state.adapters, &inbound.content).await
+        let session_id = inbound.session_id.clone();
+
+        if let Err(e) = handle_chat_message(
+            &mut socket,
+            &state.llm,
+            &state.adapters,
+            &state.sessions,
+            session_id.as_deref(),
+            &inbound.content,
+        )
+        .await
         {
             let _ = send(&mut socket, &OutboundMessage::error(e.to_string())).await;
         }
 
-        // Signal completion of this turn.
         let _ = send(&mut socket, &OutboundMessage::done()).await;
     }
 
@@ -197,32 +207,58 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 }
 
 /// Run the agent ReAct loop for a single user message, streaming results
-/// back over the WebSocket.
+/// back over the WebSocket and persisting messages to the session store.
 async fn handle_chat_message(
     socket: &mut WebSocket,
     llm: &Arc<LlmClient>,
     adapters: &[Arc<dyn Adapter>],
+    sessions: &Arc<SessionStore>,
+    session_id: Option<&str>,
     user_message: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Persist user message to session if session_id is provided.
+    if let Some(sid) = session_id {
+        let _ = sessions
+            .append_message(sid, "user", user_message, None, None)
+            .await;
+    }
+
     // Bridge adapters.
     let tool_adapters: Vec<Arc<dyn ToolAdapter>> = adapters
         .iter()
         .map(|a| Arc::new(AdapterBridge(Arc::clone(a))) as Arc<dyn ToolAdapter>)
         .collect();
 
-    // Collect tool definitions.
     let tools: Vec<ToolDefinition> = tool_adapters
         .iter()
         .flat_map(|a| a.tool_definitions())
         .collect();
 
-    let mut messages = vec![
-        openintent_agent::Message::system(
-            "You are OpenIntentOS, an AI assistant with access to system tools. \
-             Be concise and helpful.",
-        ),
-        openintent_agent::Message::user(user_message),
-    ];
+    // Load existing session messages for context.
+    let mut messages = vec![openintent_agent::Message::system(
+        "You are OpenIntentOS, an AI assistant with access to system tools. \
+         Be concise and helpful.",
+    )];
+
+    // If we have a session, load recent history for context.
+    if let Some(sid) = session_id
+        && let Ok(history) = sessions.get_messages(sid, Some(20)).await
+    {
+        for msg in &history {
+            match msg.role.as_str() {
+                "user" => messages.push(openintent_agent::Message::user(&msg.content)),
+                "assistant" => {
+                    messages.push(openintent_agent::Message::assistant(&msg.content))
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Add current user message (if not already loaded from history).
+    if session_id.is_none() {
+        messages.push(openintent_agent::Message::user(user_message));
+    }
 
     let config = AgentConfig::default();
     let max_turns = config.max_turns;
@@ -243,15 +279,20 @@ async fn handle_chat_message(
             LlmResponse::Text(text) => {
                 messages.push(openintent_agent::Message::assistant(&text));
                 send(socket, &OutboundMessage::text(&text)).await?;
+
+                // Persist assistant response.
+                if let Some(sid) = session_id {
+                    let _ = sessions
+                        .append_message(sid, "assistant", &text, None, None)
+                        .await;
+                }
                 return Ok(());
             }
             LlmResponse::ToolCalls(calls) => {
-                // Record the assistant's tool-call message.
                 messages.push(openintent_agent::Message::assistant_tool_calls(
                     calls.clone(),
                 ));
 
-                // Execute each tool call and stream progress.
                 for call in &calls {
                     send(socket, &OutboundMessage::tool_start(&call.name)).await?;
 

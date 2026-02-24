@@ -39,6 +39,7 @@ pub mod db;
 pub mod error;
 pub mod memory;
 pub mod migration;
+pub mod session;
 
 // ── re-exports ───────────────────────────────────────────────────────
 
@@ -49,3 +50,4 @@ pub use memory::{
     Episode, EpisodeKind, EpisodicMemory, Memory, MemoryCategory, NewMemory, SemanticMemory,
     WorkingMemory,
 };
+pub use session::{Session, SessionMessage, SessionStore};

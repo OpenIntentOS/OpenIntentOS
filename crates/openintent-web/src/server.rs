@@ -8,11 +8,12 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::{HeaderValue, Method};
 use axum::response::Html;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use tower_http::cors::CorsLayer;
 
 use openintent_adapters::Adapter;
 use openintent_agent::LlmClient;
+use openintent_store::{Database, SessionStore};
 
 use crate::WebConfig;
 use crate::api;
@@ -34,11 +35,20 @@ impl WebServer {
     /// * `config` - Bind address and port configuration.
     /// * `llm` - The LLM client shared across all requests.
     /// * `adapters` - The set of service adapters to expose.
-    pub fn new(config: WebConfig, llm: Arc<LlmClient>, adapters: Vec<Arc<dyn Adapter>>) -> Self {
+    /// * `db` - The database handle.
+    pub fn new(
+        config: WebConfig,
+        llm: Arc<LlmClient>,
+        adapters: Vec<Arc<dyn Adapter>>,
+        db: Database,
+    ) -> Self {
+        let sessions = Arc::new(SessionStore::new(db.clone()));
         let state = Arc::new(AppState {
             llm,
             adapters,
             config: config.clone(),
+            db,
+            sessions,
         });
         Self { config, state }
     }
@@ -52,7 +62,7 @@ impl WebServer {
     fn router(&self) -> Router {
         let cors = CorsLayer::new()
             .allow_origin("*".parse::<HeaderValue>().unwrap())
-            .allow_methods([Method::GET, Method::POST])
+            .allow_methods([Method::GET, Method::POST, Method::DELETE])
             .allow_headers(tower_http::cors::Any);
 
         Router::new()
@@ -62,6 +72,15 @@ impl WebServer {
             .route("/api/status", get(api::status))
             .route("/api/adapters", get(api::adapters))
             .route("/api/chat", post(api::chat))
+            // Session management.
+            .route("/api/sessions", get(api::list_sessions))
+            .route("/api/sessions", post(api::create_session))
+            .route("/api/sessions/{id}", get(api::get_session))
+            .route("/api/sessions/{id}", delete(api::delete_session))
+            .route(
+                "/api/sessions/{id}/messages",
+                get(api::get_session_messages),
+            )
             // WebSocket.
             .route("/ws", get(ws::ws_handler))
             .layer(cors)

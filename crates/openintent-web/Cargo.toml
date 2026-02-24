@@ -15,5 +15,7 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 openintent-agent = { workspace = true }
 openintent-adapters = { workspace = true }
+openintent-store = { workspace = true }
+chrono = { workspace = true }
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors", "fs"] }

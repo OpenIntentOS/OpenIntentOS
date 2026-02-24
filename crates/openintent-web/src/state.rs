@@ -1,13 +1,14 @@
 //! Shared application state for the web server.
 //!
 //! [`AppState`] is wrapped in an `Arc` and shared across all request handlers
-//! and WebSocket connections.  It holds references to the LLM client and the
-//! set of registered adapters.
+//! and WebSocket connections.  It holds references to the LLM client, adapters,
+//! session store, and database.
 
 use std::sync::Arc;
 
 use openintent_adapters::Adapter;
 use openintent_agent::LlmClient;
+use openintent_store::{Database, SessionStore};
 
 use crate::WebConfig;
 
@@ -22,4 +23,10 @@ pub struct AppState {
 
     /// Web server configuration.
     pub config: WebConfig,
+
+    /// Database handle for general queries.
+    pub db: Database,
+
+    /// Session store for conversation persistence.
+    pub sessions: Arc<SessionStore>,
 }

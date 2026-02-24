@@ -26,8 +26,10 @@
 //! - [`runtime`] -- The ReAct loop and tool adapter trait.
 //! - [`planner`] -- Intent decomposition into executable plans.
 //! - [`executor`] -- Step-by-step plan execution with retries.
+//! - [`compaction`] -- Context window compaction via conversation summarization.
 //! - [`error`] -- Agent error types.
 
+pub mod compaction;
 pub mod error;
 pub mod executor;
 pub mod llm;
@@ -35,6 +37,7 @@ pub mod planner;
 pub mod runtime;
 
 // Re-export the most commonly used types at the crate root.
+pub use compaction::{CompactionConfig, compact_messages, needs_compaction};
 pub use error::{AgentError, Result};
 pub use executor::{Executor, ExecutorConfig, StepResult};
 pub use llm::{

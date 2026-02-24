@@ -200,12 +200,36 @@ async fn cmd_run() -> Result<()> {
     let mut shell_adapter = openintent_adapters::ShellAdapter::new("shell", cwd);
     shell_adapter.connect().await?;
 
-    info!("adapters initialized (filesystem, shell)");
+    let mut web_search_adapter = openintent_adapters::WebSearchAdapter::new("web_search");
+    web_search_adapter.connect().await?;
+
+    let mut web_fetch_adapter = openintent_adapters::WebFetchAdapter::new("web_fetch");
+    web_fetch_adapter.connect().await?;
+
+    let mut http_adapter = openintent_adapters::HttpRequestAdapter::new("http_request");
+    http_adapter.connect().await?;
+
+    let mut cron_adapter = openintent_adapters::CronAdapter::new("cron");
+    cron_adapter.connect().await?;
+
+    let memory = Arc::new(openintent_store::SemanticMemory::new(_db.clone()));
+    let mut memory_adapter =
+        openintent_adapters::MemoryToolsAdapter::new("memory", Arc::clone(&memory));
+    memory_adapter.connect().await?;
+
+    info!(
+        "adapters initialized (filesystem, shell, web_search, web_fetch, http_request, cron, memory)"
+    );
 
     // 7. Wrap adapters in the bridge.
     let adapters: Vec<Arc<dyn ToolAdapter>> = vec![
         Arc::new(AdapterBridge::new(fs_adapter)),
         Arc::new(AdapterBridge::new(shell_adapter)),
+        Arc::new(AdapterBridge::new(web_search_adapter)),
+        Arc::new(AdapterBridge::new(web_fetch_adapter)),
+        Arc::new(AdapterBridge::new(http_adapter)),
+        Arc::new(AdapterBridge::new(cron_adapter)),
+        Arc::new(AdapterBridge::new(memory_adapter)),
     ];
 
     // 8. Load system prompt.
@@ -215,6 +239,7 @@ async fn cmd_run() -> Result<()> {
     println!();
     println!("  OpenIntentOS v{}", env!("CARGO_PKG_VERSION"));
     println!("  Model: {model}");
+    println!("  Adapters: filesystem, shell, web_search, web_fetch, http_request, cron, memory");
     println!("  Type your request, or 'quit' to exit.");
     println!();
 
@@ -344,7 +369,7 @@ async fn cmd_serve(bind: String, port: u16) -> Result<()> {
     }
 
     let db_path = data_dir.join("openintent.db");
-    let _db = openintent_store::Database::open_and_migrate(db_path.clone())
+    let db = openintent_store::Database::open_and_migrate(db_path.clone())
         .await
         .context("failed to open database")?;
     info!(path = %db_path.display(), "store initialized");
@@ -379,10 +404,36 @@ async fn cmd_serve(bind: String, port: u16) -> Result<()> {
     let mut shell_adapter = openintent_adapters::ShellAdapter::new("shell", cwd);
     shell_adapter.connect().await?;
 
-    let adapters: Vec<Arc<dyn openintent_adapters::Adapter>> =
-        vec![Arc::new(fs_adapter), Arc::new(shell_adapter)];
+    let mut web_search_adapter = openintent_adapters::WebSearchAdapter::new("web_search");
+    web_search_adapter.connect().await?;
 
-    info!("adapters initialized (filesystem, shell)");
+    let mut web_fetch_adapter = openintent_adapters::WebFetchAdapter::new("web_fetch");
+    web_fetch_adapter.connect().await?;
+
+    let mut http_adapter = openintent_adapters::HttpRequestAdapter::new("http_request");
+    http_adapter.connect().await?;
+
+    let mut cron_adapter = openintent_adapters::CronAdapter::new("cron");
+    cron_adapter.connect().await?;
+
+    let memory = Arc::new(openintent_store::SemanticMemory::new(db.clone()));
+    let mut memory_adapter =
+        openintent_adapters::MemoryToolsAdapter::new("memory", Arc::clone(&memory));
+    memory_adapter.connect().await?;
+
+    let adapters: Vec<Arc<dyn openintent_adapters::Adapter>> = vec![
+        Arc::new(fs_adapter),
+        Arc::new(shell_adapter),
+        Arc::new(web_search_adapter),
+        Arc::new(web_fetch_adapter),
+        Arc::new(http_adapter),
+        Arc::new(cron_adapter),
+        Arc::new(memory_adapter),
+    ];
+
+    info!(
+        "adapters initialized (filesystem, shell, web_search, web_fetch, http_request, cron, memory)"
+    );
 
     // 5. Configure and start the web server.
     let web_config = openintent_web::WebConfig {
@@ -399,7 +450,7 @@ async fn cmd_serve(bind: String, port: u16) -> Result<()> {
     );
     println!();
 
-    let server = openintent_web::WebServer::new(web_config, llm, adapters);
+    let server = openintent_web::WebServer::new(web_config, llm, adapters, db);
     server.start().await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
     Ok(())

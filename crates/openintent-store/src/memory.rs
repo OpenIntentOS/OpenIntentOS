@@ -514,6 +514,159 @@ impl SemanticMemory {
             .await
     }
 
+    /// Search memories by keyword (case-insensitive LIKE match on content).
+    ///
+    /// Optionally filter by category. Results are ordered by importance
+    /// descending and limited to `limit` rows.
+    #[instrument(skip(self))]
+    pub async fn search_by_keyword(
+        &self,
+        query: &str,
+        category: Option<MemoryCategory>,
+        limit: u32,
+    ) -> StoreResult<Vec<Memory>> {
+        let pattern = format!("%{query}%");
+        let cat = category.map(|c| c.as_str().to_string());
+        self.db
+            .execute(move |conn| {
+                let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql + Send>>) =
+                    match &cat {
+                        Some(cat_str) => (
+                            "SELECT id, category, content, embedding, importance, access_count, \
+                             created_at, updated_at FROM memories \
+                             WHERE content LIKE ?1 AND category = ?2 \
+                             ORDER BY importance DESC LIMIT ?3"
+                                .to_string(),
+                            vec![
+                                Box::new(pattern) as Box<dyn rusqlite::types::ToSql + Send>,
+                                Box::new(cat_str.clone()),
+                                Box::new(limit),
+                            ],
+                        ),
+                        None => (
+                            "SELECT id, category, content, embedding, importance, access_count, \
+                             created_at, updated_at FROM memories \
+                             WHERE content LIKE ?1 \
+                             ORDER BY importance DESC LIMIT ?2"
+                                .to_string(),
+                            vec![
+                                Box::new(pattern) as Box<dyn rusqlite::types::ToSql + Send>,
+                                Box::new(limit),
+                            ],
+                        ),
+                    };
+
+                let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec
+                    .iter()
+                    .map(|p| p.as_ref() as &dyn rusqlite::types::ToSql)
+                    .collect();
+
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt
+                    .query_map(params_refs.as_slice(), |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<Vec<u8>>>(3)?,
+                            row.get::<_, f64>(4)?,
+                            row.get::<_, i64>(5)?,
+                            row.get::<_, i64>(6)?,
+                            row.get::<_, i64>(7)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let mut memories = Vec::with_capacity(rows.len());
+                for (id, cat, content, emb, imp, ac, ca, ua) in rows {
+                    memories.push(Memory {
+                        id,
+                        category: MemoryCategory::from_str(&cat)?,
+                        content,
+                        embedding: emb.map(blob_to_embedding),
+                        importance: imp,
+                        access_count: ac,
+                        created_at: ca,
+                        updated_at: ua,
+                    });
+                }
+                Ok(memories)
+            })
+            .await
+    }
+
+    /// List all memories, optionally filtered by category, ordered by
+    /// importance descending.
+    #[instrument(skip(self))]
+    pub async fn list_all(
+        &self,
+        category: Option<MemoryCategory>,
+        limit: u32,
+    ) -> StoreResult<Vec<Memory>> {
+        let cat = category.map(|c| c.as_str().to_string());
+        self.db
+            .execute(move |conn| {
+                let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql + Send>>) =
+                    match &cat {
+                        Some(cat_str) => (
+                            "SELECT id, category, content, embedding, importance, access_count, \
+                             created_at, updated_at FROM memories \
+                             WHERE category = ?1 \
+                             ORDER BY importance DESC LIMIT ?2"
+                                .to_string(),
+                            vec![
+                                Box::new(cat_str.clone()) as Box<dyn rusqlite::types::ToSql + Send>,
+                                Box::new(limit),
+                            ],
+                        ),
+                        None => (
+                            "SELECT id, category, content, embedding, importance, access_count, \
+                             created_at, updated_at FROM memories \
+                             ORDER BY importance DESC LIMIT ?1"
+                                .to_string(),
+                            vec![Box::new(limit) as Box<dyn rusqlite::types::ToSql + Send>],
+                        ),
+                    };
+
+                let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec
+                    .iter()
+                    .map(|p| p.as_ref() as &dyn rusqlite::types::ToSql)
+                    .collect();
+
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt
+                    .query_map(params_refs.as_slice(), |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<Vec<u8>>>(3)?,
+                            row.get::<_, f64>(4)?,
+                            row.get::<_, i64>(5)?,
+                            row.get::<_, i64>(6)?,
+                            row.get::<_, i64>(7)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let mut memories = Vec::with_capacity(rows.len());
+                for (id, cat, content, emb, imp, ac, ca, ua) in rows {
+                    memories.push(Memory {
+                        id,
+                        category: MemoryCategory::from_str(&cat)?,
+                        content,
+                        embedding: emb.map(blob_to_embedding),
+                        importance: imp,
+                        access_count: ac,
+                        created_at: ca,
+                        updated_at: ua,
+                    });
+                }
+                Ok(memories)
+            })
+            .await
+    }
+
     /// Count all memories, optionally filtered by category.
     pub async fn count(&self, category: Option<MemoryCategory>) -> StoreResult<i64> {
         self.db

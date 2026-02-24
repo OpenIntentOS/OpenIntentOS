@@ -20,66 +20,94 @@ struct Migration {
 }
 
 /// All migrations in order. Add new migrations to the end of this array.
-static MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    description: "initial schema — workflows, tasks, episodes, memories, adapters",
-    sql: r#"
-        CREATE TABLE workflows (
-            id          TEXT PRIMARY KEY,
-            name        TEXT NOT NULL,
-            description TEXT,
-            intent_raw  TEXT NOT NULL,
-            steps       TEXT NOT NULL,
-            trigger     TEXT,
-            enabled     BOOLEAN DEFAULT 1,
-            created_at  INTEGER NOT NULL,
-            updated_at  INTEGER NOT NULL
-        );
+static MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        description: "initial schema — workflows, tasks, episodes, memories, adapters",
+        sql: r#"
+            CREATE TABLE workflows (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                description TEXT,
+                intent_raw  TEXT NOT NULL,
+                steps       TEXT NOT NULL,
+                trigger     TEXT,
+                enabled     BOOLEAN DEFAULT 1,
+                created_at  INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL
+            );
 
-        CREATE TABLE tasks (
-            id           TEXT PRIMARY KEY,
-            workflow_id  TEXT REFERENCES workflows(id),
-            status       TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed','cancelled')),
-            input        TEXT,
-            output       TEXT,
-            error        TEXT,
-            started_at   INTEGER,
-            completed_at INTEGER,
-            created_at   INTEGER NOT NULL
-        );
-        CREATE INDEX idx_tasks_status ON tasks(status);
-        CREATE INDEX idx_tasks_workflow ON tasks(workflow_id);
+            CREATE TABLE tasks (
+                id           TEXT PRIMARY KEY,
+                workflow_id  TEXT REFERENCES workflows(id),
+                status       TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed','cancelled')),
+                input        TEXT,
+                output       TEXT,
+                error        TEXT,
+                started_at   INTEGER,
+                completed_at INTEGER,
+                created_at   INTEGER NOT NULL
+            );
+            CREATE INDEX idx_tasks_status ON tasks(status);
+            CREATE INDEX idx_tasks_workflow ON tasks(workflow_id);
 
-        CREATE TABLE episodes (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id   TEXT NOT NULL REFERENCES tasks(id),
-            type      TEXT NOT NULL CHECK(type IN ('observation','action','result','reflection')),
-            content   TEXT NOT NULL,
-            timestamp INTEGER NOT NULL
-        );
-        CREATE INDEX idx_episodes_task ON episodes(task_id);
+            CREATE TABLE episodes (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id   TEXT NOT NULL REFERENCES tasks(id),
+                type      TEXT NOT NULL CHECK(type IN ('observation','action','result','reflection')),
+                content   TEXT NOT NULL,
+                timestamp INTEGER NOT NULL
+            );
+            CREATE INDEX idx_episodes_task ON episodes(task_id);
 
-        CREATE TABLE memories (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            category     TEXT NOT NULL CHECK(category IN ('preference','knowledge','pattern','skill')),
-            content      TEXT NOT NULL,
-            embedding    BLOB,
-            importance   REAL DEFAULT 0.5,
-            access_count INTEGER DEFAULT 0,
-            created_at   INTEGER NOT NULL,
-            updated_at   INTEGER NOT NULL
-        );
+            CREATE TABLE memories (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                category     TEXT NOT NULL CHECK(category IN ('preference','knowledge','pattern','skill')),
+                content      TEXT NOT NULL,
+                embedding    BLOB,
+                importance   REAL DEFAULT 0.5,
+                access_count INTEGER DEFAULT 0,
+                created_at   INTEGER NOT NULL,
+                updated_at   INTEGER NOT NULL
+            );
 
-        CREATE TABLE adapters (
-            id          TEXT PRIMARY KEY,
-            type        TEXT NOT NULL,
-            config      TEXT,
-            status      TEXT DEFAULT 'disconnected',
-            last_health INTEGER,
-            created_at  INTEGER NOT NULL
-        );
-    "#,
-}];
+            CREATE TABLE adapters (
+                id          TEXT PRIMARY KEY,
+                type        TEXT NOT NULL,
+                config      TEXT,
+                status      TEXT DEFAULT 'disconnected',
+                last_health INTEGER,
+                created_at  INTEGER NOT NULL
+            );
+        "#,
+    },
+    Migration {
+        version: 2,
+        description: "session persistence — sessions and session_messages tables",
+        sql: r#"
+            CREATE TABLE sessions (
+                id            TEXT PRIMARY KEY,
+                name          TEXT NOT NULL,
+                model         TEXT NOT NULL DEFAULT '',
+                message_count INTEGER DEFAULT 0,
+                token_count   INTEGER DEFAULT 0,
+                created_at    INTEGER NOT NULL,
+                updated_at    INTEGER NOT NULL
+            );
+
+            CREATE TABLE session_messages (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id    TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                role          TEXT NOT NULL,
+                content       TEXT NOT NULL,
+                tool_calls    TEXT,
+                tool_call_id  TEXT,
+                created_at    INTEGER NOT NULL
+            );
+            CREATE INDEX idx_session_messages_session ON session_messages(session_id);
+        "#,
+    },
+];
 
 // ── public API ───────────────────────────────────────────────────────
 
@@ -228,13 +256,16 @@ mod tests {
         }
     }
 
+    /// The expected latest migration version (update when adding migrations).
+    const LATEST_VERSION: u32 = 2;
+
     #[test]
     fn run_all_on_fresh_db() {
         let conn = setup_conn();
         run_all(&conn).unwrap();
 
         let version = current_version(&conn).unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, LATEST_VERSION);
     }
 
     #[test]
@@ -244,11 +275,11 @@ mod tests {
         run_all(&conn).unwrap();
 
         let version = current_version(&conn).unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, LATEST_VERSION);
     }
 
     #[test]
-    fn initial_migration_creates_all_tables() {
+    fn migrations_create_all_tables() {
         let conn = setup_conn();
         run_all(&conn).unwrap();
 
@@ -264,10 +295,14 @@ mod tests {
                 .collect()
         };
 
+        // v1 tables
         assert!(tables.contains(&"workflows".to_string()));
         assert!(tables.contains(&"tasks".to_string()));
         assert!(tables.contains(&"episodes".to_string()));
         assert!(tables.contains(&"memories".to_string()));
         assert!(tables.contains(&"adapters".to_string()));
+        // v2 tables
+        assert!(tables.contains(&"sessions".to_string()));
+        assert!(tables.contains(&"session_messages".to_string()));
     }
 }
