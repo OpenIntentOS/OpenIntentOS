@@ -1,49 +1,26 @@
 //! Terminal UI for OpenIntentOS.
 //!
-//! This crate will provide a rich terminal user interface using a TUI
-//! framework (e.g. `ratatui`).  It will include:
+//! This crate provides a rich terminal user interface using [`ratatui`] and
+//! [`crossterm`].  It includes:
 //!
-//! - A split-pane layout with input, output, and status panels.
-//! - Real-time streaming of agent output.
-//! - Keyboard shortcuts for common operations.
-//! - Syntax-highlighted code and file previews.
+//! - A three-panel vertical layout: header, scrollable chat, and input.
+//! - Background agent execution via tokio tasks and channels.
+//! - Real-time display of tool invocations and agent responses.
+//! - Keyboard navigation for scrolling and input editing.
 //!
-//! # Status
+//! # Quick start
 //!
-//! This crate is currently a stub.  The TUI will be implemented once the
-//! core agent and intent pipelines are stable.
+//! ```ignore
+//! use openintent_tui::run_tui;
+//!
+//! run_tui(llm, adapters, config, system_prompt).await?;
+//! ```
 
-/// Placeholder TUI configuration.
-#[derive(Debug, Clone)]
-pub struct TuiConfig {
-    /// Whether to enable mouse support.
-    pub mouse: bool,
-    /// Whether to use alternate screen mode.
-    pub alternate_screen: bool,
-}
+pub mod app;
+pub mod error;
+pub mod run;
+pub mod ui;
 
-impl Default for TuiConfig {
-    fn default() -> Self {
-        Self {
-            mouse: true,
-            alternate_screen: true,
-        }
-    }
-}
-
-/// Placeholder TUI application.
-pub struct TuiApp {
-    config: TuiConfig,
-}
-
-impl TuiApp {
-    /// Create a new TUI application with the given configuration.
-    pub fn new(config: TuiConfig) -> Self {
-        Self { config }
-    }
-
-    /// Return the TUI configuration.
-    pub fn config(&self) -> &TuiConfig {
-        &self.config
-    }
-}
+pub use app::{ChatEntry, TuiApp};
+pub use error::{Result, TuiError};
+pub use run::run_tui;

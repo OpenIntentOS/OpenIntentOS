@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::compaction::{CompactionConfig, compact_messages, needs_compaction};
 use crate::error::{AgentError, Result};
 use crate::llm::LlmClient;
 use crate::llm::types::{ChatRequest, LlmResponse, Message, ToolCall, ToolDefinition, ToolResult};
@@ -56,6 +57,9 @@ pub struct AgentConfig {
 
     /// Optional max tokens per response.
     pub max_tokens: Option<u32>,
+
+    /// Configuration for automatic context compaction.
+    pub compaction: CompactionConfig,
 }
 
 impl Default for AgentConfig {
@@ -65,6 +69,7 @@ impl Default for AgentConfig {
             model: String::new(),
             temperature: Some(0.0),
             max_tokens: Some(4096),
+            compaction: CompactionConfig::default(),
         }
     }
 }
@@ -191,6 +196,31 @@ pub async fn react_loop(ctx: &mut AgentContext) -> Result<AgentResponse> {
 
     for turn in 0..max_turns {
         tracing::debug!(turn, "ReAct turn start");
+
+        // Check if context compaction is needed before the LLM call.
+        if needs_compaction(&ctx.messages, &ctx.config.compaction) {
+            tracing::info!(
+                task_id = %task_id,
+                message_count = ctx.messages.len(),
+                "context compaction triggered"
+            );
+            match compact_messages(&ctx.messages, &ctx.llm, &ctx.config.compaction).await {
+                Ok(compacted) => {
+                    tracing::info!(
+                        original = ctx.messages.len(),
+                        compacted = compacted.len(),
+                        "context compaction succeeded"
+                    );
+                    ctx.messages = compacted;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "context compaction failed, continuing with uncompacted messages"
+                    );
+                }
+            }
+        }
 
         // Build the chat request for this turn.
         let request = ChatRequest {

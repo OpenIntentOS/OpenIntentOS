@@ -9,3 +9,10 @@ description = "Terminal UI for OpenIntentOS"
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+crossterm = { workspace = true }
+ratatui = { workspace = true }
+openintent-agent = { workspace = true }
+openintent-adapters = { workspace = true }

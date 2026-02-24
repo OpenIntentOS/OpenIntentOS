@@ -13,13 +13,18 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use chrono::{TimeZone, Utc};
 use clap::{Parser, Subcommand};
 use openintent_adapters::Adapter;
 use openintent_agent::runtime::ToolAdapter;
-use openintent_agent::{AgentConfig, AgentContext, LlmClient, LlmClientConfig, react_loop};
+use openintent_agent::{
+    AgentConfig, AgentContext, LlmClient, LlmClientConfig, Message, react_loop,
+};
 use serde_json::Value;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+use openintent_store::SessionStore;
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -42,7 +47,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Start the OpenIntentOS agent REPL.
-    Run,
+    Run {
+        /// Resume or create a named session for conversation persistence.
+        #[arg(long, short)]
+        session: Option<String>,
+    },
 
     /// Start the web server with embedded chat UI.
     Serve {
@@ -60,6 +69,29 @@ enum Commands {
 
     /// Show current system status.
     Status,
+
+    /// Manage conversation sessions.
+    Sessions {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
+}
+
+/// Actions for managing conversation sessions.
+#[derive(Subcommand)]
+enum SessionAction {
+    /// List all saved sessions.
+    List,
+    /// Show messages from a session.
+    Show {
+        /// The session name to display.
+        name: String,
+    },
+    /// Delete a session.
+    Delete {
+        /// The session name to delete.
+        name: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -137,10 +169,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run => cmd_run().await,
+        Commands::Run { session } => cmd_run(session).await,
         Commands::Serve { bind, port } => cmd_serve(bind, port).await,
         Commands::Setup => cmd_setup().await,
         Commands::Status => cmd_status().await,
+        Commands::Sessions { action } => cmd_sessions(action).await,
     }
 }
 
@@ -148,7 +181,7 @@ async fn main() -> Result<()> {
 // Subcommand: run
 // ---------------------------------------------------------------------------
 
-async fn cmd_run() -> Result<()> {
+async fn cmd_run(session_name: Option<String>) -> Result<()> {
     // 1. Initialize tracing.
     init_tracing("info");
 
@@ -161,12 +194,49 @@ async fn cmd_run() -> Result<()> {
     }
 
     let db_path = data_dir.join("openintent.db");
-    let _db = openintent_store::Database::open_and_migrate(db_path.clone())
+    let db = openintent_store::Database::open_and_migrate(db_path.clone())
         .await
         .context("failed to open database")?;
     info!(path = %db_path.display(), "store initialized");
 
-    // 3. Check for the API key.
+    // 3. Set up session persistence.
+    let sessions = SessionStore::new(db.clone());
+
+    let active_session = if let Some(ref name) = session_name {
+        // Try to find an existing session with the given name.
+        let all = sessions
+            .list(1000, 0)
+            .await
+            .context("failed to list sessions")?;
+        let existing = all.into_iter().find(|s| s.name == *name);
+
+        match existing {
+            Some(session) => {
+                let msg_count = session.message_count;
+                println!(
+                    "  Resuming session: {} ({} messages)",
+                    session.name, msg_count
+                );
+                Some(session)
+            }
+            None => {
+                let model_name = std::env::var("OPENINTENT_MODEL")
+                    .unwrap_or_else(|_| "claude-sonnet-4-20250514".to_owned());
+                let session = sessions
+                    .create(name, &model_name)
+                    .await
+                    .context("failed to create session")?;
+                println!("  Created new session: {}", session.name);
+                Some(session)
+            }
+        }
+    } else {
+        None
+    };
+
+    let session_id = active_session.as_ref().map(|s| s.id.clone());
+
+    // 4. Check for the API key.
     let api_key = match std::env::var("ANTHROPIC_API_KEY") {
         Ok(key) if !key.is_empty() => key,
         _ => {
@@ -182,16 +252,16 @@ async fn cmd_run() -> Result<()> {
         }
     };
 
-    // 4. Determine the model to use.
+    // 5. Determine the model to use.
     let model =
         std::env::var("OPENINTENT_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".to_owned());
 
-    // 5. Create the LLM client.
+    // 6. Create the LLM client.
     let llm_config = LlmClientConfig::anthropic(&api_key, &model);
     let llm = Arc::new(LlmClient::new(llm_config).context("failed to create LLM client")?);
     info!(model = %model, "LLM client ready");
 
-    // 6. Initialize and connect adapters.
+    // 7. Initialize and connect adapters.
     let cwd = std::env::current_dir().context("failed to get current directory")?;
 
     let mut fs_adapter = openintent_adapters::FilesystemAdapter::new("filesystem", cwd.clone());
@@ -212,7 +282,7 @@ async fn cmd_run() -> Result<()> {
     let mut cron_adapter = openintent_adapters::CronAdapter::new("cron");
     cron_adapter.connect().await?;
 
-    let memory = Arc::new(openintent_store::SemanticMemory::new(_db.clone()));
+    let memory = Arc::new(openintent_store::SemanticMemory::new(db.clone()));
     let mut memory_adapter =
         openintent_adapters::MemoryToolsAdapter::new("memory", Arc::clone(&memory));
     memory_adapter.connect().await?;
@@ -221,7 +291,7 @@ async fn cmd_run() -> Result<()> {
         "adapters initialized (filesystem, shell, web_search, web_fetch, http_request, cron, memory)"
     );
 
-    // 7. Wrap adapters in the bridge.
+    // 8. Wrap adapters in the bridge.
     let adapters: Vec<Arc<dyn ToolAdapter>> = vec![
         Arc::new(AdapterBridge::new(fs_adapter)),
         Arc::new(AdapterBridge::new(shell_adapter)),
@@ -232,18 +302,45 @@ async fn cmd_run() -> Result<()> {
         Arc::new(AdapterBridge::new(memory_adapter)),
     ];
 
-    // 8. Load system prompt.
+    // 9. Load system prompt.
     let system_prompt = load_system_prompt();
 
-    // 9. Print startup banner.
+    // 10. Load session history if resuming.
+    let mut history_messages: Vec<Message> = Vec::new();
+    if let Some(ref sid) = session_id {
+        let stored = sessions
+            .get_messages(sid, Some(20))
+            .await
+            .context("failed to load session messages")?;
+        for msg in &stored {
+            let message = match msg.role.as_str() {
+                "user" => Message::user(&msg.content),
+                "assistant" => Message::assistant(&msg.content),
+                "system" => Message::system(&msg.content),
+                _ => continue,
+            };
+            history_messages.push(message);
+        }
+        if !history_messages.is_empty() {
+            info!(
+                count = history_messages.len(),
+                "loaded session history messages"
+            );
+        }
+    }
+
+    // 11. Print startup banner.
     println!();
     println!("  OpenIntentOS v{}", env!("CARGO_PKG_VERSION"));
     println!("  Model: {model}");
     println!("  Adapters: filesystem, shell, web_search, web_fetch, http_request, cron, memory");
+    if let Some(ref name) = session_name {
+        println!("  Session: {name}");
+    }
     println!("  Type your request, or 'quit' to exit.");
     println!();
 
-    // 10. Set up Ctrl+C handler.
+    // 12. Set up Ctrl+C handler.
     let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
     {
         let running = running.clone();
@@ -257,7 +354,7 @@ async fn cmd_run() -> Result<()> {
         });
     }
 
-    // 11. REPL loop.
+    // 13. REPL loop.
     let stdin = io::stdin();
     let mut line_buf = String::new();
 
@@ -294,6 +391,15 @@ async fn cmd_run() -> Result<()> {
             break;
         }
 
+        // Persist user message to session.
+        if let Some(ref sid) = session_id
+            && let Err(e) = sessions
+                .append_message(sid, "user", trimmed, None, None)
+                .await
+        {
+            tracing::warn!(error = %e, "failed to persist user message");
+        }
+
         // Show a thinking indicator.
         print!("  Thinking...");
         io::stdout().flush().ok();
@@ -304,11 +410,19 @@ async fn cmd_run() -> Result<()> {
             model: model.clone(),
             temperature: Some(0.0),
             max_tokens: Some(4096),
+            ..AgentConfig::default()
         };
 
         let mut ctx = AgentContext::new(llm.clone(), adapters.clone(), agent_config)
-            .with_system_prompt(&system_prompt)
-            .with_user_message(trimmed);
+            .with_system_prompt(&system_prompt);
+
+        // Inject session history before the current user message.
+        for msg in &history_messages {
+            ctx.messages.push(msg.clone());
+        }
+
+        // Add the current user message.
+        ctx = ctx.with_user_message(trimmed);
 
         // Run the ReAct loop.
         match react_loop(&mut ctx).await {
@@ -332,6 +446,19 @@ async fn cmd_run() -> Result<()> {
                     );
                 }
                 println!();
+
+                // Persist assistant message to session.
+                if let Some(ref sid) = session_id
+                    && let Err(e) = sessions
+                        .append_message(sid, "assistant", &response.text, None, None)
+                        .await
+                {
+                    tracing::warn!(error = %e, "failed to persist assistant message");
+                }
+
+                // Update rolling history for future turns in this REPL session.
+                history_messages.push(Message::user(trimmed));
+                history_messages.push(Message::assistant(&response.text));
             }
             Err(e) => {
                 // Clear the "Thinking..." line.
@@ -350,6 +477,135 @@ async fn cmd_run() -> Result<()> {
     }
 
     info!("shutting down");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand: sessions
+// ---------------------------------------------------------------------------
+
+async fn cmd_sessions(action: SessionAction) -> Result<()> {
+    init_tracing("warn");
+
+    // Open the database.
+    let data_dir = Path::new("data");
+    let db_path = data_dir.join("openintent.db");
+
+    if !db_path.exists() {
+        eprintln!("  Error: Database not found. Run `openintent setup` first.");
+        std::process::exit(1);
+    }
+
+    let db = openintent_store::Database::open_and_migrate(db_path)
+        .await
+        .context("failed to open database")?;
+    let sessions = SessionStore::new(db);
+
+    match action {
+        SessionAction::List => {
+            let all = sessions
+                .list(100, 0)
+                .await
+                .context("failed to list sessions")?;
+
+            if all.is_empty() {
+                println!("  No sessions found.");
+                return Ok(());
+            }
+
+            println!();
+            println!("  {:<30} {:>8} {:>20}", "NAME", "MESSAGES", "LAST UPDATED");
+            println!("  {}", "-".repeat(62));
+
+            for s in &all {
+                let updated = Utc
+                    .timestamp_opt(s.updated_at, 0)
+                    .single()
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_else(|| "unknown".to_owned());
+
+                println!("  {:<30} {:>8} {:>20}", s.name, s.message_count, updated);
+            }
+            println!();
+        }
+
+        SessionAction::Show { name } => {
+            let all = sessions
+                .list(1000, 0)
+                .await
+                .context("failed to list sessions")?;
+            let session = all.into_iter().find(|s| s.name == name);
+
+            let session = match session {
+                Some(s) => s,
+                None => {
+                    eprintln!("  Error: Session '{}' not found.", name);
+                    std::process::exit(1);
+                }
+            };
+
+            let messages = sessions
+                .get_messages(&session.id, None)
+                .await
+                .context("failed to load session messages")?;
+
+            if messages.is_empty() {
+                println!("  Session '{}' has no messages.", name);
+                return Ok(());
+            }
+
+            println!();
+            println!("  Session: {} ({} messages)", session.name, messages.len());
+            println!("  {}", "-".repeat(50));
+
+            for msg in &messages {
+                let ts = Utc
+                    .timestamp_opt(msg.created_at, 0)
+                    .single()
+                    .map(|dt| dt.format("%H:%M:%S").to_string())
+                    .unwrap_or_else(|| "??:??:??".to_owned());
+
+                let role_label = match msg.role.as_str() {
+                    "user" => "You",
+                    "assistant" => "Assistant",
+                    "system" => "System",
+                    other => other,
+                };
+
+                println!("  [{}] {}:", ts, role_label);
+
+                // Indent message content for readability.
+                for line in msg.content.lines() {
+                    println!("    {line}");
+                }
+                println!();
+            }
+        }
+
+        SessionAction::Delete { name } => {
+            let all = sessions
+                .list(1000, 0)
+                .await
+                .context("failed to list sessions")?;
+            let session = all.into_iter().find(|s| s.name == name);
+
+            let session = match session {
+                Some(s) => s,
+                None => {
+                    eprintln!("  Error: Session '{}' not found.", name);
+                    std::process::exit(1);
+                }
+            };
+
+            sessions
+                .delete(&session.id)
+                .await
+                .context("failed to delete session")?;
+
+            println!("  Deleted session: {}", name);
+        }
+    }
+
     Ok(())
 }
 

@@ -16,7 +16,10 @@ use serde_json::Value;
 
 use openintent_adapters::Adapter;
 use openintent_agent::runtime::ToolAdapter;
-use openintent_agent::{AgentConfig, ChatRequest, LlmClient, LlmResponse, ToolDefinition};
+use openintent_agent::{
+    AgentConfig, ChatRequest, LlmClient, LlmResponse, ToolDefinition, compact_messages,
+    needs_compaction,
+};
 use openintent_store::SessionStore;
 
 use crate::state::AppState;
@@ -247,9 +250,7 @@ async fn handle_chat_message(
         for msg in &history {
             match msg.role.as_str() {
                 "user" => messages.push(openintent_agent::Message::user(&msg.content)),
-                "assistant" => {
-                    messages.push(openintent_agent::Message::assistant(&msg.content))
-                }
+                "assistant" => messages.push(openintent_agent::Message::assistant(&msg.content)),
                 _ => {}
             }
         }
@@ -262,8 +263,33 @@ async fn handle_chat_message(
 
     let config = AgentConfig::default();
     let max_turns = config.max_turns;
+    let compaction_config = config.compaction.clone();
 
     for _turn in 0..max_turns {
+        // Check if context compaction is needed before the LLM call.
+        if needs_compaction(&messages, &compaction_config) {
+            tracing::info!(
+                message_count = messages.len(),
+                "WebSocket handler: context compaction triggered"
+            );
+            match compact_messages(&messages, llm, &compaction_config).await {
+                Ok(compacted) => {
+                    tracing::info!(
+                        original = messages.len(),
+                        compacted = compacted.len(),
+                        "WebSocket handler: context compaction succeeded"
+                    );
+                    messages = compacted;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "WebSocket handler: context compaction failed, continuing with uncompacted messages"
+                    );
+                }
+            }
+        }
+
         let request = ChatRequest {
             model: config.model.clone(),
             messages: messages.clone(),

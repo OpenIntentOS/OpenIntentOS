@@ -18,3 +18,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 openintent-kernel = { workspace = true }
 openintent-store = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+uuid = { workspace = true }

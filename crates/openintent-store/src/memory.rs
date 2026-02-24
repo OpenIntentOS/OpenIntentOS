@@ -746,7 +746,7 @@ mod tests {
 
     #[test]
     fn embedding_roundtrip() {
-        let original = vec![1.0_f32, -0.5, 0.0, 3.14, f32::MAX, f32::MIN];
+        let original = vec![1.0_f32, -0.5, 0.0, std::f32::consts::PI, f32::MAX, f32::MIN];
         let blob = embedding_to_blob(original.clone());
         let restored = blob_to_embedding(blob);
         assert_eq!(original, restored);
