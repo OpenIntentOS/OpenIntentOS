@@ -1,33 +1,33 @@
-# Build
+# Rust
 /target/
 **/*.rs.bk
+Cargo.lock
 
-# Runtime data
-/data/
-
-# Installed skills (user-specific)
-/skills/
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # OS
 .DS_Store
 Thumbs.db
 
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Environment
-.env
-.env.*
-!.env.example
-
-# Local models (use git-lfs or download separately)
-/models/*.onnx
-
 # Logs
 *.log
 
-# Claude Code local settings (personal, not shared)
-.claude/settings.local.json
+# Environment
+.env
+.env.local
+
+# Claude
+.claude/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+*.tmp
+*.temp

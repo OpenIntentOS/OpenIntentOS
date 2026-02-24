@@ -14,13 +14,17 @@
 //! All public types are `Send + Sync` and designed for use within a
 //! multi-threaded tokio runtime.
 
+pub mod adapter;
 pub mod config;
 pub mod error;
+pub mod loader;
 pub mod plugin;
 pub mod runtime;
 
 // Re-export the most commonly used types at the crate root.
+pub use adapter::PluginAdapter;
 pub use config::SandboxConfig;
 pub use error::{Result, SandboxError};
+pub use loader::PluginLoader;
 pub use plugin::{PluginInfo, PluginRegistry, PluginTool};
 pub use runtime::SandboxRuntime;

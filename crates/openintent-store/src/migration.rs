@@ -127,6 +127,49 @@ static MIGRATIONS: &[Migration] = &[
             CREATE INDEX idx_sessions_user ON sessions(user_id);
         "#,
     },
+    Migration {
+        version: 4,
+        description: "dev tasks — self-development task tracking and message history",
+        sql: r#"
+            CREATE TABLE dev_tasks (
+                id            TEXT PRIMARY KEY,
+                source        TEXT NOT NULL CHECK(source IN ('telegram','cli','evolution','api')),
+                chat_id       INTEGER,
+                intent        TEXT NOT NULL,
+                status        TEXT NOT NULL CHECK(status IN ('pending','branching','coding','testing','pr_created','awaiting_review','merging','completed','failed','cancelled')),
+                branch        TEXT,
+                pr_url        TEXT,
+                current_step  TEXT,
+                progress_log  TEXT NOT NULL DEFAULT '[]',
+                error         TEXT,
+                retry_count   INTEGER DEFAULT 0,
+                max_retries   INTEGER DEFAULT 3,
+                created_at    INTEGER NOT NULL,
+                updated_at    INTEGER NOT NULL
+            );
+            CREATE INDEX idx_dev_tasks_status ON dev_tasks(status);
+            CREATE INDEX idx_dev_tasks_chat ON dev_tasks(chat_id);
+
+            CREATE TABLE dev_task_messages (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id     TEXT NOT NULL REFERENCES dev_tasks(id) ON DELETE CASCADE,
+                role        TEXT NOT NULL CHECK(role IN ('user','system','agent','progress')),
+                content     TEXT NOT NULL,
+                created_at  INTEGER NOT NULL
+            );
+            CREATE INDEX idx_dev_task_messages_task ON dev_task_messages(task_id);
+        "#,
+    },
+    Migration {
+        version: 5,
+        description: "bot_state — key-value store for persistent bot state (offsets, etc.)",
+        sql: r#"
+            CREATE TABLE bot_state (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+        "#,
+    },
 ];
 
 // ── public API ───────────────────────────────────────────────────────
@@ -277,7 +320,7 @@ mod tests {
     }
 
     /// The expected latest migration version (update when adding migrations).
-    const LATEST_VERSION: u32 = 3;
+    const LATEST_VERSION: u32 = 5;
 
     #[test]
     fn run_all_on_fresh_db() {
@@ -326,6 +369,9 @@ mod tests {
         assert!(tables.contains(&"session_messages".to_string()));
         // v3 tables
         assert!(tables.contains(&"users".to_string()));
+        // v4 tables
+        assert!(tables.contains(&"dev_tasks".to_string()));
+        assert!(tables.contains(&"dev_task_messages".to_string()));
     }
 
     #[test]
@@ -345,5 +391,80 @@ mod tests {
              VALUES ('test', 'test', 'model', 0, 0, 0, 0, NULL)",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn v4_dev_tasks_table_exists() {
+        let conn = setup_conn();
+        run_all(&conn).unwrap();
+
+        // Verify the dev_tasks table can be queried with expected columns.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dev_tasks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+
+        // Verify the dev_task_messages table exists.
+        let msg_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dev_task_messages", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(msg_count, 0);
+
+        // Verify we can insert a dev_task with all columns.
+        conn.execute(
+            "INSERT INTO dev_tasks (id, source, chat_id, intent, status, branch, pr_url, current_step, progress_log, error, retry_count, max_retries, created_at, updated_at) \
+             VALUES ('test-id', 'telegram', 12345, 'fix a bug', 'pending', NULL, NULL, NULL, '[]', NULL, 0, 3, 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        // Verify the CHECK constraint on source works.
+        let bad_source = conn.execute(
+            "INSERT INTO dev_tasks (id, source, intent, status, created_at, updated_at) \
+             VALUES ('bad', 'invalid_source', 'intent', 'pending', 0, 0)",
+            [],
+        );
+        assert!(bad_source.is_err());
+
+        // Verify the CHECK constraint on status works.
+        let bad_status = conn.execute(
+            "INSERT INTO dev_tasks (id, source, intent, status, created_at, updated_at) \
+             VALUES ('bad2', 'cli', 'intent', 'invalid_status', 0, 0)",
+            [],
+        );
+        assert!(bad_status.is_err());
+
+        // Verify dev_task_messages with foreign key to dev_tasks.
+        conn.execute(
+            "INSERT INTO dev_task_messages (task_id, role, content, created_at) \
+             VALUES ('test-id', 'user', 'hello', 0)",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn v5_bot_state_table_exists() {
+        let conn = setup_conn();
+        run_all(&conn).unwrap();
+
+        // Verify bot_state table exists and supports UPSERT.
+        conn.execute(
+            "INSERT INTO bot_state (key, value) VALUES ('test_key', 'test_value') \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [],
+        )
+        .unwrap();
+
+        let value: String = conn
+            .query_row(
+                "SELECT value FROM bot_state WHERE key = 'test_key'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(value, "test_value");
     }
 }

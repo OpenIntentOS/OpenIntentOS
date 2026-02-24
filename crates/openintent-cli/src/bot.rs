@@ -1,8 +1,8 @@
-//! Subcommand: `openintent bot` — Telegram bot gateway.
+//! Subcommand: `openintent bot` -- Telegram bot gateway.
 //!
 //! Polls Telegram for incoming messages, runs each through the ReAct loop,
 //! and sends responses back. Supports per-chat conversation history, access
-//! control, session persistence, and self-evolution.
+//! control, session persistence, self-evolution, and self-development tasks.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -14,9 +14,11 @@ use tracing::info;
 use openintent_agent::{
     AgentConfig, AgentContext, EvolutionEngine, LlmClient, Message, react_loop,
 };
-use openintent_store::SessionStore;
+use openintent_store::{BotStateStore, DevTaskStore, SessionStore};
 
 use crate::adapters::init_adapters;
+use crate::dev_commands;
+use crate::dev_worker::{DevWorker, ProgressCallback};
 use crate::helpers::{env_non_empty, init_tracing, load_system_prompt, resolve_llm_config};
 
 /// Run the Telegram bot gateway.
@@ -58,7 +60,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
         anyhow::bail!("Telegram getMe failed: {me}");
     }
 
-    // Database, LLM, adapters — shared initialization.
+    // Database, LLM, adapters -- shared initialization.
     let data_dir = Path::new("data");
     if !data_dir.exists() {
         std::fs::create_dir_all(data_dir).context("failed to create data directory")?;
@@ -76,9 +78,13 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
 
     let sessions = SessionStore::new(db.clone());
 
+    // Initialize the dev task store and bot state store.
+    let dev_task_store = DevTaskStore::new(db.clone());
+    let bot_state = BotStateStore::new(db.clone());
+
     // Initialize adapters.
     let cwd = std::env::current_dir().context("failed to get current directory")?;
-    let initialized = init_adapters(cwd, db, true).await?;
+    let initialized = init_adapters(cwd.clone(), db, true).await?;
     let adapters = initialized.tool_adapters;
     let skill_prompt_ext = initialized.skill_prompt_ext;
 
@@ -90,6 +96,89 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
         "disabled (set GITHUB_TOKEN to enable)"
     };
 
+    // Spawn the DevWorker as a background task.
+    let dev_worker_store = dev_task_store.clone();
+    let dev_worker_llm = llm.clone();
+    let dev_worker_adapters = adapters.clone();
+    let dev_worker_model = model.clone();
+    let dev_worker_repo_path = cwd;
+
+    let progress_cb: ProgressCallback = {
+        let http = http.clone();
+        let telegram_api = telegram_api.clone();
+        Arc::new(move |chat_id: i64, message: &str| {
+            let http = http.clone();
+            let api = telegram_api.clone();
+            let msg = message.to_string();
+            Box::pin(async move {
+                let _ = http
+                    .post(format!("{api}/sendMessage"))
+                    .json(&serde_json::json!({
+                        "chat_id": chat_id,
+                        "text": msg,
+                    }))
+                    .send()
+                    .await;
+            })
+        })
+    };
+
+    tokio::spawn(async move {
+        let worker = DevWorker::new(
+            dev_worker_store,
+            dev_worker_llm,
+            dev_worker_adapters,
+            dev_worker_model,
+            dev_worker_repo_path,
+        )
+        .with_progress_callback(progress_cb);
+
+        worker.run().await;
+    });
+
+    info!("DevWorker spawned as background task");
+
+    // Notify users about recovered tasks.
+    if let Ok(recoverable) = dev_task_store.list_recoverable().await {
+        for task in &recoverable {
+            if let Some(cid) = task.chat_id {
+                let short_id = &task.id[..8.min(task.id.len())];
+                let _ = http
+                    .post(format!("{telegram_api}/sendMessage"))
+                    .json(&serde_json::json!({
+                        "chat_id": cid,
+                        "text": format!(
+                            "Bot restarted. Resuming your task [{short_id}]...\n\
+                             Intent: {}\nStatus: {}",
+                            task.intent, task.status
+                        ),
+                    }))
+                    .send()
+                    .await;
+            }
+        }
+        // Also check pending tasks that haven't started yet.
+        if let Ok(pending) = dev_task_store.list_by_status("pending", 50, 0).await {
+            for task in &pending {
+                if let Some(cid) = task.chat_id {
+                    let short_id = &task.id[..8.min(task.id.len())];
+                    let _ = http
+                        .post(format!("{telegram_api}/sendMessage"))
+                        .json(&serde_json::json!({
+                            "chat_id": cid,
+                            "text": format!(
+                                "Bot restarted. Your pending task [{short_id}] will be processed shortly.\n\
+                                 Intent: {}",
+                                task.intent
+                            ),
+                        }))
+                        .send()
+                        .await;
+                }
+            }
+        }
+    }
+
     // Print banner.
     println!();
     println!(
@@ -100,6 +189,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     println!("  Provider: {provider_label}");
     println!("  Model: {model}");
     println!("  Evolution: {evolution_status}");
+    println!("  DevWorker: enabled");
     if let Some(ref ids) = allowed_user_ids {
         println!("  Allowed users: {:?}", ids);
     } else {
@@ -114,8 +204,15 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     // Per-chat conversation history (in-memory, keyed by chat_id).
     let mut chat_histories: HashMap<i64, Vec<Message>> = HashMap::new();
 
-    // Polling loop.
-    let mut offset: i64 = 0;
+    // Polling loop — restore offset from persistent state.
+    let mut offset: i64 = bot_state
+        .get_i64("telegram_offset")
+        .await
+        .unwrap_or(None)
+        .unwrap_or(0);
+    if offset > 0 {
+        info!(offset, "restored Telegram polling offset from database");
+    }
 
     loop {
         let updates_resp: std::result::Result<reqwest::Response, reqwest::Error> = http
@@ -156,6 +253,9 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
             offset = update_id + 1;
+
+            // Persist offset so we don't reprocess messages after a restart.
+            let _ = bot_state.set_i64("telegram_offset", offset).await;
 
             let message = match update.get("message") {
                 Some(m) => m,
@@ -207,7 +307,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                     .post(format!("{telegram_api}/sendMessage"))
                     .json(&serde_json::json!({
                         "chat_id": chat_id,
-                        "text": "Hello! I'm OpenIntentOS. Send me any message and I'll help you. I have access to filesystem, shell, web search, email, GitHub, and more.",
+                        "text": "Hello! I'm OpenIntentOS. Send me any message and I'll help you. I have access to filesystem, shell, web search, email, GitHub, and more.\n\nDev commands:\n/dev <instruction> - Create a self-development task\n/tasks - List your dev tasks\n/taskstatus <id> - Check task status\n/merge <id> - Merge a completed task\n/cancel <id> - Cancel a task",
                     }))
                     .send()
                     .await;
@@ -227,6 +327,93 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                     .await;
                 continue;
             }
+
+            // Handle /dev command.
+            if text.starts_with("/dev ") {
+                let instruction = text.trim_start_matches("/dev ").trim();
+                let reply =
+                    dev_commands::handle_dev_command(&dev_task_store, chat_id, instruction).await;
+                let _ = http
+                    .post(format!("{telegram_api}/sendMessage"))
+                    .json(&serde_json::json!({
+                        "chat_id": chat_id,
+                        "text": reply,
+                    }))
+                    .send()
+                    .await;
+                continue;
+            }
+
+            // Handle /tasks command.
+            if text == "/tasks" {
+                let reply = dev_commands::handle_tasks_command(&dev_task_store, chat_id).await;
+                let chunks = split_telegram_message(&reply, 4000);
+                for chunk in &chunks {
+                    let _ = http
+                        .post(format!("{telegram_api}/sendMessage"))
+                        .json(&serde_json::json!({
+                            "chat_id": chat_id,
+                            "text": chunk,
+                        }))
+                        .send()
+                        .await;
+                }
+                continue;
+            }
+
+            // Handle /merge <task_id> command.
+            if text.starts_with("/merge ") {
+                let task_id = text.trim_start_matches("/merge ").trim();
+                let reply =
+                    dev_commands::handle_merge_command(&dev_task_store, task_id, chat_id).await;
+                let _ = http
+                    .post(format!("{telegram_api}/sendMessage"))
+                    .json(&serde_json::json!({
+                        "chat_id": chat_id,
+                        "text": reply,
+                    }))
+                    .send()
+                    .await;
+                continue;
+            }
+
+            // Handle /cancel <task_id> command.
+            if text.starts_with("/cancel ") {
+                let task_id = text.trim_start_matches("/cancel ").trim();
+                let reply =
+                    dev_commands::handle_cancel_command(&dev_task_store, task_id, chat_id).await;
+                let _ = http
+                    .post(format!("{telegram_api}/sendMessage"))
+                    .json(&serde_json::json!({
+                        "chat_id": chat_id,
+                        "text": reply,
+                    }))
+                    .send()
+                    .await;
+                continue;
+            }
+
+            // Handle /taskstatus <task_id> command.
+            if text.starts_with("/taskstatus ") {
+                let task_id = text.trim_start_matches("/taskstatus ").trim();
+                let reply =
+                    dev_commands::handle_task_status_command(&dev_task_store, task_id).await;
+                let chunks = split_telegram_message(&reply, 4000);
+                for chunk in &chunks {
+                    let _ = http
+                        .post(format!("{telegram_api}/sendMessage"))
+                        .json(&serde_json::json!({
+                            "chat_id": chat_id,
+                            "text": chunk,
+                        }))
+                        .send()
+                        .await;
+                }
+                continue;
+            }
+
+            // Check for mid-task message injection (non-blocking).
+            dev_commands::try_inject_mid_task_message(&dev_task_store, chat_id, text).await;
 
             // Send "typing" indicator.
             let _ = http
@@ -354,6 +541,8 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
 }
 
 /// Split a message into chunks that fit within Telegram's character limit.
+///
+/// Respects UTF-8 char boundaries to avoid panics on multi-byte characters.
 fn split_telegram_message(text: &str, max_len: usize) -> Vec<String> {
     if text.len() <= max_len {
         return vec![text.to_owned()];
@@ -368,9 +557,15 @@ fn split_telegram_message(text: &str, max_len: usize) -> Vec<String> {
             break;
         }
 
-        let split_at = remaining[..max_len]
+        // Find the last char boundary at or before max_len.
+        let mut boundary = max_len;
+        while boundary > 0 && !remaining.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+
+        let split_at = remaining[..boundary]
             .rfind('\n')
-            .unwrap_or_else(|| remaining[..max_len].rfind(' ').unwrap_or(max_len));
+            .unwrap_or_else(|| remaining[..boundary].rfind(' ').unwrap_or(boundary));
 
         chunks.push(remaining[..split_at].to_owned());
         remaining = remaining[split_at..].trim_start();
