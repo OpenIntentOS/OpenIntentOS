@@ -15,4 +15,5 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 openintent-agent = { workspace = true }
+cron = { workspace = true }
 openintent-kernel = { workspace = true }

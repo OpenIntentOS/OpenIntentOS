@@ -68,6 +68,7 @@ uuid = { version = "1", features = ["v7", "serde"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+cron = "0.15"
 
 # Concurrent data structures
 crossbeam = "0.8"

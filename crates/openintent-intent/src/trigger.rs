@@ -91,7 +91,7 @@ impl TriggerManager {
     pub fn register(&mut self, workflow_id: Uuid, trigger: TriggerType) -> Result<Uuid> {
         // Validate cron expressions (basic check for now).
         if let TriggerType::Cron { ref expression } = trigger {
-            self.validate_cron(expression)?;
+            Self::validate_cron(expression)?;
         }
 
         let trigger_id = Uuid::now_v7();
@@ -193,19 +193,27 @@ impl TriggerManager {
 
     // -- Internals -----------------------------------------------------------
 
-    /// Basic validation for cron expressions.
+    /// Validate a cron expression using the `cron` crate.
     ///
-    /// TODO: Integrate the `cron` crate for full cron expression parsing and
-    /// schedule computation.  For now, we just check that the expression has
-    /// the expected number of fields (5).
-    fn validate_cron(&self, expression: &str) -> Result<()> {
-        let fields: Vec<&str> = expression.split_whitespace().collect();
-        if fields.len() != 5 {
-            return Err(IntentError::InvalidCronExpression {
+    /// Accepts standard 5-field expressions (which are normalized by
+    /// prepending a `0` seconds field) as well as 6- and 7-field formats
+    /// supported by the `cron` crate directly.
+    fn validate_cron(expression: &str) -> Result<()> {
+        use std::str::FromStr;
+
+        let schedule_str = if expression.split_whitespace().count() == 5 {
+            format!("0 {expression}")
+        } else {
+            expression.to_string()
+        };
+
+        cron::Schedule::from_str(&schedule_str).map_err(|e| {
+            IntentError::InvalidCronExpression {
                 expression: expression.to_string(),
-                reason: format!("expected 5 fields, got {}", fields.len()),
-            });
-        }
+                reason: format!("invalid cron expression: {e}"),
+            }
+        })?;
+
         Ok(())
     }
 }

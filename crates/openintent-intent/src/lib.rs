@@ -8,14 +8,18 @@
 //!   execution via [`workflow::WorkflowEngine`].
 //! - **Trigger system**: Manual, cron, and event-based workflow triggers
 //!   via [`trigger::TriggerManager`].
+//! - **Cron scheduler**: Background scheduling daemon that fires events
+//!   on cron schedules via [`scheduler::CronScheduler`].
 
 pub mod error;
 pub mod parser;
+pub mod scheduler;
 pub mod trigger;
 pub mod workflow;
 
 pub use error::{IntentError, Result};
 pub use parser::{IntentParser, ParseSource, ParsedIntent};
+pub use scheduler::{CronEvent, CronScheduler, ScheduledJob};
 pub use trigger::{TriggerManager, TriggerType};
 pub use workflow::{
     StepResult, Workflow, WorkflowEngine, WorkflowResult, WorkflowStatus, WorkflowStep,

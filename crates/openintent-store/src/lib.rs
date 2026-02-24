@@ -40,6 +40,7 @@ pub mod error;
 pub mod memory;
 pub mod migration;
 pub mod session;
+pub mod workflow_store;
 
 // ── re-exports ───────────────────────────────────────────────────────
 
@@ -51,3 +52,4 @@ pub use memory::{
     WorkingMemory,
 };
 pub use session::{Session, SessionMessage, SessionStore};
+pub use workflow_store::{StoredWorkflow, WorkflowStore};
