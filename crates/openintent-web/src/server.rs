@@ -1,14 +1,17 @@
 //! Main web server setup and startup.
 //!
 //! [`WebServer`] composes the Axum router, registers all routes, and starts
-//! the HTTP listener.
+//! the HTTP listener.  It also spawns a background file watcher that
+//! hot-reloads `config/IDENTITY.md` whenever the file changes on disk.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::Router;
 use axum::http::{HeaderValue, Method};
 use axum::response::Html;
 use axum::routing::{delete, get, post};
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 
 use openintent_adapters::Adapter;
@@ -44,12 +47,14 @@ impl WebServer {
         db: Database,
     ) -> Self {
         let sessions = Arc::new(SessionStore::new(db.clone()));
+        let system_prompt = load_system_prompt();
         let state = Arc::new(AppState {
             llm,
             adapters,
             config: config.clone(),
             db,
             sessions,
+            system_prompt: Arc::new(RwLock::new(system_prompt)),
         });
         Self { config, state }
     }
@@ -92,6 +97,9 @@ impl WebServer {
 
     /// Start the server and block until it is shut down.
     ///
+    /// A background task watches `config/IDENTITY.md` for changes and
+    /// hot-reloads the system prompt into [`AppState::system_prompt`].
+    ///
     /// # Errors
     ///
     /// Returns an error if the TCP listener cannot be bound.
@@ -99,11 +107,118 @@ impl WebServer {
         let addr = self.addr();
         let router = self.router();
 
+        // Spawn the config file watcher.
+        let prompt_handle = Arc::clone(&self.state.system_prompt);
+        tokio::task::spawn_blocking(move || watch_config_files(prompt_handle));
+
         tracing::info!(addr = %addr, "starting web server");
 
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         axum::serve(listener, router).await?;
 
         Ok(())
+    }
+}
+
+// ── config loading ──────────────────────────────────────────────────
+
+/// Load the system prompt from `config/IDENTITY.md`, falling back to a
+/// sensible default if the file does not exist.
+fn load_system_prompt() -> String {
+    let identity = Path::new("config/IDENTITY.md");
+    if identity.exists() {
+        std::fs::read_to_string(identity).unwrap_or_else(|_| default_system_prompt())
+    } else {
+        default_system_prompt()
+    }
+}
+
+fn default_system_prompt() -> String {
+    "You are OpenIntentOS, an AI-powered operating system assistant. \
+     Your role is to understand user intents and execute tasks using available tools. \
+     Be concise, accurate, and proactive. Always confirm before destructive actions."
+        .to_owned()
+}
+
+// ── file watcher (runs on a blocking thread) ────────────────────────
+
+/// Watch `config/` for file changes and hot-reload the system prompt.
+///
+/// This function blocks forever and is intended to be called from
+/// `tokio::task::spawn_blocking`.
+fn watch_config_files(system_prompt: Arc<RwLock<String>>) {
+    use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+    use std::sync::mpsc;
+
+    let config_dir = Path::new("config");
+    if !config_dir.exists() {
+        tracing::debug!("config/ directory does not exist, skipping file watcher");
+        return;
+    }
+
+    let (tx, rx) = mpsc::channel();
+
+    let mut watcher = match RecommendedWatcher::new(tx, Config::default()) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to create file watcher, hot-reload disabled");
+            return;
+        }
+    };
+
+    if let Err(e) = watcher.watch(config_dir, RecursiveMode::NonRecursive) {
+        tracing::warn!(error = %e, "failed to watch config directory");
+        return;
+    }
+
+    tracing::info!("config hot-reload watcher started on config/");
+
+    for event in rx {
+        let event = match event {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(error = %e, "file watcher error");
+                continue;
+            }
+        };
+
+        // Only react to write / create events.
+        match event.kind {
+            EventKind::Modify(_) | EventKind::Create(_) => {}
+            _ => continue,
+        }
+
+        for path in &event.paths {
+            let Some(filename) = path.file_name() else {
+                continue;
+            };
+
+            if filename == "IDENTITY.md" || filename == "SOUL.md" {
+                match std::fs::read_to_string(path) {
+                    Ok(content) => {
+                        // Use blocking write because we are on a blocking thread.
+                        let prompt = system_prompt.blocking_write();
+                        let old_len = prompt.len();
+                        drop(prompt);
+
+                        *system_prompt.blocking_write() = content.clone();
+
+                        tracing::info!(
+                            file = %filename.to_string_lossy(),
+                            old_len,
+                            new_len = content.len(),
+                            "hot-reloaded system prompt"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            file = %filename.to_string_lossy(),
+                            error = %e,
+                            "failed to read updated config file"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

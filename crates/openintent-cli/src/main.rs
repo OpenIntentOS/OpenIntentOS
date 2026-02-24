@@ -369,8 +369,7 @@ async fn cmd_run(session_name: Option<String>) -> Result<()> {
         Arc::new(AdapterBridge::new(calendar_adapter)),
     ];
 
-    // 9. Load system prompt.
-    let system_prompt = load_system_prompt();
+    // 9. System prompt is loaded fresh each turn for hot-reload support.
 
     // 10. Load session history if resuming.
     let mut history_messages: Vec<Message> = Vec::new();
@@ -481,6 +480,8 @@ async fn cmd_run(session_name: Option<String>) -> Result<()> {
             ..AgentConfig::default()
         };
 
+        // Re-read system prompt each turn for hot-reload support.
+        let system_prompt = load_system_prompt();
         let mut ctx = AgentContext::new(llm.clone(), adapters.clone(), agent_config)
             .with_system_prompt(&system_prompt);
 

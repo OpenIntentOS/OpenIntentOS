@@ -17,10 +17,8 @@ use serde_json::Value;
 use openintent_adapters::Adapter;
 use openintent_agent::runtime::ToolAdapter;
 use openintent_agent::{
-    AgentConfig, ChatRequest, LlmClient, LlmResponse, ToolDefinition, compact_messages,
-    needs_compaction,
+    AgentConfig, ChatRequest, LlmResponse, ToolDefinition, compact_messages, needs_compaction,
 };
-use openintent_store::SessionStore;
 
 use crate::state::AppState;
 
@@ -190,15 +188,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 
         let session_id = inbound.session_id.clone();
 
-        if let Err(e) = handle_chat_message(
-            &mut socket,
-            &state.llm,
-            &state.adapters,
-            &state.sessions,
-            session_id.as_deref(),
-            &inbound.content,
-        )
-        .await
+        if let Err(e) =
+            handle_chat_message(&mut socket, &state, session_id.as_deref(), &inbound.content).await
         {
             let _ = send(&mut socket, &OutboundMessage::error(e.to_string())).await;
         }
@@ -213,12 +204,14 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 /// back over the WebSocket and persisting messages to the session store.
 async fn handle_chat_message(
     socket: &mut WebSocket,
-    llm: &Arc<LlmClient>,
-    adapters: &[Arc<dyn Adapter>],
-    sessions: &Arc<SessionStore>,
+    state: &Arc<AppState>,
     session_id: Option<&str>,
     user_message: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let llm = &state.llm;
+    let adapters = &state.adapters;
+    let sessions = &state.sessions;
+
     // Persist user message to session if session_id is provided.
     if let Some(sid) = session_id {
         let _ = sessions
@@ -237,11 +230,9 @@ async fn handle_chat_message(
         .flat_map(|a| a.tool_definitions())
         .collect();
 
-    // Load existing session messages for context.
-    let mut messages = vec![openintent_agent::Message::system(
-        "You are OpenIntentOS, an AI assistant with access to system tools. \
-         Be concise and helpful.",
-    )];
+    // Load system prompt (hot-reloadable).
+    let system_prompt = state.system_prompt.read().await.clone();
+    let mut messages = vec![openintent_agent::Message::system(&system_prompt)];
 
     // If we have a session, load recent history for context.
     if let Some(sid) = session_id

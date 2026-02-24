@@ -3,12 +3,17 @@
 //! [`AppState`] is wrapped in an `Arc` and shared across all request handlers
 //! and WebSocket connections.  It holds references to the LLM client, adapters,
 //! session store, and database.
+//!
+//! The `system_prompt` field supports hot-reload: when `config/IDENTITY.md`
+//! changes on disk the file watcher updates this value and all subsequent
+//! requests automatically pick up the new prompt.
 
 use std::sync::Arc;
 
 use openintent_adapters::Adapter;
 use openintent_agent::LlmClient;
 use openintent_store::{Database, SessionStore};
+use tokio::sync::RwLock;
 
 use crate::WebConfig;
 
@@ -29,4 +34,8 @@ pub struct AppState {
 
     /// Session store for conversation persistence.
     pub sessions: Arc<SessionStore>,
+
+    /// System prompt loaded from `config/IDENTITY.md`.
+    /// Wrapped in `RwLock` for hot-reload support.
+    pub system_prompt: Arc<RwLock<String>>,
 }

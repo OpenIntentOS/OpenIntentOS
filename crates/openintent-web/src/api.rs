@@ -107,12 +107,10 @@ pub async fn chat(
         .map(|a| Arc::new(AdapterBridge(Arc::clone(a))) as Arc<dyn openintent_agent::ToolAdapter>)
         .collect();
 
+    let system_prompt = state.system_prompt.read().await.clone();
     let config = AgentConfig::default();
     let mut ctx = AgentContext::new(Arc::clone(&state.llm), tool_adapters, config)
-        .with_system_prompt(
-            "You are OpenIntentOS, an AI assistant with access to system tools. \
-             Be concise and helpful.",
-        )
+        .with_system_prompt(&system_prompt)
         .with_user_message(&body.message);
 
     match react_loop(&mut ctx).await {
