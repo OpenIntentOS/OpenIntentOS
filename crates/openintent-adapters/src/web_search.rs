@@ -1,8 +1,10 @@
-//! Web search adapter -- search the web via DuckDuckGo HTML interface.
+//! Web search adapter -- multi-engine web search with automatic fallback.
 //!
-//! This adapter performs web searches using the DuckDuckGo HTML endpoint,
-//! which requires no API key.  Results are parsed from the HTML response
-//! using simple string matching to extract titles, URLs, and snippets.
+//! Search priority:
+//!   1. Brave Search API (if `BRAVE_API_KEY` is set) -- best quality
+//!   2. DuckDuckGo HTML scraping (no key needed) -- fallback
+//!
+//! Both backends return unified JSON results with title, URL, and snippet.
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -11,39 +13,59 @@ use tracing::{debug, info, warn};
 use crate::error::{AdapterError, Result};
 use crate::traits::{Adapter, AdapterType, AuthRequirement, HealthStatus, ToolDefinition};
 
+// ═══════════════════════════════════════════════════════════════════════
+//  Constants
+// ═══════════════════════════════════════════════════════════════════════
+
 /// Default maximum number of search results to return.
-const DEFAULT_MAX_RESULTS: usize = 5;
+const DEFAULT_MAX_RESULTS: usize = 10;
 
 /// DuckDuckGo HTML search endpoint.
 const DUCKDUCKGO_HTML_URL: &str = "https://html.duckduckgo.com/html/";
 
-/// Web search service adapter.
+/// Brave Search API endpoint.
+const BRAVE_SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/search";
+
+/// Realistic browser User-Agent to avoid being blocked.
+const BROWSER_USER_AGENT: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Adapter
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Web search service adapter with multi-engine support.
 pub struct WebSearchAdapter {
-    /// Unique identifier for this adapter instance.
     id: String,
-    /// Whether the adapter has been connected.
     connected: bool,
-    /// HTTP client for making requests.
     client: reqwest::Client,
+    /// Brave Search API key (if available).
+    brave_api_key: Option<String>,
 }
 
 impl WebSearchAdapter {
     /// Create a new web search adapter.
     pub fn new(id: impl Into<String>) -> Self {
         let client = reqwest::Client::builder()
-            .user_agent("OpenIntentOS/0.1")
+            .user_agent(BROWSER_USER_AGENT)
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_default();
+
+        let brave_api_key = std::env::var("BRAVE_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty());
 
         Self {
             id: id.into(),
             connected: false,
             client,
+            brave_api_key,
         }
     }
 
-    /// Execute a web search and return structured results.
+    /// Execute a web search, trying Brave first then falling back to DDG.
     async fn tool_web_search(&self, params: Value) -> Result<Value> {
         let query = params
             .get("query")
@@ -59,21 +81,101 @@ impl WebSearchAdapter {
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_MAX_RESULTS);
 
-        debug!(
-            query = query,
-            max_results = max_results,
-            "performing web search"
-        );
+        debug!(query, max_results, "performing web search");
 
+        // Try Brave Search API first (higher quality).
+        if let Some(ref api_key) = self.brave_api_key {
+            match self.search_brave(query, max_results, api_key).await {
+                Ok(results) if !results.is_empty() => {
+                    debug!(count = results.len(), engine = "brave", "search completed");
+                    return Ok(json!({ "engine": "brave", "results": results }));
+                }
+                Ok(_) => debug!("Brave returned no results, falling back to DuckDuckGo"),
+                Err(e) => warn!(error = %e, "Brave Search failed, falling back"),
+            }
+        }
+
+        // Fallback: DuckDuckGo HTML scraping.
+        let results = self.search_duckduckgo(query, max_results).await?;
+        debug!(count = results.len(), engine = "duckduckgo", "search completed");
+
+        Ok(json!({ "engine": "duckduckgo", "results": results }))
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    //  Brave Search API
+    // ───────────────────────────────────────────────────────────────────
+
+    async fn search_brave(
+        &self,
+        query: &str,
+        max_results: usize,
+        api_key: &str,
+    ) -> Result<Vec<Value>> {
         let response = self
             .client
-            .get(DUCKDUCKGO_HTML_URL)
-            .query(&[("q", query)])
+            .get(BRAVE_SEARCH_URL)
+            .header("X-Subscription-Token", api_key)
+            .header("Accept", "application/json")
+            .query(&[("q", query), ("count", &max_results.to_string())])
             .send()
             .await
             .map_err(|e| AdapterError::ExecutionFailed {
                 tool_name: "web_search".into(),
-                reason: format!("HTTP request failed: {e}"),
+                reason: format!("Brave Search request failed: {e}"),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(AdapterError::ExecutionFailed {
+                tool_name: "web_search".into(),
+                reason: format!("Brave Search returned status {}", response.status()),
+            });
+        }
+
+        let body: Value = response.json().await.map_err(|e| {
+            AdapterError::ExecutionFailed {
+                tool_name: "web_search".into(),
+                reason: format!("failed to parse Brave response: {e}"),
+            }
+        })?;
+
+        let mut results = Vec::new();
+        if let Some(web_results) = body.pointer("/web/results").and_then(|v| v.as_array()) {
+            for item in web_results.iter().take(max_results) {
+                let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                let snippet = item
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                if !title.is_empty() || !url.is_empty() {
+                    results.push(json!({
+                        "title": strip_html_tags(title),
+                        "url": url,
+                        "snippet": strip_html_tags(snippet),
+                    }));
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    //  DuckDuckGo HTML scraping
+    // ───────────────────────────────────────────────────────────────────
+
+    async fn search_duckduckgo(&self, query: &str, max_results: usize) -> Result<Vec<Value>> {
+        // POST with form data is more reliable than GET for DDG.
+        let response = self
+            .client
+            .post(DUCKDUCKGO_HTML_URL)
+            .form(&[("q", query), ("kl", ""), ("df", "")])
+            .send()
+            .await
+            .map_err(|e| AdapterError::ExecutionFailed {
+                tool_name: "web_search".into(),
+                reason: format!("DuckDuckGo request failed: {e}"),
             })?;
 
         if !response.status().is_success() {
@@ -83,35 +185,23 @@ impl WebSearchAdapter {
             });
         }
 
-        let html = response
-            .text()
-            .await
-            .map_err(|e| AdapterError::ExecutionFailed {
+        let html = response.text().await.map_err(|e| {
+            AdapterError::ExecutionFailed {
                 tool_name: "web_search".into(),
-                reason: format!("failed to read response body: {e}"),
-            })?;
+                reason: format!("failed to read DuckDuckGo response: {e}"),
+            }
+        })?;
 
-        let results = parse_duckduckgo_results(&html, max_results);
-
-        debug!(result_count = results.len(), "search completed");
-
-        Ok(json!({
-            "results": results,
-        }))
+        Ok(parse_duckduckgo_results(&html, max_results))
     }
 }
 
-/// Parse DuckDuckGo HTML search results.
-///
-/// Extracts titles, URLs, and snippets from the HTML response by looking
-/// for elements with class `result__a` (title/link) and `result__snippet`
-/// (description text).
+// ═══════════════════════════════════════════════════════════════════════
+//  DuckDuckGo HTML parsing
+// ═══════════════════════════════════════════════════════════════════════
+
 fn parse_duckduckgo_results(html: &str, max_results: usize) -> Vec<Value> {
     let mut results = Vec::new();
-
-    // DuckDuckGo HTML results contain links with class="result__a"
-    // and snippets with class="result__snippet".
-    // We iterate through result__a occurrences and pair them with snippets.
 
     let title_marker = "class=\"result__a\"";
     let snippet_marker = "class=\"result__snippet\"";
@@ -135,17 +225,13 @@ fn parse_duckduckgo_results(html: &str, max_results: usize) -> Vec<Value> {
             break;
         }
 
-        // Extract the URL from the href attribute before the title marker.
-        // The pattern is: <a ... href="URL" ... class="result__a">Title</a>
         let before_marker = &html[..title_pos];
         let url = extract_href_before(before_marker).unwrap_or_default();
+        let clean_url = clean_ddg_url(&url);
 
-        // Extract the title text after the marker.
-        // Find the closing > of the opening tag, then extract text until </a>.
         let after_marker = &html[title_pos + title_marker.len()..];
         let title = extract_tag_text(after_marker, "</a>");
 
-        // Extract the snippet from the corresponding snippet position.
         let snippet = if i < snippet_positions.len() {
             let after_snippet = &html[snippet_positions[i] + snippet_marker.len()..];
             let raw = extract_tag_text(after_snippet, "</");
@@ -154,10 +240,10 @@ fn parse_duckduckgo_results(html: &str, max_results: usize) -> Vec<Value> {
             String::new()
         };
 
-        if !title.is_empty() || !url.is_empty() {
+        if !title.is_empty() || !clean_url.is_empty() {
             results.push(json!({
                 "title": strip_html_tags(&title),
-                "url": url,
+                "url": clean_url,
                 "snippet": snippet.trim(),
             }));
         }
@@ -166,7 +252,43 @@ fn parse_duckduckgo_results(html: &str, max_results: usize) -> Vec<Value> {
     results
 }
 
-/// Extract the href value from the last `href="..."` before the given position.
+/// Clean DuckDuckGo tracking URLs to extract the actual destination URL.
+fn clean_ddg_url(url: &str) -> String {
+    if url.contains("duckduckgo.com/l/") {
+        if let Some(uddg_start) = url.find("uddg=") {
+            let encoded = &url[uddg_start + 5..];
+            let encoded = encoded.split('&').next().unwrap_or(encoded);
+            return url_decode(encoded);
+        }
+    }
+    if url.starts_with("//") {
+        return format!("https:{url}");
+    }
+    url.to_string()
+}
+
+/// Simple URL percent-decoding.
+fn url_decode(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '%' {
+            let hex: String = chars.by_ref().take(2).collect();
+            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                result.push(byte as char);
+            } else {
+                result.push('%');
+                result.push_str(&hex);
+            }
+        } else if ch == '+' {
+            result.push(' ');
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
 fn extract_href_before(html_before: &str) -> Option<String> {
     let href_marker = "href=\"";
     let last_href = html_before.rfind(href_marker)?;
@@ -176,28 +298,20 @@ fn extract_href_before(html_before: &str) -> Option<String> {
     Some(remaining[..end].to_string())
 }
 
-/// Extract text content after finding the closing `>` of the current tag,
-/// up to the specified end marker.
 fn extract_tag_text(html_after_marker: &str, end_marker: &str) -> String {
-    // Find the closing > of the opening tag.
     let closing_bracket = match html_after_marker.find('>') {
         Some(pos) => pos,
         None => return String::new(),
     };
-
     let content = &html_after_marker[closing_bracket + 1..];
-
-    // Find the end marker.
     let end = match content.find(end_marker) {
         Some(pos) => pos,
         None => content.len(),
     };
-
     content[..end].to_string()
 }
 
-/// Strip HTML tags from a string, removing `<...>` sequences and decoding
-/// common HTML entities.
+/// Strip HTML tags from a string and decode common HTML entities.
 pub fn strip_html_tags(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut inside_tag = false;
@@ -211,7 +325,6 @@ pub fn strip_html_tags(input: &str) -> String {
         }
     }
 
-    // Decode common HTML entities.
     result
         .replace("&amp;", "&")
         .replace("&lt;", "<")
@@ -221,6 +334,10 @@ pub fn strip_html_tags(input: &str) -> String {
         .replace("&apos;", "'")
         .replace("&nbsp;", " ")
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Adapter trait implementation
+// ═══════════════════════════════════════════════════════════════════════
 
 #[async_trait]
 impl Adapter for WebSearchAdapter {
@@ -233,7 +350,12 @@ impl Adapter for WebSearchAdapter {
     }
 
     async fn connect(&mut self) -> Result<()> {
-        info!(id = %self.id, "web search adapter connected");
+        let engine = if self.brave_api_key.is_some() {
+            "brave+duckduckgo"
+        } else {
+            "duckduckgo"
+        };
+        info!(id = %self.id, engine, "web search adapter connected");
         self.connected = true;
         Ok(())
     }
@@ -248,17 +370,16 @@ impl Adapter for WebSearchAdapter {
         if !self.connected {
             return Ok(HealthStatus::Unhealthy);
         }
-        // Verify we can reach DuckDuckGo.
         match self.client.head(DUCKDUCKGO_HTML_URL).send().await {
             Ok(resp) if resp.status().is_success() || resp.status().is_redirection() => {
                 Ok(HealthStatus::Healthy)
             }
             Ok(resp) => {
-                warn!(status = %resp.status(), "DuckDuckGo health check returned non-success");
+                warn!(status = %resp.status(), "search health check non-success");
                 Ok(HealthStatus::Degraded)
             }
             Err(e) => {
-                warn!(error = %e, "DuckDuckGo health check failed");
+                warn!(error = %e, "search health check failed");
                 Ok(HealthStatus::Unhealthy)
             }
         }
@@ -267,7 +388,9 @@ impl Adapter for WebSearchAdapter {
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![ToolDefinition {
             name: "web_search".into(),
-            description: "Search the web using DuckDuckGo and return titles, URLs, and snippets"
+            description: "Search the web and return titles, URLs, and snippets. \
+                          Uses Brave Search (if BRAVE_API_KEY is set) with \
+                          DuckDuckGo as fallback. Returns up to 10 results by default."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -278,7 +401,7 @@ impl Adapter for WebSearchAdapter {
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Maximum number of results to return (default: 5)"
+                        "description": "Maximum number of results (default: 10)"
                     }
                 },
                 "required": ["query"]
@@ -307,9 +430,9 @@ impl Adapter for WebSearchAdapter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════
+//  Tests
+// ═══════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
@@ -327,10 +450,8 @@ mod tests {
     async fn web_search_adapter_connect_disconnect() {
         let mut adapter = WebSearchAdapter::new("ws-test");
         assert!(!adapter.connected);
-
         adapter.connect().await.unwrap();
         assert!(adapter.connected);
-
         adapter.disconnect().await.unwrap();
         assert!(!adapter.connected);
     }
@@ -346,7 +467,7 @@ mod tests {
     async fn web_search_adapter_rejects_when_not_connected() {
         let adapter = WebSearchAdapter::new("ws-test");
         let result = adapter
-            .execute_tool("web_search", json!({"query": "rust lang"}))
+            .execute_tool("web_search", json!({"query": "test"}))
             .await;
         assert!(result.is_err());
     }
@@ -389,11 +510,9 @@ mod tests {
 
         let results = parse_duckduckgo_results(html, 10);
         assert_eq!(results.len(), 2);
-
         assert_eq!(results[0]["title"], "Example Title");
         assert_eq!(results[0]["url"], "https://example.com");
         assert_eq!(results[0]["snippet"], "This is a snippet about Example.");
-
         assert_eq!(results[1]["title"], "Other Result");
         assert_eq!(results[1]["url"], "https://other.com");
     }
@@ -408,7 +527,6 @@ mod tests {
         <a href="https://c.com" class="result__a">C</a>
         <span class="result__snippet">Snippet C</span>
         "#;
-
         let results = parse_duckduckgo_results(html, 2);
         assert_eq!(results.len(), 2);
     }
@@ -426,5 +544,28 @@ mod tests {
         let before = &html[..html.find(marker).unwrap()];
         let url = extract_href_before(before);
         assert_eq!(url, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn clean_ddg_url_extracts_actual_url() {
+        let ddg = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage&rut=abc";
+        assert_eq!(clean_ddg_url(ddg), "https://example.com/page");
+    }
+
+    #[test]
+    fn clean_ddg_url_passes_through_normal_urls() {
+        assert_eq!(clean_ddg_url("https://example.com"), "https://example.com");
+    }
+
+    #[test]
+    fn clean_ddg_url_adds_protocol() {
+        assert_eq!(clean_ddg_url("//example.com/p"), "https://example.com/p");
+    }
+
+    #[test]
+    fn url_decode_handles_percent_encoding() {
+        assert_eq!(url_decode("hello%20world"), "hello world");
+        assert_eq!(url_decode("https%3A%2F%2Fexample.com"), "https://example.com");
+        assert_eq!(url_decode("a+b"), "a b");
     }
 }

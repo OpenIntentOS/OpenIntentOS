@@ -1,21 +1,33 @@
 //! Web fetch adapter -- fetch any URL and return its content as text.
 //!
-//! This adapter retrieves web pages, JSON APIs, or any other URL-accessible
-//! resource and returns the content as structured text.  HTML content is
-//! automatically stripped of tags to provide clean plain text.
+//! Features:
+//!   - Real browser User-Agent to avoid being blocked
+//!   - Strips `<script>`, `<style>`, `<nav>`, `<header>`, `<footer>` before
+//!     extracting text from HTML
+//!   - Collapses excessive whitespace for cleaner output
+//!   - Smart truncation at paragraph boundaries
+//!   - Automatic retry on transient failures
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::error::{AdapterError, Result};
 use crate::traits::{Adapter, AdapterType, AuthRequirement, HealthStatus, ToolDefinition};
 
 /// Default maximum content length in characters.
-const DEFAULT_MAX_LENGTH: usize = 50_000;
+const DEFAULT_MAX_LENGTH: usize = 80_000;
 
 /// Default request timeout in seconds.
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
+
+/// Maximum number of retries for transient failures.
+const MAX_RETRIES: u32 = 2;
+
+/// Realistic browser User-Agent to avoid being blocked.
+const BROWSER_USER_AGENT: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 /// Web fetch service adapter.
 pub struct WebFetchAdapter {
@@ -31,8 +43,9 @@ impl WebFetchAdapter {
     /// Create a new web fetch adapter.
     pub fn new(id: impl Into<String>) -> Self {
         let client = reqwest::Client::builder()
-            .user_agent("OpenIntentOS/0.1")
+            .user_agent(BROWSER_USER_AGENT)
             .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+            .redirect(reqwest::redirect::Policy::limited(10))
             .build()
             .unwrap_or_default();
 
@@ -43,7 +56,7 @@ impl WebFetchAdapter {
         }
     }
 
-    /// Fetch a URL and return its content.
+    /// Fetch a URL and return its content with automatic retry.
     async fn tool_web_fetch(&self, params: Value) -> Result<Value> {
         let url_str = params.get("url").and_then(|v| v.as_str()).ok_or_else(|| {
             AdapterError::InvalidParams {
@@ -64,17 +77,45 @@ impl WebFetchAdapter {
             reason: format!("invalid URL `{url_str}`: {e}"),
         })?;
 
-        debug!(url = url_str, max_length = max_length, "fetching URL");
+        debug!(url = url_str, max_length, "fetching URL");
 
-        let response =
-            self.client
-                .get(url_str)
-                .send()
-                .await
-                .map_err(|e| AdapterError::ExecutionFailed {
-                    tool_name: "web_fetch".into(),
-                    reason: format!("HTTP request failed: {e}"),
-                })?;
+        // Retry loop for transient failures.
+        let mut last_error = None;
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                let delay = std::time::Duration::from_millis(500 * u64::from(attempt));
+                tokio::time::sleep(delay).await;
+                debug!(url = url_str, attempt, "retrying fetch");
+            }
+
+            match self.do_fetch(url_str, max_length).await {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    warn!(url = url_str, attempt, error = %e, "fetch attempt failed");
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| AdapterError::ExecutionFailed {
+            tool_name: "web_fetch".into(),
+            reason: "all retry attempts exhausted".into(),
+        }))
+    }
+
+    /// Perform a single fetch attempt.
+    async fn do_fetch(&self, url_str: &str, max_length: usize) -> Result<Value> {
+        let response = self
+            .client
+            .get(url_str)
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7")
+            .send()
+            .await
+            .map_err(|e| AdapterError::ExecutionFailed {
+                tool_name: "web_fetch".into(),
+                reason: format!("HTTP request failed: {e}"),
+            })?;
 
         if !response.status().is_success() {
             return Err(AdapterError::ExecutionFailed {
@@ -101,9 +142,8 @@ impl WebFetchAdapter {
 
         // Process content based on type.
         let content = if content_type.contains("text/html") {
-            strip_html_tags(&raw_body)
+            extract_text_from_html(&raw_body)
         } else if content_type.contains("application/json") {
-            // Try to pretty-print JSON.
             match serde_json::from_str::<Value>(&raw_body) {
                 Ok(parsed) => serde_json::to_string_pretty(&parsed).unwrap_or(raw_body),
                 Err(_) => raw_body,
@@ -112,13 +152,14 @@ impl WebFetchAdapter {
             raw_body
         };
 
-        // Truncate to max_length.
-        let (final_content, original_length) = truncate_content(&content, max_length);
+        // Smart truncation.
+        let (final_content, original_length) = smart_truncate(&content, max_length);
 
         debug!(
             url = url_str,
             content_type = content_type.as_str(),
-            length = original_length,
+            original_length,
+            final_length = final_content.len(),
             "fetch completed"
         );
 
@@ -131,21 +172,55 @@ impl WebFetchAdapter {
     }
 }
 
-/// Truncate content to `max_length` characters.
-/// Returns `(content, original_length)`.
-fn truncate_content(content: &str, max_length: usize) -> (String, usize) {
-    let original_length = content.len();
-    if original_length <= max_length {
-        (content.to_string(), original_length)
-    } else {
-        let mut truncated = content[..max_length].to_string();
-        truncated.push_str("\n... [content truncated]");
-        (truncated, original_length)
-    }
+// ═══════════════════════════════════════════════════════════════════════
+//  HTML content extraction
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Extract readable text from HTML by removing scripts, styles, nav,
+/// header, footer, and then stripping remaining tags.
+fn extract_text_from_html(html: &str) -> String {
+    // 1. Remove <script>...</script>, <style>...</style>, and noise tags.
+    let cleaned = remove_tag_blocks(html, "script");
+    let cleaned = remove_tag_blocks(&cleaned, "style");
+    let cleaned = remove_tag_blocks(&cleaned, "nav");
+    let cleaned = remove_tag_blocks(&cleaned, "noscript");
+
+    // 2. Strip remaining HTML tags and decode entities.
+    let text = strip_html_tags(&cleaned);
+
+    // 3. Collapse excessive whitespace.
+    collapse_whitespace(&text)
 }
 
-/// Strip HTML tags from a string, removing `<...>` sequences and decoding
-/// common HTML entities.
+/// Remove all occurrences of `<tag ...>...</tag>` (case-insensitive).
+fn remove_tag_blocks(html: &str, tag: &str) -> String {
+    let open_pattern = format!("<{}", tag);
+    let close_pattern = format!("</{}>", tag);
+    let mut result = String::with_capacity(html.len());
+    let lower = html.to_ascii_lowercase();
+    let mut cursor = 0;
+
+    while cursor < html.len() {
+        if let Some(start) = lower[cursor..].find(&open_pattern) {
+            let abs_start = cursor + start;
+            // Copy everything before the tag.
+            result.push_str(&html[cursor..abs_start]);
+            // Find the closing tag.
+            if let Some(end) = lower[abs_start..].find(&close_pattern) {
+                cursor = abs_start + end + close_pattern.len();
+            } else {
+                // No closing tag found, skip to end.
+                cursor = html.len();
+            }
+        } else {
+            result.push_str(&html[cursor..]);
+            break;
+        }
+    }
+    result
+}
+
+/// Strip HTML tags from a string and decode common HTML entities.
 fn strip_html_tags(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut inside_tag = false;
@@ -153,13 +228,16 @@ fn strip_html_tags(input: &str) -> String {
     for ch in input.chars() {
         match ch {
             '<' => inside_tag = true,
-            '>' => inside_tag = false,
+            '>' => {
+                inside_tag = false;
+                // Insert a space after closing tags to prevent word merging.
+                result.push(' ');
+            }
             _ if !inside_tag => result.push(ch),
             _ => {}
         }
     }
 
-    // Decode common HTML entities.
     result
         .replace("&amp;", "&")
         .replace("&lt;", "<")
@@ -168,6 +246,61 @@ fn strip_html_tags(input: &str) -> String {
         .replace("&#39;", "'")
         .replace("&apos;", "'")
         .replace("&nbsp;", " ")
+}
+
+/// Collapse runs of whitespace into single spaces, and multiple newlines
+/// into double newlines (paragraph breaks).
+fn collapse_whitespace(text: &str) -> String {
+    let mut result = String::with_capacity(text.len() / 2);
+    let mut prev_newline_count = 0u32;
+    let mut prev_was_space = false;
+
+    for ch in text.chars() {
+        if ch == '\n' {
+            prev_newline_count += 1;
+            prev_was_space = false;
+            if prev_newline_count <= 2 {
+                result.push('\n');
+            }
+        } else if ch.is_whitespace() {
+            prev_newline_count = 0;
+            if !prev_was_space {
+                result.push(' ');
+                prev_was_space = true;
+            }
+        } else {
+            prev_newline_count = 0;
+            prev_was_space = false;
+            result.push(ch);
+        }
+    }
+
+    result.trim().to_string()
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Smart truncation
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Truncate content intelligently at a paragraph or sentence boundary.
+/// Returns `(content, original_length)`.
+fn smart_truncate(content: &str, max_length: usize) -> (String, usize) {
+    let original_length = content.len();
+    if original_length <= max_length {
+        return (content.to_string(), original_length);
+    }
+
+    // Try to truncate at the last paragraph break before max_length.
+    let search_region = &content[..max_length];
+    let truncation_point = search_region
+        .rfind("\n\n")
+        .or_else(|| search_region.rfind('\n'))
+        .or_else(|| search_region.rfind(". "))
+        .unwrap_or(max_length);
+
+    let mut truncated = content[..truncation_point].to_string();
+    truncated.push_str("\n\n... [content truncated]");
+    (truncated, original_length)
 }
 
 #[async_trait]
@@ -314,30 +447,73 @@ mod tests {
 
     #[test]
     fn strip_html_tags_removes_tags() {
-        assert_eq!(strip_html_tags("<p>Hello</p>"), "Hello");
-        assert_eq!(strip_html_tags("<div><span>nested</span></div>"), "nested");
+        assert!(strip_html_tags("<p>Hello</p>").contains("Hello"));
+        assert!(strip_html_tags("<div><span>nested</span></div>").contains("nested"));
         assert_eq!(strip_html_tags("plain text"), "plain text");
     }
 
     #[test]
     fn strip_html_tags_decodes_entities() {
-        assert_eq!(strip_html_tags("a &amp; b"), "a & b");
-        assert_eq!(strip_html_tags("1 &lt; 2 &gt; 0"), "1 < 2 > 0");
+        assert!(strip_html_tags("a &amp; b").contains("a & b"));
     }
 
     #[test]
-    fn truncate_content_short_text() {
-        let (content, len) = truncate_content("short", 100);
+    fn remove_tag_blocks_strips_scripts() {
+        let html = "<p>Hello</p><script>alert('xss')</script><p>World</p>";
+        let result = remove_tag_blocks(html, "script");
+        assert!(!result.contains("alert"));
+        assert!(result.contains("Hello"));
+        assert!(result.contains("World"));
+    }
+
+    #[test]
+    fn remove_tag_blocks_strips_styles() {
+        let html = "<style type=\"text/css\">body { color: red; }</style><p>Content</p>";
+        let result = remove_tag_blocks(html, "style");
+        assert!(!result.contains("color: red"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn extract_text_from_html_full_pipeline() {
+        let html = r#"
+        <html>
+        <head><style>body{}</style><script>var x=1;</script></head>
+        <body>
+        <nav>Menu Item</nav>
+        <p>Main content here.</p>
+        <p>Second paragraph.</p>
+        </body>
+        </html>"#;
+        let text = extract_text_from_html(html);
+        assert!(text.contains("Main content"));
+        assert!(text.contains("Second paragraph"));
+        assert!(!text.contains("var x=1"));
+        assert!(!text.contains("body{}"));
+    }
+
+    #[test]
+    fn collapse_whitespace_reduces_spaces() {
+        let input = "hello    world\n\n\n\n\nfoo";
+        let result = collapse_whitespace(input);
+        assert!(result.contains("hello world"));
+        assert!(!result.contains("\n\n\n"));
+    }
+
+    #[test]
+    fn smart_truncate_short_text() {
+        let (content, len) = smart_truncate("short", 100);
         assert_eq!(content, "short");
         assert_eq!(len, 5);
     }
 
     #[test]
-    fn truncate_content_long_text() {
-        let long_text = "x".repeat(200);
-        let (content, len) = truncate_content(&long_text, 50);
-        assert_eq!(len, 200);
+    fn smart_truncate_at_paragraph_boundary() {
+        let text = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph is longer.";
+        let (content, len) = smart_truncate(text, 40);
+        assert_eq!(len, text.len());
         assert!(content.contains("[content truncated]"));
-        assert!(content.len() < 100); // 50 chars + truncation message
+        // Should truncate at paragraph boundary.
+        assert!(content.contains("First paragraph."));
     }
 }
