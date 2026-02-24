@@ -10,7 +10,7 @@ use openintent_web::WebConfig;
 fn web_config_defaults() {
     let config = WebConfig::default();
     assert_eq!(config.bind_addr, "127.0.0.1");
-    assert_eq!(config.port, 3000);
+    assert_eq!(config.port, 23517);
 }
 
 #[test]

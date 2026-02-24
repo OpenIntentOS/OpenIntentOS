@@ -60,7 +60,7 @@ enum Commands {
         bind: String,
 
         /// Port to listen on.
-        #[arg(long, short, default_value_t = 3000)]
+        #[arg(long, short, default_value_t = 23517)]
         port: u16,
     },
 

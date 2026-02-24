@@ -32,7 +32,7 @@ impl Default for WebConfig {
     fn default() -> Self {
         Self {
             bind_addr: "127.0.0.1".into(),
-            port: 3000,
+            port: 23517,
         }
     }
 }
