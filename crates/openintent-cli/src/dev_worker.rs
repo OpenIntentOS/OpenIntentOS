@@ -15,6 +15,8 @@ use openintent_agent::runtime::ToolAdapter;
 use openintent_agent::{AgentConfig, AgentContext, LlmClient, react_loop};
 use openintent_store::DevTaskStore;
 
+use crate::intent_classifier::{TaskKind, classify_intent};
+
 // ═══════════════════════════════════════════════════════════════════════
 //  Types
 // ═══════════════════════════════════════════════════════════════════════
@@ -123,7 +125,7 @@ impl DevWorker {
         }
     }
 
-    /// Process a single dev task through the full pipeline.
+    /// Process a single dev task, routing to simple or full pipeline.
     async fn process_task(&self, task_id: &str) -> Result<()> {
         let task = self
             .task_store
@@ -134,6 +136,17 @@ impl DevWorker {
 
         let intent = task.intent.clone();
         let chat_id = task.chat_id;
+
+        match classify_intent(&self.llm, &self.model, &intent).await {
+            TaskKind::Simple => {
+                info!(task_id = %task_id, "classified as simple operation");
+                return self.process_simple_task(task_id, &intent, chat_id).await;
+            }
+            TaskKind::Development => {
+                info!(task_id = %task_id, "classified as development task");
+            }
+        }
+
         let max_retries = task.max_retries;
 
         // Step 1: Create branch (skip if already past branching).
@@ -167,14 +180,23 @@ impl DevWorker {
         };
 
         // Step 2 + 3: Write code and test (with retries).
+        // `last_failure` carries test/clippy error output into the next retry so
+        // the agent knows exactly what went wrong and can apply a targeted fix.
+        let mut last_failure: Option<String> = None;
+
         let agent_summary = loop {
             // Step 2: Write code.
+            let status_msg = if last_failure.is_some() {
+                "Agent fixing issues from failed tests"
+            } else {
+                "Agent analyzing and writing code"
+            };
             self.task_store
-                .update_status(task_id, "coding", Some("Agent analyzing and writing code"))
+                .update_status(task_id, "coding", Some(status_msg))
                 .await
                 .context("failed to update status to coding")?;
             if let Some(cid) = chat_id {
-                self.report_progress(cid, "Agent analyzing and writing code...")
+                self.report_progress(cid, &format!("{status_msg}..."))
                     .await;
             }
 
@@ -192,7 +214,7 @@ impl DevWorker {
             };
 
             let summary = self
-                .step_write_code(task_id, &full_intent, &branch)
+                .step_write_code(task_id, &full_intent, &branch, last_failure.as_deref())
                 .await
                 .context("failed to write code")?;
 
@@ -214,18 +236,15 @@ impl DevWorker {
             }
 
             match self.step_run_tests(task_id).await {
-                Ok(true) => {
+                Ok(()) => {
                     self.task_store
                         .append_progress(task_id, "All tests passed")
                         .await
                         .context("failed to append progress")?;
                     break summary;
                 }
-                Ok(false) | Err(_) => {
-                    let err_msg = match self.step_run_tests(task_id).await {
-                        Err(e) => e.to_string(),
-                        _ => "Tests failed".to_string(),
-                    };
+                Err(e) => {
+                    let err_msg = e.to_string();
 
                     let retry_count = self
                         .task_store
@@ -284,6 +303,9 @@ impl DevWorker {
                         .await
                         .context("failed to append progress")?;
 
+                    // Store failure context so next iteration gets it.
+                    last_failure = Some(err_msg);
+
                     // Loop back to step 2 — agent will try to fix the issues.
                     continue;
                 }
@@ -331,6 +353,80 @@ impl DevWorker {
         Ok(())
     }
 
+    /// Process a simple operation (git commit, push, format, etc.) without
+    /// the full branch/test/PR pipeline.
+    async fn process_simple_task(
+        &self,
+        task_id: &str,
+        intent: &str,
+        chat_id: Option<i64>,
+    ) -> Result<()> {
+        self.task_store
+            .update_status(task_id, "coding", Some("Executing operation"))
+            .await
+            .context("failed to update status")?;
+        if let Some(cid) = chat_id {
+            self.report_progress(cid, &format!("Executing: {intent}"))
+                .await;
+        }
+
+        let system_prompt = format!(
+            "You are a helpful assistant for the OpenIntentOS project (a Rust codebase).\n\
+             Repository root: {repo_path}\n\n\
+             The user wants you to perform a simple operation. \
+             Execute it directly using the available tools. \
+             Do NOT create branches or pull requests. \
+             Just perform the operation and report the result.\n\n\
+             Available tools:\n\
+             - `fs_read_file` — Read a file\n\
+             - `fs_write_file` — Write a file\n\
+             - `fs_list_dir` — List directory contents\n\
+             - `shell_execute` — Run shell commands (git, cargo, etc.)\n\
+             - `fs_delete_file` — Delete a file\n\
+             - `fs_create_dir` — Create a directory",
+            repo_path = self.repo_path.display()
+        );
+
+        let agent_config = AgentConfig {
+            max_turns: 15,
+            model: self.model.clone(),
+            temperature: Some(0.0),
+            max_tokens: Some(4096),
+            ..AgentConfig::default()
+        };
+
+        let mut ctx = AgentContext::new(self.llm.clone(), self.adapters.clone(), agent_config)
+            .with_system_prompt(&system_prompt)
+            .with_user_message(intent);
+
+        let response = react_loop(&mut ctx)
+            .await
+            .map_err(|e| anyhow::anyhow!("agent failed: {e}"))?;
+
+        let summary = response.text.clone();
+
+        self.task_store
+            .append_message(task_id, "agent", &summary)
+            .await
+            .context("failed to append agent message")?;
+        self.task_store
+            .append_progress(task_id, &truncate(&summary, 200))
+            .await
+            .context("failed to append progress")?;
+        self.task_store
+            .update_status(task_id, "completed", Some("Operation completed"))
+            .await
+            .context("failed to update status to completed")?;
+
+        if let Some(cid) = chat_id {
+            self.report_progress(cid, &format!("Done: {}", truncate(&summary, 500)))
+                .await;
+        }
+
+        info!(task_id = %task_id, "simple task completed");
+        Ok(())
+    }
+
     /// Step 1: Create a git feature branch.
     async fn step_create_branch(&self, task_id: &str, intent: &str) -> Result<String> {
         // Generate a short hash from the intent for the branch name.
@@ -359,7 +455,15 @@ impl DevWorker {
     }
 
     /// Step 2: Run the agent to write code.
-    async fn step_write_code(&self, task_id: &str, intent: &str, branch: &str) -> Result<String> {
+    ///
+    /// If `test_failure` is provided, the agent gets the error context for a retry.
+    async fn step_write_code(
+        &self,
+        task_id: &str,
+        intent: &str,
+        branch: &str,
+        test_failure: Option<&str>,
+    ) -> Result<String> {
         info!(task_id = %task_id, branch = %branch, "agent writing code");
 
         // Make sure we are on the correct branch.
@@ -367,44 +471,44 @@ impl DevWorker {
             .await
             .context("failed to checkout branch for coding")?;
 
-        let system_prompt = format!(
-            "You are a senior Rust developer working on the OpenIntentOS project.\n\
-             Your task: {intent}\n\
-             Working on branch: {branch}\n\
-             \n\
-             Rules:\n\
-             - Write production-quality Rust code.\n\
-             - Follow the project's coding standards: use thiserror for library errors, \
-               tracing for logging, no unwrap() in library code.\n\
-             - Everything must be Send + Sync. Use Arc<T> over Rc<T>.\n\
-             - Use the filesystem and shell tools to read, write, and modify files.\n\
-             - After making changes, ensure the code compiles with `cargo check`.\n\
-             - Be thorough but concise.\n\
-             - Maximum 1000 lines per file.\n\
-             \n\
-             Available project structure:\n\
-             - crates/openintent-kernel/ -- Micro-kernel (IPC, scheduler)\n\
-             - crates/openintent-agent/ -- Agent runtime (ReAct loop, LLM client)\n\
-             - crates/openintent-store/ -- Storage engine (SQLite, sessions, memory)\n\
-             - crates/openintent-adapters/ -- Tool adapters (filesystem, shell, GitHub, etc.)\n\
-             - crates/openintent-cli/ -- CLI binary (bot, REPL, web server)\n\
-             - crates/openintent-skills/ -- Skill system\n\
-             - crates/openintent-web/ -- Web server (axum)\n\
-             - crates/openintent-tui/ -- Terminal UI (ratatui)\n\
-             - config/ -- Configuration files"
-        );
+        let system_prompt = self.build_dev_system_prompt(intent, branch);
 
         let agent_config = AgentConfig {
-            max_turns: 30,
+            max_turns: 40,
             model: self.model.clone(),
             temperature: Some(0.0),
-            max_tokens: Some(4096),
+            max_tokens: Some(8192),
             ..AgentConfig::default()
+        };
+
+        // Build the user message with context.
+        let user_message = if let Some(failure) = test_failure {
+            format!(
+                "{intent}\n\n\
+                 IMPORTANT: The previous attempt failed with the following errors. \
+                 You MUST fix these issues:\n\
+                 ```\n{failure}\n```\n\n\
+                 First, review the error output carefully. Then read the relevant files, \
+                 understand the root cause, and apply a targeted fix."
+            )
+        } else {
+            format!(
+                "{intent}\n\n\
+                 WORKFLOW:\n\
+                 1. EXPLORE: Use `shell_execute` to run `find crates/ -name '*.rs' | head -50` \
+                    and read the most relevant files with `fs_read_file` to understand \
+                    existing patterns.\n\
+                 2. PLAN: Decide which files to create/modify. State your plan briefly.\n\
+                 3. CODE: Make changes file by file. After each file, run `cargo check` \
+                    to verify compilation.\n\
+                 4. VERIFY: Run `cargo check --workspace` to ensure everything compiles.\n\
+                 5. SUMMARIZE: Describe what you changed and why."
+            )
         };
 
         let mut ctx = AgentContext::new(self.llm.clone(), self.adapters.clone(), agent_config)
             .with_system_prompt(&system_prompt)
-            .with_user_message(intent);
+            .with_user_message(&user_message);
 
         // Load any previous conversation messages for this task.
         let prev_messages = self
@@ -446,18 +550,97 @@ impl DevWorker {
         Ok(summary)
     }
 
+    /// Build a rich system prompt that includes project rules, coding standards,
+    /// and architecture context so the agent writes intelligent, project-aware code.
+    fn build_dev_system_prompt(&self, intent: &str, branch: &str) -> String {
+        // Try to load CLAUDE.md for project rules.
+        let claude_md = std::fs::read_to_string(self.repo_path.join("CLAUDE.md"))
+            .unwrap_or_default();
+        let project_rules = if claude_md.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n## Project Rules (from CLAUDE.md)\n\n\
+                 {}\n",
+                truncate(&claude_md, 3000)
+            )
+        };
+
+        format!(
+            "You are a senior Rust developer working on OpenIntentOS — an AI-native \
+             micro operating system built entirely in Rust.\n\
+             \n\
+             ## Your Task\n\
+             {intent}\n\
+             Working on branch: {branch}\n\
+             Repository root: {repo_path}\n\
+             {project_rules}\
+             \n\
+             ## Critical Rules\n\
+             - **ALWAYS read existing files before modifying them.** Understand the current \
+               code before making changes.\n\
+             - **No hardcoded multilingual content.** All user-facing strings must come from \
+               config files, never hardcoded in source.\n\
+             - **Maximum 1000 lines per file.** If a file exceeds this, split into modules.\n\
+             - Use `thiserror` for library error types, `anyhow` only in CLI binary.\n\
+             - Use `tracing` for all logging — never `println!` in library code.\n\
+             - Everything must be `Send + Sync`. Use `Arc<T>` over `Rc<T>`.\n\
+             - Never `unwrap()` or `expect()` in library code — only in tests.\n\
+             - Use `tokio::task::spawn_blocking` for CPU-heavy or synchronous work.\n\
+             - Run `cargo check` after modifying files to catch compilation errors early.\n\
+             - Keep changes minimal and focused. Don't refactor unrelated code.\n\
+             \n\
+             ## Project Structure\n\
+             ```\n\
+             crates/\n\
+               openintent-kernel/   -- Micro-kernel (IPC, scheduler, intent router)\n\
+               openintent-agent/    -- Agent runtime (ReAct loop, LLM client, planner)\n\
+               openintent-store/    -- Storage engine (SQLite WAL, sessions, 3-layer memory)\n\
+               openintent-adapters/ -- Tool adapters (filesystem, shell, GitHub, web, email)\n\
+               openintent-cli/      -- CLI binary (bot, REPL, web server, dev worker)\n\
+               openintent-skills/   -- OpenClaw-compatible skill system\n\
+               openintent-vault/    -- Encrypted credential store (AES-256-GCM)\n\
+               openintent-intent/   -- Intent parsing & workflow engine\n\
+               openintent-web/      -- Web server (axum)\n\
+               openintent-tui/      -- Terminal UI (ratatui)\n\
+             config/\n\
+               default.toml         -- Runtime configuration\n\
+               IDENTITY.md          -- System persona\n\
+               SOUL.md              -- Behavioral guidelines\n\
+             ```\n\
+             \n\
+             ## Available Tools\n\
+             - `fs_read_file` — Read a file (use to understand existing code)\n\
+             - `fs_write_file` — Write/create a file\n\
+             - `fs_list_dir` — List directory contents\n\
+             - `shell_execute` — Run shell commands (cargo check, cargo test, git, etc.)\n\
+             - `fs_delete_file` — Delete a file\n\
+             - `fs_create_dir` — Create a directory\n\
+             \n\
+             IMPORTANT: Start by exploring the relevant code. Read the files you plan to \
+             modify. Understand the patterns. Then write code that fits naturally into the \
+             existing codebase.",
+            repo_path = self.repo_path.display()
+        )
+    }
+
     /// Step 3: Run cargo fmt + clippy + test.
-    async fn step_run_tests(&self, task_id: &str) -> Result<bool> {
+    ///
+    /// Returns `Ok(())` if all checks pass. Returns `Err` with a detailed error
+    /// message (including compiler/test output) if any step fails. This error
+    /// message is fed back to the agent on retry so it can fix the issues.
+    async fn step_run_tests(&self, task_id: &str) -> Result<()> {
         info!(task_id = %task_id, "running tests");
 
         // Run cargo fmt.
         if let Err(e) = self.shell_exec("cargo fmt --all").await {
+            let err_msg = format!("cargo fmt failed:\n{e}");
             warn!(task_id = %task_id, error = %e, "cargo fmt failed");
             self.task_store
-                .append_message(task_id, "system", &format!("cargo fmt failed: {e}"))
+                .append_message(task_id, "system", &err_msg)
                 .await
                 .context("failed to append message")?;
-            return Ok(false);
+            anyhow::bail!("{err_msg}");
         }
 
         // Run cargo clippy.
@@ -465,32 +648,24 @@ impl DevWorker {
             .shell_exec("cargo clippy --workspace -- -D warnings")
             .await
         {
-            let err_msg = format!("cargo clippy failed: {e}");
+            let err_msg = format!("cargo clippy failed:\n{e}");
             warn!(task_id = %task_id, error = %e, "cargo clippy failed");
             self.task_store
                 .append_message(task_id, "system", &err_msg)
                 .await
                 .context("failed to append message")?;
-            self.task_store
-                .set_error(task_id, &err_msg)
-                .await
-                .context("failed to set error")?;
-            return Ok(false);
+            anyhow::bail!("{err_msg}");
         }
 
         // Run cargo test.
         if let Err(e) = self.shell_exec("cargo test --workspace").await {
-            let err_msg = format!("cargo test failed: {e}");
+            let err_msg = format!("cargo test failed:\n{e}");
             warn!(task_id = %task_id, error = %e, "cargo test failed");
             self.task_store
                 .append_message(task_id, "system", &err_msg)
                 .await
                 .context("failed to append message")?;
-            self.task_store
-                .set_error(task_id, &err_msg)
-                .await
-                .context("failed to set error")?;
-            return Ok(false);
+            anyhow::bail!("{err_msg}");
         }
 
         self.task_store
@@ -498,7 +673,7 @@ impl DevWorker {
             .await
             .context("failed to append message")?;
 
-        Ok(true)
+        Ok(())
     }
 
     /// Step 4: Commit, push, and create PR.

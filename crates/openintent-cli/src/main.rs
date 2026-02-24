@@ -14,6 +14,7 @@ mod cli;
 mod dev_commands;
 mod dev_worker;
 mod helpers;
+mod intent_classifier;
 mod repl;
 
 use std::path::Path;
