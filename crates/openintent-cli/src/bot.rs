@@ -541,6 +541,8 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
 }
 
 /// Split a message into chunks that fit within Telegram's character limit.
+///
+/// Respects UTF-8 char boundaries to avoid panics on multi-byte characters.
 fn split_telegram_message(text: &str, max_len: usize) -> Vec<String> {
     if text.len() <= max_len {
         return vec![text.to_owned()];
@@ -555,9 +557,15 @@ fn split_telegram_message(text: &str, max_len: usize) -> Vec<String> {
             break;
         }
 
-        let split_at = remaining[..max_len]
+        // Find the last char boundary at or before max_len.
+        let mut boundary = max_len;
+        while boundary > 0 && !remaining.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+
+        let split_at = remaining[..boundary]
             .rfind('\n')
-            .unwrap_or_else(|| remaining[..max_len].rfind(' ').unwrap_or(max_len));
+            .unwrap_or_else(|| remaining[..boundary].rfind(' ').unwrap_or(boundary));
 
         chunks.push(remaining[..split_at].to_owned());
         remaining = remaining[split_at..].trim_start();

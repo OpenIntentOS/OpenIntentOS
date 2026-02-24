@@ -707,15 +707,22 @@ fn short_hash(input: &str) -> String {
     format!("{hash:016x}")[..8].to_string()
 }
 
-/// Truncate a string to the given max length, appending "..." if truncated.
+/// Truncate a string to approximately `max_len` bytes, respecting UTF-8
+/// char boundaries. Appends "..." if truncated.
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
-        s.to_string()
-    } else {
-        let mut result = s[..max_len].to_string();
-        result.push_str("...");
-        result
+        return s.to_string();
     }
+
+    // Find the last char boundary at or before max_len.
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    let mut result = s[..end].to_string();
+    result.push_str("...");
+    result
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -758,5 +765,17 @@ mod tests {
     fn truncate_exact_length() {
         let s = "exactly10!";
         assert_eq!(truncate(s, 10), "exactly10!");
+    }
+
+    #[test]
+    fn truncate_multibyte_utf8() {
+        // Chinese chars are 3 bytes each. "代码提交" = 12 bytes.
+        let s = "代码提交到git仓库";
+        // Truncate at 10 bytes -- falls inside '提' (bytes 6..9),
+        // so it should back up to byte 6.
+        let result = truncate(s, 10);
+        assert!(result.ends_with("..."));
+        // Should not panic and should contain valid UTF-8.
+        assert!(result.starts_with("代码"));
     }
 }
