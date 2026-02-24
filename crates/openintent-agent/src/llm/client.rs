@@ -31,6 +31,9 @@ const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 /// Anthropic API version header value.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// Anthropic beta header required for OAuth token authentication.
+const ANTHROPIC_OAUTH_BETA: &str = "oauth-2025-04-20";
+
 // ---------------------------------------------------------------------------
 // Provider enum
 // ---------------------------------------------------------------------------
@@ -290,25 +293,49 @@ impl LlmClient {
     }
 
     /// Send the HTTP request to the Anthropic Messages API endpoint.
+    ///
+    /// Supports both standard API keys (`x-api-key` header) and OAuth tokens
+    /// (`Authorization: Bearer` header).  OAuth tokens are detected by their
+    /// `sk-ant-oat` prefix.
     async fn send_anthropic_request(&self, body: &Value) -> Result<reqwest::Response> {
         let url = format!("{}/v1/messages", self.config.base_url);
 
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-api-key",
-            HeaderValue::from_str(&self.config.api_key).map_err(|e| {
-                AgentError::LlmRequestFailed {
-                    reason: format!("invalid API key header: {e}"),
-                }
-            })?,
-        );
+
+        // OAuth tokens (from Claude Code) use Bearer auth + the oauth beta
+        // header; regular API keys use the x-api-key header.
+        let is_oauth = self.config.api_key.starts_with("sk-ant-oat");
+        if is_oauth {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", self.config.api_key)).map_err(|e| {
+                    AgentError::LlmRequestFailed {
+                        reason: format!("invalid authorization header: {e}"),
+                    }
+                })?,
+            );
+            headers.insert(
+                "anthropic-beta",
+                HeaderValue::from_static(ANTHROPIC_OAUTH_BETA),
+            );
+        } else {
+            headers.insert(
+                "x-api-key",
+                HeaderValue::from_str(&self.config.api_key).map_err(|e| {
+                    AgentError::LlmRequestFailed {
+                        reason: format!("invalid API key header: {e}"),
+                    }
+                })?,
+            );
+        }
+
         headers.insert(
             "anthropic-version",
             HeaderValue::from_static(ANTHROPIC_VERSION),
         );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-        tracing::debug!(url = %url, model = %body["model"], provider = "anthropic", "sending LLM request");
+        tracing::debug!(url = %url, model = %body["model"], provider = "anthropic", is_oauth = is_oauth, "sending LLM request");
 
         self.http
             .post(&url)

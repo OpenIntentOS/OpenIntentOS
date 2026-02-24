@@ -100,7 +100,7 @@ pub struct ChatBody {
 pub async fn chat(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ChatBody>,
-) -> impl IntoResponse {
+) -> (StatusCode, Json<Value>) {
     let tool_adapters: Vec<Arc<dyn openintent_agent::ToolAdapter>> = state
         .adapters
         .iter()

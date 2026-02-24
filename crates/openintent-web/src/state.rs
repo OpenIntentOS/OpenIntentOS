@@ -12,8 +12,9 @@ use std::sync::Arc;
 
 use openintent_adapters::Adapter;
 use openintent_agent::LlmClient;
+use openintent_agent::evolution::EvolutionEngine;
 use openintent_store::{Database, SessionStore};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::WebConfig;
 
@@ -38,4 +39,7 @@ pub struct AppState {
     /// System prompt loaded from `config/IDENTITY.md`.
     /// Wrapped in `RwLock` for hot-reload support.
     pub system_prompt: Arc<RwLock<String>>,
+
+    /// Optional self-evolution engine for auto-filing unhandled intent issues.
+    pub evolution: Option<Arc<Mutex<EvolutionEngine>>>,
 }

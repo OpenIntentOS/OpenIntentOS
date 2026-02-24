@@ -171,6 +171,44 @@ impl FilesystemAdapter {
         }))
     }
 
+    async fn tool_fs_str_replace(&self, params: Value) -> Result<Value> {
+        let path_str = Self::require_str(&params, "path", "fs_str_replace")?;
+        let old_string = Self::require_str(&params, "old_string", "fs_str_replace")?;
+        let new_string = Self::require_str(&params, "new_string", "fs_str_replace")?;
+        let full_path = self.safe_resolve(path_str, "fs_str_replace")?;
+        debug!(path = %full_path.display(), "replacing string in file");
+
+        let content = tokio::fs::read_to_string(&full_path).await?;
+
+        let match_count = content.matches(old_string).count();
+
+        if match_count == 0 {
+            return Err(AdapterError::ExecutionFailed {
+                tool_name: "fs_str_replace".to_string(),
+                reason: format!("old_string not found in `{}`", full_path.display(),),
+            });
+        }
+
+        if match_count > 1 {
+            return Err(AdapterError::ExecutionFailed {
+                tool_name: "fs_str_replace".to_string(),
+                reason: format!(
+                    "old_string matches {match_count} times in `{}` (must be unique)",
+                    full_path.display(),
+                ),
+            });
+        }
+
+        let updated = content.replacen(old_string, new_string, 1);
+        tokio::fs::write(&full_path, &updated).await?;
+
+        Ok(json!({
+            "path": full_path.display().to_string(),
+            "match_count": match_count,
+            "success": true,
+        }))
+    }
+
     async fn tool_fs_file_info(&self, params: Value) -> Result<Value> {
         let path_str = Self::require_str(&params, "path", "fs_file_info")?;
         let full_path = self.safe_resolve(path_str, "fs_file_info")?;
@@ -315,6 +353,19 @@ impl Adapter for FilesystemAdapter {
                 }),
             },
             ToolDefinition {
+                name: "fs_str_replace".into(),
+                description: "Replace a unique string in a file with a new string".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Path to the file to edit" },
+                        "old_string": { "type": "string", "description": "Exact string to find (must appear exactly once)" },
+                        "new_string": { "type": "string", "description": "Replacement string" }
+                    },
+                    "required": ["path", "old_string", "new_string"]
+                }),
+            },
+            ToolDefinition {
                 name: "fs_file_info".into(),
                 description: "Get metadata about a file or directory".into(),
                 parameters: json!({
@@ -341,6 +392,7 @@ impl Adapter for FilesystemAdapter {
             "fs_list_directory" => self.tool_fs_list_directory(params).await,
             "fs_create_directory" => self.tool_fs_create_directory(params).await,
             "fs_delete" => self.tool_fs_delete(params).await,
+            "fs_str_replace" => self.tool_fs_str_replace(params).await,
             "fs_file_info" => self.tool_fs_file_info(params).await,
             _ => Err(AdapterError::ToolNotFound {
                 adapter_id: self.id.clone(),
@@ -365,7 +417,7 @@ mod tests {
     #[tokio::test]
     async fn filesystem_adapter_tools_not_empty() {
         let adapter = FilesystemAdapter::new("fs-test", "/tmp");
-        assert_eq!(adapter.tools().len(), 6);
+        assert_eq!(adapter.tools().len(), 7);
     }
 
     #[tokio::test]
@@ -405,5 +457,86 @@ mod tests {
         let p = std::path::Path::new("/tmp/./sandbox/./file.txt");
         let norm = normalize_path(p);
         assert_eq!(norm, std::path::PathBuf::from("/tmp/sandbox/file.txt"));
+    }
+
+    #[tokio::test]
+    async fn fs_str_replace_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let file_path = root.join("replace_test.txt");
+        tokio::fs::write(&file_path, "Hello, World!").await.unwrap();
+
+        let mut adapter = FilesystemAdapter::new("fs-test", &root);
+        adapter.connect().await.unwrap();
+
+        let result = adapter
+            .execute_tool(
+                "fs_str_replace",
+                json!({
+                    "path": file_path.to_string_lossy(),
+                    "old_string": "World",
+                    "new_string": "Rust",
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+        assert_eq!(result["match_count"], 1);
+
+        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(content, "Hello, Rust!");
+    }
+
+    #[tokio::test]
+    async fn fs_str_replace_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let file_path = root.join("replace_test.txt");
+        tokio::fs::write(&file_path, "Hello, World!").await.unwrap();
+
+        let mut adapter = FilesystemAdapter::new("fs-test", &root);
+        adapter.connect().await.unwrap();
+
+        let result = adapter
+            .execute_tool(
+                "fs_str_replace",
+                json!({
+                    "path": file_path.to_string_lossy(),
+                    "old_string": "does_not_exist",
+                    "new_string": "anything",
+                }),
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("old_string not found"));
+    }
+
+    #[tokio::test]
+    async fn fs_str_replace_ambiguous() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let file_path = root.join("replace_test.txt");
+        tokio::fs::write(&file_path, "aaa bbb aaa").await.unwrap();
+
+        let mut adapter = FilesystemAdapter::new("fs-test", &root);
+        adapter.connect().await.unwrap();
+
+        let result = adapter
+            .execute_tool(
+                "fs_str_replace",
+                json!({
+                    "path": file_path.to_string_lossy(),
+                    "old_string": "aaa",
+                    "new_string": "ccc",
+                }),
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("matches 2 times"));
     }
 }

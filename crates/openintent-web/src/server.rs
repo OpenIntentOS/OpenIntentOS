@@ -48,6 +48,7 @@ impl WebServer {
     ) -> Self {
         let sessions = Arc::new(SessionStore::new(db.clone()));
         let system_prompt = load_system_prompt();
+        let evolution = openintent_agent::EvolutionEngine::from_env();
         let state = Arc::new(AppState {
             llm,
             adapters,
@@ -55,6 +56,7 @@ impl WebServer {
             db,
             sessions,
             system_prompt: Arc::new(RwLock::new(system_prompt)),
+            evolution,
         });
         Self { config, state }
     }

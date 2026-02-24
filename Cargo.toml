@@ -9,6 +9,7 @@ members = [
     "crates/openintent-adapters",
     "crates/openintent-auth-engine",
     "crates/openintent-sandbox",
+    "crates/openintent-skills",
     "crates/openintent-ui",
     "crates/openintent-web",
     "crates/openintent-tui",
@@ -97,6 +98,7 @@ openintent-intent = { path = "crates/openintent-intent" }
 openintent-adapters = { path = "crates/openintent-adapters" }
 openintent-auth-engine = { path = "crates/openintent-auth-engine" }
 openintent-sandbox = { path = "crates/openintent-sandbox" }
+openintent-skills = { path = "crates/openintent-skills" }
 openintent-ui = { path = "crates/openintent-ui" }
 openintent-web = { path = "crates/openintent-web" }
 openintent-tui = { path = "crates/openintent-tui" }

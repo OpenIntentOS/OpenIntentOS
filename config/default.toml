@@ -3,6 +3,23 @@ name = "OpenIntentOS"
 data_dir = "data"
 log_level = "info"
 
+# ---------------------------------------------------------------------------
+# LLM Configuration
+# ---------------------------------------------------------------------------
+#
+# Provider auto-detection order (when OPENINTENT_PROVIDER is not set):
+#   1. ANTHROPIC_API_KEY  -> Anthropic (claude-sonnet-4-20250514)
+#   2. OPENAI_API_KEY     -> OpenAI   (gpt-4o)
+#   3. DEEPSEEK_API_KEY   -> DeepSeek (deepseek-chat)
+#   4. Claude Code OAuth  -> Anthropic via macOS Keychain token
+#   5. Ollama (local)     -> qwen2.5:latest at localhost:11434
+#
+# Environment variables:
+#   OPENINTENT_PROVIDER      - Force a specific provider: anthropic, openai, deepseek, ollama
+#   OPENINTENT_MODEL         - Override the default model for the selected provider
+#   OPENINTENT_API_BASE_URL  - Override the base URL for the selected provider
+#   OPENINTENT_API_KEY       - Generic API key (used with custom providers)
+
 [llm]
 provider = "anthropic"
 model = "claude-sonnet-4-20250514"
@@ -12,6 +29,18 @@ temperature = 0.0
 [llm.anthropic]
 # Set via ANTHROPIC_API_KEY environment variable
 base_url = "https://api.anthropic.com"
+
+[llm.openai]
+# Set via OPENAI_API_KEY environment variable
+base_url = "https://api.openai.com/v1"
+
+[llm.deepseek]
+# Set via DEEPSEEK_API_KEY environment variable
+base_url = "https://api.deepseek.com/v1"
+
+[llm.ollama]
+# No API key required (local)
+base_url = "http://localhost:11434/v1"
 
 [kernel]
 max_concurrent_tasks = 16
@@ -24,3 +53,45 @@ db_path = "data/vault.db"
 db_path = "data/openintent.db"
 mmap_size = 268435456
 cache_size = 64000
+
+# ---------------------------------------------------------------------------
+# Evolution Engine (auto-files GitHub issues for unhandled intents)
+# ---------------------------------------------------------------------------
+#
+# Environment variables:
+#   GITHUB_TOKEN                  - Required for issue creation (repo scope)
+#   OPENINTENT_EVOLUTION_REPO     - owner/repo format (auto-detected from git remote if unset)
+#   OPENINTENT_EVOLUTION_ENABLED  - true to enable (auto-enabled if GITHUB_TOKEN is set)
+
+[evolution]
+labels = ["auto-evolution", "unhandled-intent"]
+
+# Phrases in agent responses that indicate inability to handle a request.
+# The engine checks if the agent's response contains any of these (case-insensitive).
+# Add phrases in any language your users may use.
+failure_indicators = [
+    # English
+    "I can't",
+    "I cannot",
+    "I'm unable to",
+    "I don't have the ability",
+    "not supported",
+    "no tool available",
+    "unable to fulfill",
+    "I don't have access to",
+    "not currently able",
+    "beyond my capabilities",
+    "no adapter",
+    "unknown tool",
+    # Chinese
+    "我无法",
+    "我不能",
+    "无法完成",
+    "没有这个功能",
+    "没有集成",
+    "暂不支持",
+    "不支持",
+    "超出了我的能力",
+    "目前没有",
+    "无法直接",
+]

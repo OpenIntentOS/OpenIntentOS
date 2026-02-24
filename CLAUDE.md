@@ -1,5 +1,10 @@
 # OpenIntentOS Development Guidelines
 
+## CRITICAL Rules (Highest Priority)
+
+- **No hardcoded multilingual content.** All user-facing strings, failure indicators, prompts, and locale-dependent text MUST be loaded from configuration files (e.g. `config/default.toml`) or resource files — NEVER hardcoded in source code. This applies to ALL languages.
+- **Maximum 1000 lines per file.** Any source file exceeding 1000 lines MUST be refactored into smaller modules immediately. No exceptions.
+
 ## Language
 
 - All code, comments, commit messages, and documentation MUST be in English.
@@ -24,6 +29,8 @@ openintent-cli (binary)
 │   └── openintent-agent (for LLM calls)
 ├── openintent-adapters
 │   └── openintent-vault (for auth tokens)
+├── openintent-skills (OpenClaw-compatible skill system)
+│   └── openintent-adapters (for Adapter trait)
 ├── openintent-auth-engine
 │   └── openintent-vault
 ├── openintent-ui (iced desktop)

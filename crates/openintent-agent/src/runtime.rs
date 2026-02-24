@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::compaction::{CompactionConfig, compact_messages, needs_compaction};
 use crate::error::{AgentError, Result};
 use crate::llm::LlmClient;
+use crate::llm::router::ModelRouter;
 use crate::llm::types::{ChatRequest, LlmResponse, Message, ToolCall, ToolDefinition, ToolResult};
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,23 @@ pub trait ToolAdapter: Send + Sync {
 // Agent context
 // ---------------------------------------------------------------------------
 
+// -- Type aliases for complex callback types --------------------------------
+
+/// Callback invoked for each text delta during streaming.
+pub type TextDeltaCallback = Arc<std::sync::Mutex<dyn FnMut(&str) + Send>>;
+
+/// Callback invoked before each tool execution for policy decisions.
+pub type PolicyCheckerFn = Arc<dyn Fn(&str, &Value) -> ToolPermission + Send + Sync>;
+
+/// The outcome of a pre-tool policy check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolPermission {
+    /// The tool invocation is allowed.
+    Allow,
+    /// The tool invocation is denied with a reason string.
+    Deny(String),
+}
+
 /// Configuration for the ReAct loop.
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
@@ -60,6 +78,10 @@ pub struct AgentConfig {
 
     /// Configuration for automatic context compaction.
     pub compaction: CompactionConfig,
+
+    /// Optional model router for dynamic per-turn model selection based on
+    /// input complexity.  When set, the router overrides `model` each turn.
+    pub router: Option<ModelRouter>,
 }
 
 impl Default for AgentConfig {
@@ -70,6 +92,7 @@ impl Default for AgentConfig {
             temperature: Some(0.0),
             max_tokens: Some(4096),
             compaction: CompactionConfig::default(),
+            router: None,
         }
     }
 }
@@ -93,6 +116,14 @@ pub struct AgentContext {
 
     /// Runtime configuration.
     pub config: AgentConfig,
+
+    /// Optional callback invoked for each text delta during streaming.
+    /// Enables real-time output in the CLI REPL and WebSocket handlers.
+    pub on_text_delta: Option<TextDeltaCallback>,
+
+    /// Optional policy checker invoked before each tool execution.
+    /// Returns [`ToolPermission::Allow`] or [`ToolPermission::Deny`].
+    pub policy_checker: Option<PolicyCheckerFn>,
 }
 
 impl AgentContext {
@@ -108,6 +139,8 @@ impl AgentContext {
             adapters,
             llm,
             config,
+            on_text_delta: None,
+            policy_checker: None,
         }
     }
 
@@ -222,9 +255,35 @@ pub async fn react_loop(ctx: &mut AgentContext) -> Result<AgentResponse> {
             }
         }
 
+        // Determine the model for this turn.  If a router is configured,
+        // use it to select the model based on the latest user message.
+        let model_for_turn = if let Some(ref router) = ctx.config.router {
+            // Find the last user message to estimate complexity.
+            let last_user_text = ctx
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == crate::llm::Role::User)
+                .map(|m| m.content_text())
+                .unwrap_or_default();
+
+            match router.route(&last_user_text) {
+                Ok(model_cfg) => {
+                    tracing::debug!(
+                        model = %model_cfg.model,
+                        "model router selected model for turn"
+                    );
+                    model_cfg.model.clone()
+                }
+                Err(_) => ctx.config.model.clone(),
+            }
+        } else {
+            ctx.config.model.clone()
+        };
+
         // Build the chat request for this turn.
         let request = ChatRequest {
-            model: ctx.config.model.clone(),
+            model: model_for_turn,
             messages: ctx.messages.clone(),
             tools: tools.clone(),
             temperature: ctx.config.temperature,
@@ -232,8 +291,19 @@ pub async fn react_loop(ctx: &mut AgentContext) -> Result<AgentResponse> {
             stream: true,
         };
 
-        // Call the LLM.
-        let response = ctx.llm.stream_chat(&request).await?;
+        // Call the LLM — use streaming callback if one is provided.
+        let response = if let Some(ref cb) = ctx.on_text_delta {
+            let cb = Arc::clone(cb);
+            ctx.llm
+                .stream_chat_with_callback(&request, |delta| {
+                    if let Ok(mut f) = cb.lock() {
+                        f(delta);
+                    }
+                })
+                .await?
+        } else {
+            ctx.llm.stream_chat(&request).await?
+        };
 
         match response {
             LlmResponse::Text(text) => {
@@ -262,7 +332,7 @@ pub async fn react_loop(ctx: &mut AgentContext) -> Result<AgentResponse> {
                 ctx.messages
                     .push(Message::assistant_tool_calls(calls.clone()));
 
-                // Execute all tool calls and collect results.
+                // Execute all tool calls and collect results (with policy check).
                 let results = execute_tool_calls(&calls, ctx).await?;
 
                 // Append each tool result to the conversation.
@@ -279,11 +349,41 @@ pub async fn react_loop(ctx: &mut AgentContext) -> Result<AgentResponse> {
 
 /// Execute a batch of tool calls, returning their results.
 ///
+/// If a `policy_checker` is set on the context, each tool call is checked
+/// before execution.  Denied tools return an error result to the LLM instead
+/// of being executed.
+///
 /// Calls are executed concurrently using `tokio::spawn` for parallelism.
 async fn execute_tool_calls(calls: &[ToolCall], ctx: &AgentContext) -> Result<Vec<ToolResult>> {
     let mut handles = Vec::with_capacity(calls.len());
 
     for call in calls {
+        // Policy check: if a policy checker is set, evaluate before executing.
+        if let Some(ref checker) = ctx.policy_checker {
+            let permission = checker(&call.name, &call.arguments);
+            if let ToolPermission::Deny(reason) = permission {
+                tracing::warn!(
+                    tool = %call.name,
+                    reason = %reason,
+                    "tool execution denied by policy"
+                );
+                handles.push(tokio::spawn({
+                    let tool_id = call.id.clone();
+                    let tool_name = call.name.clone();
+                    async move {
+                        ToolResult {
+                            tool_call_id: tool_id,
+                            content: format!(
+                                "Error: tool `{tool_name}` denied by policy: {reason}"
+                            ),
+                            is_error: true,
+                        }
+                    }
+                }));
+                continue;
+            }
+        }
+
         let adapter = ctx
             .find_adapter_for_tool(&call.name)
             .ok_or_else(|| AgentError::UnknownTool {

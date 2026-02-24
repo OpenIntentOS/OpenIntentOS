@@ -100,6 +100,13 @@ impl Message {
             tool_call_id: Some(tool_call_id.into()),
         }
     }
+
+    /// Return the text content of the message.
+    ///
+    /// For messages with tool calls but no text content, returns an empty string.
+    pub fn content_text(&self) -> String {
+        self.content.clone()
+    }
 }
 
 // ---------------------------------------------------------------------------

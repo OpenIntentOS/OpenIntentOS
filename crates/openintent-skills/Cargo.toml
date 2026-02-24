@@ -1,0 +1,21 @@
+[package]
+name = "openintent-skills"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Skill loading, parsing, and registry client for OpenIntentOS — compatible with OpenClaw SKILL.md format"
+
+[dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+
+openintent-adapters = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

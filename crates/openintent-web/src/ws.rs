@@ -144,6 +144,15 @@ impl OutboundMessage {
             result: None,
         }
     }
+
+    fn text_delta(content: impl Into<String>) -> Self {
+        Self {
+            msg_type: "text_delta".into(),
+            content: Some(content.into()),
+            tool: None,
+            result: None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -290,12 +299,48 @@ async fn handle_chat_message(
             stream: true,
         };
 
-        let response = llm.stream_chat(&request).await?;
+        // Use streaming callback to send text deltas over WebSocket in real-time.
+        // A channel bridges the sync callback to the async WebSocket sender.
+        let (delta_tx, mut delta_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        let llm_clone = llm.clone();
+        let request_clone = request.clone();
+        let stream_handle = tokio::spawn(async move {
+            llm_clone
+                .stream_chat_with_callback(&request_clone, |delta| {
+                    let _ = delta_tx.send(delta.to_owned());
+                })
+                .await
+        });
+
+        // Forward deltas to the WebSocket client as they arrive.
+        while let Some(delta) = delta_rx.recv().await {
+            let _ = send(socket, &OutboundMessage::text_delta(&delta)).await;
+        }
+
+        // Await the completed response.
+        let response = stream_handle.await.map_err(|e| {
+            Box::new(std::io::Error::other(format!(
+                "LLM stream task panicked: {e}"
+            ))) as Box<dyn std::error::Error + Send + Sync>
+        })??;
 
         match response {
             LlmResponse::Text(text) => {
                 messages.push(openintent_agent::Message::assistant(&text));
                 send(socket, &OutboundMessage::text(&text)).await?;
+
+                // Evolution: analyze response for signs of inability.
+                if let Some(ref evo) = state.evolution {
+                    let mut evo = evo.lock().await;
+                    if let Some(issue_url) = evo
+                        .analyze_response(user_message, &text, "web", _turn + 1)
+                        .await
+                    {
+                        let evo_msg = format!("A feature request has been auto-filed: {issue_url}");
+                        send(socket, &OutboundMessage::text(&evo_msg)).await?;
+                    }
+                }
 
                 // Persist assistant response.
                 if let Some(sid) = session_id {
@@ -335,11 +380,35 @@ async fn handle_chat_message(
         }
     }
 
-    send(
-        socket,
-        &OutboundMessage::text("Reached maximum number of reasoning turns."),
-    )
-    .await?;
+    // Evolution: report max-turns exceeded as unhandled intent.
+    if let Some(ref evo) = state.evolution {
+        let mut evo = evo.lock().await;
+        let error = openintent_agent::AgentError::MaxTurnsExceeded {
+            task_id: uuid::Uuid::nil(),
+            max_turns: config.max_turns,
+        };
+        if let Some(issue_url) = evo.report_error(user_message, "web", &error).await {
+            send(
+                socket,
+                &OutboundMessage::text(format!(
+                    "Reached maximum reasoning turns. A feature request has been auto-filed: {issue_url}"
+                )),
+            )
+            .await?;
+        } else {
+            send(
+                socket,
+                &OutboundMessage::text("Reached maximum number of reasoning turns."),
+            )
+            .await?;
+        }
+    } else {
+        send(
+            socket,
+            &OutboundMessage::text("Reached maximum number of reasoning turns."),
+        )
+        .await?;
+    }
     Ok(())
 }
 

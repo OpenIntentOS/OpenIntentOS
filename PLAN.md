@@ -158,6 +158,16 @@ OpenIntentOS/
 │   │       ├── browser.rs       # CDP browser automation
 │   │       ├── http_client.rs   # Generic HTTP/REST adapter
 │   │       └── email.rs         # IMAP/SMTP adapter
+│   ├── openintent-skills/       # Skill system (OpenClaw-compatible)
+│   │   └── src/
+│   │       ├── lib.rs           # Public API
+│   │       ├── error.rs         # Error types
+│   │       ├── types.rs         # SkillDefinition, metadata types
+│   │       ├── parser.rs        # SKILL.md parser (YAML + markdown)
+│   │       ├── loader.rs        # Filesystem skill loader
+│   │       ├── registry.rs      # ClawHub registry client
+│   │       ├── manager.rs       # Install, remove, list, update
+│   │       └── adapter.rs       # SkillAdapter (Adapter trait bridge)
 │   ├── openintent-auth-engine/  # Headless auth automation
 │   │   └── src/
 │   │       ├── lib.rs
@@ -193,6 +203,7 @@ OpenIntentOS/
 │   ├── IDENTITY.md              # System identity definition
 │   ├── SOUL.md                  # Behavioral guidelines
 │   └── default.toml             # Default configuration
+├── skills/                      # Installed skills (gitignored, user-specific)
 ├── data/                        # Runtime data (gitignored)
 ├── Cargo.toml                   # Workspace root
 ├── rust-toolchain.toml          # Pin Rust version

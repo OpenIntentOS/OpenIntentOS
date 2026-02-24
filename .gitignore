@@ -5,6 +5,9 @@
 # Runtime data
 /data/
 
+# Installed skills (user-specific)
+/skills/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -31,6 +31,7 @@
 
 pub mod compaction;
 pub mod error;
+pub mod evolution;
 pub mod executor;
 pub mod llm;
 pub mod planner;
@@ -39,10 +40,14 @@ pub mod runtime;
 // Re-export the most commonly used types at the crate root.
 pub use compaction::{CompactionConfig, compact_messages, needs_compaction};
 pub use error::{AgentError, Result};
+pub use evolution::{EvolutionConfig, EvolutionEngine, UnhandledIntent};
 pub use executor::{Executor, ExecutorConfig, StepResult};
 pub use llm::{
     ChatRequest, LlmClient, LlmClientConfig, LlmResponse, Message, ModelConfig, ModelRouter, Role,
     ToolCall, ToolDefinition, ToolResult,
 };
 pub use planner::{Plan, Planner, PlannerConfig, Step, StepStatus};
-pub use runtime::{AgentConfig, AgentContext, AgentResponse, ToolAdapter, react_loop};
+pub use runtime::{
+    AgentConfig, AgentContext, AgentResponse, PolicyCheckerFn, TextDeltaCallback, ToolAdapter,
+    ToolPermission, react_loop,
+};

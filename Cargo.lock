@@ -3542,6 +3542,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "toml",
  "tracing",
  "uuid",
 ]
@@ -3577,11 +3578,13 @@ dependencies = [
  "openintent-agent",
  "openintent-intent",
  "openintent-kernel",
+ "openintent-skills",
  "openintent-store",
  "openintent-tui",
  "openintent-ui",
  "openintent-vault",
  "openintent-web",
+ "reqwest",
  "serde_json",
  "tokio",
  "tracing",
@@ -3635,6 +3638,22 @@ dependencies = [
  "tokio",
  "tracing",
  "wasmtime",
+]
+
+[[package]]
+name = "openintent-skills"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "openintent-adapters",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
