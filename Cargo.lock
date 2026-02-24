@@ -3491,6 +3491,7 @@ dependencies = [
  "openintent-kernel",
  "openintent-store",
  "openintent-tui",
+ "openintent-ui",
  "openintent-vault",
  "openintent-web",
  "serde_json",

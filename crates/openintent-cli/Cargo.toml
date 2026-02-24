@@ -26,3 +26,4 @@ openintent-intent = { workspace = true }
 openintent-adapters = { workspace = true }
 openintent-web = { workspace = true }
 openintent-tui = { workspace = true }
+openintent-ui = { workspace = true }

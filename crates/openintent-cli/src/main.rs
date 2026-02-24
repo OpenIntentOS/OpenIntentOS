@@ -82,6 +82,15 @@ enum Commands {
         #[arg(long, short)]
         session: Option<String>,
     },
+
+    /// Start the desktop GUI (iced).
+    Gui,
+
+    /// Manage user accounts.
+    Users {
+        #[command(subcommand)]
+        action: UserAction,
+    },
 }
 
 /// Actions for managing conversation sessions.
@@ -98,6 +107,32 @@ enum SessionAction {
     Delete {
         /// The session name to delete.
         name: String,
+    },
+}
+
+/// Actions for managing user accounts.
+#[derive(Subcommand)]
+enum UserAction {
+    /// List all users.
+    List,
+    /// Create a new user.
+    Create {
+        /// The username for the new account.
+        username: String,
+        /// The password for the new account.
+        #[arg(long, short)]
+        password: String,
+        /// Optional display name.
+        #[arg(long, short)]
+        display_name: Option<String>,
+        /// Role: admin, user, or viewer.
+        #[arg(long, short, default_value = "user")]
+        role: String,
+    },
+    /// Delete a user by username.
+    Delete {
+        /// The username to delete.
+        username: String,
     },
 }
 
@@ -182,6 +217,8 @@ async fn main() -> Result<()> {
         Commands::Status => cmd_status().await,
         Commands::Sessions { action } => cmd_sessions(action).await,
         Commands::Tui { session } => cmd_tui(session).await,
+        Commands::Gui => cmd_gui().await,
+        Commands::Users { action } => cmd_users(action).await,
     }
 }
 
@@ -295,8 +332,25 @@ async fn cmd_run(session_name: Option<String>) -> Result<()> {
         openintent_adapters::MemoryToolsAdapter::new("memory", Arc::clone(&memory));
     memory_adapter.connect().await?;
 
+    let mut github_adapter = openintent_adapters::GitHubAdapter::new("github");
+    github_adapter.connect().await?;
+
+    let mut email_adapter = openintent_adapters::EmailAdapter::new("email");
+    email_adapter.connect().await?;
+
+    let mut browser_adapter = openintent_adapters::BrowserAdapter::new("browser");
+    if let Err(e) = browser_adapter.connect().await {
+        tracing::warn!(error = %e, "browser adapter failed to connect (Chrome may not be running)");
+    }
+
+    let mut feishu_adapter = openintent_adapters::FeishuAdapter::new("feishu");
+    feishu_adapter.connect().await?;
+
+    let mut calendar_adapter = openintent_adapters::CalendarAdapter::new("calendar");
+    calendar_adapter.connect().await?;
+
     info!(
-        "adapters initialized (filesystem, shell, web_search, web_fetch, http_request, cron, memory)"
+        "adapters initialized (filesystem, shell, web_search, web_fetch, http_request, cron, memory, github, email, browser, feishu, calendar)"
     );
 
     // 8. Wrap adapters in the bridge.
@@ -308,6 +362,11 @@ async fn cmd_run(session_name: Option<String>) -> Result<()> {
         Arc::new(AdapterBridge::new(http_adapter)),
         Arc::new(AdapterBridge::new(cron_adapter)),
         Arc::new(AdapterBridge::new(memory_adapter)),
+        Arc::new(AdapterBridge::new(github_adapter)),
+        Arc::new(AdapterBridge::new(email_adapter)),
+        Arc::new(AdapterBridge::new(browser_adapter)),
+        Arc::new(AdapterBridge::new(feishu_adapter)),
+        Arc::new(AdapterBridge::new(calendar_adapter)),
     ];
 
     // 9. Load system prompt.
@@ -341,7 +400,8 @@ async fn cmd_run(session_name: Option<String>) -> Result<()> {
     println!();
     println!("  OpenIntentOS v{}", env!("CARGO_PKG_VERSION"));
     println!("  Model: {model}");
-    println!("  Adapters: filesystem, shell, web_search, web_fetch, http_request, cron, memory");
+    println!("  Adapters: filesystem, shell, web_search, web_fetch, http_request, cron, memory,");
+    println!("            github, email, browser, feishu, calendar");
     if let Some(ref name) = session_name {
         println!("  Session: {name}");
     }
@@ -561,8 +621,25 @@ async fn cmd_tui(_session_name: Option<String>) -> Result<()> {
         openintent_adapters::MemoryToolsAdapter::new("memory", Arc::clone(&memory));
     memory_adapter.connect().await?;
 
+    let mut github_adapter = openintent_adapters::GitHubAdapter::new("github");
+    github_adapter.connect().await?;
+
+    let mut email_adapter = openintent_adapters::EmailAdapter::new("email");
+    email_adapter.connect().await?;
+
+    let mut browser_adapter = openintent_adapters::BrowserAdapter::new("browser");
+    if let Err(e) = browser_adapter.connect().await {
+        tracing::warn!(error = %e, "browser adapter failed to connect (Chrome may not be running)");
+    }
+
+    let mut feishu_adapter = openintent_adapters::FeishuAdapter::new("feishu");
+    feishu_adapter.connect().await?;
+
+    let mut calendar_adapter = openintent_adapters::CalendarAdapter::new("calendar");
+    calendar_adapter.connect().await?;
+
     info!(
-        "adapters initialized (filesystem, shell, web_search, web_fetch, http_request, cron, memory)"
+        "adapters initialized (filesystem, shell, web_search, web_fetch, http_request, cron, memory, github, email, browser, feishu, calendar)"
     );
 
     // 7. Wrap adapters in the bridge.
@@ -574,6 +651,11 @@ async fn cmd_tui(_session_name: Option<String>) -> Result<()> {
         Arc::new(AdapterBridge::new(http_adapter)),
         Arc::new(AdapterBridge::new(cron_adapter)),
         Arc::new(AdapterBridge::new(memory_adapter)),
+        Arc::new(AdapterBridge::new(github_adapter)),
+        Arc::new(AdapterBridge::new(email_adapter)),
+        Arc::new(AdapterBridge::new(browser_adapter)),
+        Arc::new(AdapterBridge::new(feishu_adapter)),
+        Arc::new(AdapterBridge::new(calendar_adapter)),
     ];
 
     // 8. Load system prompt.
@@ -793,6 +875,23 @@ async fn cmd_serve(bind: String, port: u16) -> Result<()> {
         openintent_adapters::MemoryToolsAdapter::new("memory", Arc::clone(&memory));
     memory_adapter.connect().await?;
 
+    let mut github_adapter = openintent_adapters::GitHubAdapter::new("github");
+    github_adapter.connect().await?;
+
+    let mut email_adapter = openintent_adapters::EmailAdapter::new("email");
+    email_adapter.connect().await?;
+
+    let mut browser_adapter = openintent_adapters::BrowserAdapter::new("browser");
+    if let Err(e) = browser_adapter.connect().await {
+        tracing::warn!(error = %e, "browser adapter failed to connect (Chrome may not be running)");
+    }
+
+    let mut feishu_adapter = openintent_adapters::FeishuAdapter::new("feishu");
+    feishu_adapter.connect().await?;
+
+    let mut calendar_adapter = openintent_adapters::CalendarAdapter::new("calendar");
+    calendar_adapter.connect().await?;
+
     let adapters: Vec<Arc<dyn openintent_adapters::Adapter>> = vec![
         Arc::new(fs_adapter),
         Arc::new(shell_adapter),
@@ -801,10 +900,15 @@ async fn cmd_serve(bind: String, port: u16) -> Result<()> {
         Arc::new(http_adapter),
         Arc::new(cron_adapter),
         Arc::new(memory_adapter),
+        Arc::new(github_adapter),
+        Arc::new(email_adapter),
+        Arc::new(browser_adapter),
+        Arc::new(feishu_adapter),
+        Arc::new(calendar_adapter),
     ];
 
     info!(
-        "adapters initialized (filesystem, shell, web_search, web_fetch, http_request, cron, memory)"
+        "adapters initialized (filesystem, shell, web_search, web_fetch, http_request, cron, memory, github, email, browser, feishu, calendar)"
     );
 
     // 5. Configure and start the web server.
@@ -817,9 +921,15 @@ async fn cmd_serve(bind: String, port: u16) -> Result<()> {
     println!("  OpenIntentOS v{}", env!("CARGO_PKG_VERSION"));
     println!("  Model: {model}");
     println!(
-        "  Web UI: http://{}:{}",
+        "  Web UI:  http://{}:{}",
         web_config.bind_addr, web_config.port
     );
+    println!(
+        "  MCP:     http://{}:{}/mcp",
+        web_config.bind_addr, web_config.port
+    );
+    println!("  Adapters: filesystem, shell, web_search, web_fetch, http_request, cron, memory,");
+    println!("            github, email, browser, feishu, calendar");
     println!();
 
     let server = openintent_web::WebServer::new(web_config, llm, adapters, db);
@@ -917,6 +1027,122 @@ async fn cmd_status() -> Result<()> {
     }
 
     println!();
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand: gui
+// ---------------------------------------------------------------------------
+
+async fn cmd_gui() -> Result<()> {
+    init_tracing("info");
+
+    info!("starting OpenIntentOS desktop GUI");
+
+    println!();
+    println!("  OpenIntentOS Desktop v{}", env!("CARGO_PKG_VERSION"));
+    println!("  Launching iced GUI...");
+    println!();
+
+    openintent_ui::run_desktop_ui().map_err(|e| anyhow::anyhow!("GUI error: {e}"))?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand: users
+// ---------------------------------------------------------------------------
+
+async fn cmd_users(action: UserAction) -> Result<()> {
+    init_tracing("warn");
+
+    // Open the database.
+    let data_dir = Path::new("data");
+    let db_path = data_dir.join("openintent.db");
+
+    if !db_path.exists() {
+        eprintln!("  Error: Database not found. Run `openintent setup` first.");
+        std::process::exit(1);
+    }
+
+    let db = openintent_store::Database::open_and_migrate(db_path)
+        .await
+        .context("failed to open database")?;
+    let users = openintent_store::UserStore::new(db);
+
+    match action {
+        UserAction::List => {
+            let all = users.list(1000, 0).await.context("failed to list users")?;
+
+            if all.is_empty() {
+                println!("  No users found.");
+                return Ok(());
+            }
+
+            println!();
+            println!(
+                "  {:<36} {:<20} {:<20} {:<8} {:<8}",
+                "ID", "USERNAME", "DISPLAY NAME", "ROLE", "ACTIVE"
+            );
+            println!("  {}", "-".repeat(96));
+
+            for u in &all {
+                let display = u.display_name.as_deref().unwrap_or("-");
+                println!(
+                    "  {:<36} {:<20} {:<20} {:<8} {:<8}",
+                    u.id, u.username, display, u.role, u.active
+                );
+            }
+            println!();
+        }
+
+        UserAction::Create {
+            username,
+            password,
+            display_name,
+            role,
+        } => {
+            let role = match role.as_str() {
+                "admin" => openintent_store::UserRole::Admin,
+                "user" => openintent_store::UserRole::User,
+                "viewer" => openintent_store::UserRole::Viewer,
+                other => {
+                    eprintln!("  Error: Unknown role '{other}'. Use 'admin', 'user', or 'viewer'.");
+                    std::process::exit(1);
+                }
+            };
+
+            let user = users
+                .create(&username, display_name.as_deref(), &password, role)
+                .await
+                .context("failed to create user")?;
+
+            println!("  Created user: {} (id: {})", user.username, user.id);
+        }
+
+        UserAction::Delete { username } => {
+            let user = users
+                .get_by_username(&username)
+                .await
+                .context("failed to look up user")?;
+
+            let user = match user {
+                Some(u) => u,
+                None => {
+                    eprintln!("  Error: User '{}' not found.", username);
+                    std::process::exit(1);
+                }
+            };
+
+            users
+                .delete(&user.id)
+                .await
+                .context("failed to delete user")?;
+
+            println!("  Deleted user: {}", username);
+        }
+    }
 
     Ok(())
 }
