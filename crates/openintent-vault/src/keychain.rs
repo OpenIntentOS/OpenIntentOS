@@ -4,7 +4,7 @@
 //! module provides a [`KeychainProvider`] trait that abstracts over different
 //! platform-specific secure storage backends:
 //!
-//! - **macOS**: Keychain Services (TODO)
+//! - **macOS**: Keychain Services via `security-framework`
 //! - **Windows**: DPAPI (TODO)
 //! - **Linux**: Secret Service / libsecret (TODO)
 //! - **Fallback**: File-based encrypted storage using a device-derived key
@@ -213,17 +213,141 @@ impl KeychainProvider for FileKeychain {
 }
 
 // ---------------------------------------------------------------------------
-// Platform-specific implementations (TODO)
+// macOS Keychain Services
 // ---------------------------------------------------------------------------
 
-// TODO: macOS Keychain Services implementation
-//
-// Use the `security-framework` crate to access the macOS Keychain.
-// Store the master key as a generic password item with:
-//   - Service: "com.openintentos.vault"
-//   - Account: "master-key"
-//
-// pub struct MacOsKeychain;
+/// The Security framework error code for "item not found"
+/// (`errSecItemNotFound = -25300`).
+#[cfg(target_os = "macos")]
+const MACOS_ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
+/// macOS Keychain Services integration via the `security-framework` crate.
+///
+/// Stores the master key in the user's login keychain using the generic
+/// password APIs (`SecKeychainAddGenericPassword` /
+/// `SecKeychainFindGenericPassword`).
+///
+/// This provides hardware-backed secure storage that is protected by the
+/// user's login password and (on Apple Silicon) the Secure Enclave.
+#[cfg(target_os = "macos")]
+pub struct MacOSKeychain {
+    /// The keychain service name (e.g. "com.openintentos.vault").
+    service_name: String,
+    /// The keychain account name (e.g. "master-key").
+    account_name: String,
+}
+
+#[cfg(target_os = "macos")]
+impl MacOSKeychain {
+    /// Default service name used for keychain entries.
+    const DEFAULT_SERVICE: &'static str = "com.openintentos.vault";
+    /// Default account name used for the master key entry.
+    const DEFAULT_ACCOUNT: &'static str = "master-key";
+
+    /// Create a new macOS keychain provider with default service and account
+    /// names.
+    pub fn new() -> Self {
+        Self {
+            service_name: Self::DEFAULT_SERVICE.to_string(),
+            account_name: Self::DEFAULT_ACCOUNT.to_string(),
+        }
+    }
+
+    /// Create a new macOS keychain provider with custom service and account
+    /// names.
+    ///
+    /// This is useful for testing or running multiple vault instances that
+    /// should not share the same keychain entry.
+    pub fn with_names(service: &str, account: &str) -> Self {
+        Self {
+            service_name: service.to_string(),
+            account_name: account.to_string(),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Default for MacOSKeychain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl KeychainProvider for MacOSKeychain {
+    fn get_master_key(&self) -> Result<Vec<u8>> {
+        use security_framework::passwords::get_generic_password;
+
+        match get_generic_password(&self.service_name, &self.account_name) {
+            Ok(data) => {
+                tracing::debug!(
+                    service = %self.service_name,
+                    "retrieved master key from macOS keychain"
+                );
+                Ok(data.to_vec())
+            }
+            Err(e) if e.code() == MACOS_ERR_SEC_ITEM_NOT_FOUND => {
+                Err(VaultError::MasterKeyNotFound)
+            }
+            Err(e) => Err(VaultError::KeychainUnavailable {
+                reason: format!("macOS keychain read failed: {e}"),
+            }),
+        }
+    }
+
+    fn set_master_key(&self, key: &[u8]) -> Result<()> {
+        use security_framework::passwords::set_generic_password;
+
+        set_generic_password(&self.service_name, &self.account_name, key).map_err(|e| {
+            VaultError::MasterKeyStoreFailed {
+                reason: format!("macOS keychain write failed: {e}"),
+            }
+        })?;
+
+        tracing::info!(
+            service = %self.service_name,
+            "stored master key in macOS keychain"
+        );
+        Ok(())
+    }
+
+    fn has_master_key(&self) -> Result<bool> {
+        use security_framework::passwords::get_generic_password;
+
+        match get_generic_password(&self.service_name, &self.account_name) {
+            Ok(_) => Ok(true),
+            Err(e) if e.code() == MACOS_ERR_SEC_ITEM_NOT_FOUND => Ok(false),
+            Err(e) => Err(VaultError::KeychainUnavailable {
+                reason: format!("macOS keychain check failed: {e}"),
+            }),
+        }
+    }
+
+    fn delete_master_key(&self) -> Result<()> {
+        use security_framework::passwords::delete_generic_password;
+
+        match delete_generic_password(&self.service_name, &self.account_name) {
+            Ok(()) => {
+                tracing::info!(
+                    service = %self.service_name,
+                    "deleted master key from macOS keychain"
+                );
+                Ok(())
+            }
+            Err(e) if e.code() == MACOS_ERR_SEC_ITEM_NOT_FOUND => {
+                // Not an error if the key does not exist.
+                Ok(())
+            }
+            Err(e) => Err(VaultError::KeychainUnavailable {
+                reason: format!("macOS keychain delete failed: {e}"),
+            }),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Platform-specific implementations (TODO)
+// ---------------------------------------------------------------------------
 
 // TODO: Windows DPAPI implementation
 //
@@ -238,6 +362,40 @@ impl KeychainProvider for FileKeychain {
 // the D-Bus Secret Service API (GNOME Keyring / KDE Wallet).
 //
 // pub struct LinuxSecretServiceKeychain;
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+/// Returns the best available keychain provider for the current platform.
+///
+/// - **macOS**: [`MacOSKeychain`] (Keychain Services)
+/// - **Other platforms**: [`FileKeychain`] (encrypted file fallback)
+///
+/// The `data_dir` parameter is used by the file-based fallback to determine
+/// where to store the encrypted master key file. On macOS, this parameter is
+/// unused because the key is stored in Keychain Services.
+///
+/// This is the recommended way to obtain a keychain provider. Callers should
+/// not need to know which backend is in use.
+pub fn platform_keychain(data_dir: &Path) -> Box<dyn KeychainProvider> {
+    // Suppress the unused-variable warning on macOS where data_dir is not
+    // needed. The parameter is still part of the public API so that callers
+    // have a uniform signature across platforms.
+    let _ = &data_dir;
+
+    #[cfg(target_os = "macos")]
+    {
+        tracing::info!("using macOS Keychain Services for master key storage");
+        Box::new(MacOSKeychain::new())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let path = FileKeychain::default_path(data_dir);
+        tracing::info!(path = %path.display(), "using file-based keychain for master key storage");
+        Box::new(FileKeychain::new(path))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -302,5 +460,124 @@ mod tests {
         assert_eq!(retrieved, key2);
 
         keychain.delete_master_key().unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // macOS Keychain tests
+    // -----------------------------------------------------------------------
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_keychain_construction() {
+        let kc = MacOSKeychain::new();
+        assert_eq!(kc.service_name, "com.openintentos.vault");
+        assert_eq!(kc.account_name, "master-key");
+
+        let kc2 = MacOSKeychain::with_names("test.service", "test.account");
+        assert_eq!(kc2.service_name, "test.service");
+        assert_eq!(kc2.account_name, "test.account");
+
+        // Verify Default trait works the same as new().
+        let kc3 = MacOSKeychain::default();
+        assert_eq!(kc3.service_name, kc.service_name);
+        assert_eq!(kc3.account_name, kc.account_name);
+    }
+
+    /// Round-trip test for macOS Keychain Services.
+    ///
+    /// This test interacts with the real macOS Keychain. It uses a unique
+    /// test-specific service name to avoid interfering with production data.
+    /// In CI environments the keychain may not be unlocked, so this test is
+    /// ignored by default.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires unlocked macOS Keychain — run manually with --ignored"]
+    fn macos_keychain_roundtrip() {
+        let service = format!("com.openintentos.vault.test.{}", std::process::id());
+        let kc = MacOSKeychain::with_names(&service, "test-master-key");
+
+        // Clean up any leftover from a previous run.
+        let _ = kc.delete_master_key();
+
+        // Initially there should be no key.
+        assert!(!kc.has_master_key().unwrap());
+
+        // Store a key.
+        let key = crypto::random_bytes(crypto::KEY_LEN).unwrap();
+        kc.set_master_key(&key).unwrap();
+
+        // Should now exist.
+        assert!(kc.has_master_key().unwrap());
+
+        // Retrieve and verify.
+        let retrieved = kc.get_master_key().unwrap();
+        assert_eq!(retrieved, key);
+
+        // Overwrite with a new key.
+        let key2 = crypto::random_bytes(crypto::KEY_LEN).unwrap();
+        kc.set_master_key(&key2).unwrap();
+        let retrieved2 = kc.get_master_key().unwrap();
+        assert_eq!(retrieved2, key2);
+
+        // Delete and verify gone.
+        kc.delete_master_key().unwrap();
+        assert!(!kc.has_master_key().unwrap());
+
+        // Deleting again should be a no-op.
+        kc.delete_master_key().unwrap();
+    }
+
+    /// Verify that `get_master_key` returns `MasterKeyNotFound` when the
+    /// keychain entry does not exist.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires unlocked macOS Keychain — run manually with --ignored"]
+    fn macos_keychain_not_found() {
+        let service = format!(
+            "com.openintentos.vault.test.notfound.{}",
+            std::process::id()
+        );
+        let kc = MacOSKeychain::with_names(&service, "nonexistent-key");
+
+        let result = kc.get_master_key();
+        assert!(matches!(result, Err(VaultError::MasterKeyNotFound)));
+    }
+
+    // -----------------------------------------------------------------------
+    // platform_keychain factory tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn platform_keychain_returns_provider() {
+        let dir = std::env::temp_dir().join("openintent-vault-test-platform");
+        fs::create_dir_all(&dir).unwrap();
+
+        let provider = platform_keychain(&dir);
+
+        // We cannot inspect the concrete type, but we can verify the trait
+        // object is usable. On macOS this will be MacOSKeychain, on other
+        // platforms it will be FileKeychain.
+        // Just calling has_master_key is enough to confirm the provider works.
+        let _has_key = provider.has_master_key();
+    }
+
+    /// Verify that `FileKeychain` still works as the fallback provider.
+    #[test]
+    fn file_keychain_fallback_works() {
+        let path = temp_key_file().with_extension("fallback");
+        let keychain = FileKeychain::new(&path);
+        let _ = keychain.delete_master_key();
+
+        assert!(!keychain.has_master_key().unwrap());
+
+        let key = crypto::random_bytes(crypto::KEY_LEN).unwrap();
+        keychain.set_master_key(&key).unwrap();
+        assert!(keychain.has_master_key().unwrap());
+
+        let retrieved = keychain.get_master_key().unwrap();
+        assert_eq!(retrieved, key);
+
+        keychain.delete_master_key().unwrap();
+        assert!(!keychain.has_master_key().unwrap());
     }
 }

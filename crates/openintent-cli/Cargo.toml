@@ -25,3 +25,4 @@ openintent-agent = { workspace = true }
 openintent-intent = { workspace = true }
 openintent-adapters = { workspace = true }
 openintent-web = { workspace = true }
+openintent-tui = { workspace = true }

@@ -4,6 +4,9 @@
 //! on a specific adapter.  The engine handles execution, error propagation,
 //! and result chaining between steps.
 
+use std::sync::Arc;
+
+use openintent_agent::runtime::ToolAdapter;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -128,25 +131,58 @@ pub struct WorkflowResult {
 /// results.  In this initial version, execution is sequential — parallel
 /// step execution is a planned enhancement.
 pub struct WorkflowEngine {
-    // TODO: Hold references to the adapter registry and agent runtime
-    // so we can resolve adapter IDs to live Adapter instances and dispatch
-    // tool calls.
+    /// Registered tool adapters used to resolve and dispatch step calls.
+    adapters: Vec<Arc<dyn ToolAdapter>>,
+    /// When true, continue executing remaining steps after a failure instead
+    /// of aborting immediately.
+    continue_on_error: bool,
 }
 
 impl WorkflowEngine {
-    /// Create a new workflow engine.
-    pub fn new() -> Self {
-        Self {}
+    /// Create a new workflow engine with the given adapters.
+    pub fn new(adapters: Vec<Arc<dyn ToolAdapter>>) -> Self {
+        Self {
+            adapters,
+            continue_on_error: false,
+        }
+    }
+
+    /// Builder method to set the adapters on an existing engine.
+    pub fn with_adapters(mut self, adapters: Vec<Arc<dyn ToolAdapter>>) -> Self {
+        self.adapters = adapters;
+        self
+    }
+
+    /// Builder method to enable or disable continue-on-error behaviour.
+    ///
+    /// When enabled, the engine will keep executing remaining steps even if an
+    /// earlier step fails.  The final `WorkflowResult.success` will be `false`
+    /// if any step failed.
+    pub fn with_continue_on_error(mut self, continue_on_error: bool) -> Self {
+        self.continue_on_error = continue_on_error;
+        self
+    }
+
+    /// Find the adapter whose `adapter_id()` matches `id`.
+    fn find_adapter(&self, id: &str) -> Option<&Arc<dyn ToolAdapter>> {
+        self.adapters.iter().find(|a| a.adapter_id() == id)
     }
 
     /// Execute a workflow, running each step in sequence.
     ///
     /// Returns a [`WorkflowResult`] summarising what happened.  If a step
-    /// fails, the workflow is aborted and remaining steps are skipped.
+    /// fails and `continue_on_error` is false (the default), the workflow is
+    /// aborted and remaining steps are skipped.
     pub async fn execute(&self, workflow: &mut Workflow) -> Result<WorkflowResult> {
         if workflow.steps.is_empty() {
             return Err(IntentError::InvalidWorkflowState {
                 reason: "workflow has no steps".into(),
+            });
+        }
+
+        if self.adapters.is_empty() {
+            return Err(IntentError::InvalidWorkflowState {
+                reason: "no adapters configured".into(),
             });
         }
 
@@ -159,6 +195,7 @@ impl WorkflowEngine {
 
         workflow.status = WorkflowStatus::Running;
         let mut step_results = Vec::with_capacity(workflow.steps.len());
+        let mut had_failure = false;
 
         for (index, step) in workflow.steps.iter().enumerate() {
             debug!(
@@ -168,28 +205,76 @@ impl WorkflowEngine {
                 "executing workflow step"
             );
 
-            // TODO: Resolve the adapter from the registry and call execute_tool.
-            // For now, we produce a placeholder result to keep the pipeline
-            // compiling and testable.
-            let output = serde_json::json!({
-                "status": "not_implemented",
-                "message": format!(
-                    "adapter `{}` tool `{}` execution is not yet wired up",
-                    step.adapter, step.tool
-                ),
-            });
+            // Resolve the adapter by its ID.
+            let adapter = match self.find_adapter(&step.adapter) {
+                Some(a) => a,
+                None => {
+                    warn!(
+                        step = index,
+                        adapter = %step.adapter,
+                        "adapter not found for workflow step"
+                    );
 
-            let result = StepResult {
-                step_index: index,
-                tool: step.tool.clone(),
-                success: true,
-                output,
+                    let result = StepResult {
+                        step_index: index,
+                        tool: step.tool.clone(),
+                        success: false,
+                        output: serde_json::json!({
+                            "error": format!("adapter `{}` not found", step.adapter),
+                        }),
+                    };
+                    step_results.push(result);
+                    had_failure = true;
+
+                    if self.continue_on_error {
+                        continue;
+                    }
+                    break;
+                }
             };
 
-            step_results.push(result);
+            // Call the adapter with the step's tool and params.
+            match adapter.execute(&step.tool, step.params.clone()).await {
+                Ok(output_str) => {
+                    // Try to parse the output as JSON; fall back to a string wrapper.
+                    let output = serde_json::from_str::<serde_json::Value>(&output_str)
+                        .unwrap_or_else(|_| serde_json::json!({ "result": output_str }));
+
+                    let result = StepResult {
+                        step_index: index,
+                        tool: step.tool.clone(),
+                        success: true,
+                        output,
+                    };
+                    step_results.push(result);
+                }
+                Err(e) => {
+                    warn!(
+                        step = index,
+                        tool = %step.tool,
+                        error = %e,
+                        "workflow step failed"
+                    );
+
+                    let result = StepResult {
+                        step_index: index,
+                        tool: step.tool.clone(),
+                        success: false,
+                        output: serde_json::json!({
+                            "error": e.to_string(),
+                        }),
+                    };
+                    step_results.push(result);
+                    had_failure = true;
+
+                    if !self.continue_on_error {
+                        break;
+                    }
+                }
+            }
         }
 
-        let all_success = step_results.iter().all(|r| r.success);
+        let all_success = !had_failure;
         workflow.status = if all_success {
             WorkflowStatus::Completed
         } else {
@@ -224,7 +309,7 @@ impl WorkflowEngine {
 
 impl Default for WorkflowEngine {
     fn default() -> Self {
-        Self::new()
+        Self::new(Vec::new())
     }
 }
 
@@ -235,6 +320,77 @@ impl Default for WorkflowEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use openintent_agent::ToolDefinition;
+    use serde_json::Value;
+
+    // -- Mock adapter --------------------------------------------------------
+
+    /// A mock adapter for testing the workflow engine.
+    struct MockAdapter {
+        id: String,
+    }
+
+    #[async_trait]
+    impl ToolAdapter for MockAdapter {
+        fn adapter_id(&self) -> &str {
+            &self.id
+        }
+
+        fn tool_definitions(&self) -> Vec<ToolDefinition> {
+            vec![ToolDefinition {
+                name: format!("{}_tool", self.id),
+                description: format!("Mock tool for {}", self.id),
+                input_schema: serde_json::json!({"type": "object"}),
+            }]
+        }
+
+        async fn execute(
+            &self,
+            tool_name: &str,
+            arguments: Value,
+        ) -> openintent_agent::Result<String> {
+            Ok(serde_json::json!({
+                "adapter": self.id,
+                "tool": tool_name,
+                "args": arguments,
+            })
+            .to_string())
+        }
+    }
+
+    /// A mock adapter that always fails execution.
+    struct FailingAdapter {
+        id: String,
+    }
+
+    #[async_trait]
+    impl ToolAdapter for FailingAdapter {
+        fn adapter_id(&self) -> &str {
+            &self.id
+        }
+
+        fn tool_definitions(&self) -> Vec<ToolDefinition> {
+            vec![ToolDefinition {
+                name: format!("{}_tool", self.id),
+                description: format!("Failing tool for {}", self.id),
+                input_schema: serde_json::json!({"type": "object"}),
+            }]
+        }
+
+        async fn execute(
+            &self,
+            tool_name: &str,
+            _arguments: Value,
+        ) -> openintent_agent::Result<String> {
+            Err(openintent_agent::AgentError::ToolExecutionFailed {
+                tool_name: tool_name.to_owned(),
+                reason: "simulated failure".into(),
+            })
+        }
+    }
+
+    // -- Helper --------------------------------------------------------------
 
     fn sample_workflow() -> Workflow {
         Workflow::new(
@@ -256,19 +412,107 @@ mod tests {
         )
     }
 
+    // -- Tests ---------------------------------------------------------------
+
     #[tokio::test]
-    async fn execute_workflow() {
-        let engine = WorkflowEngine::new();
+    async fn execute_workflow_with_adapters() {
+        let adapters: Vec<Arc<dyn ToolAdapter>> = vec![
+            Arc::new(MockAdapter {
+                id: "filesystem".into(),
+            }),
+            Arc::new(MockAdapter { id: "shell".into() }),
+        ];
+
+        let engine = WorkflowEngine::new(adapters);
         let mut wf = sample_workflow();
         let result = engine.execute(&mut wf).await.unwrap();
+
         assert!(result.success);
         assert_eq!(result.step_results.len(), 2);
+        assert!(result.step_results[0].success);
+        assert!(result.step_results[1].success);
         assert_eq!(wf.status, WorkflowStatus::Completed);
+
+        // Verify the output contains what the mock returned.
+        let first_output = &result.step_results[0].output;
+        assert_eq!(first_output["adapter"], "filesystem");
+        assert_eq!(first_output["tool"], "fs_list_directory");
+    }
+
+    #[tokio::test]
+    async fn execute_workflow_no_adapters_returns_error() {
+        let engine = WorkflowEngine::new(Vec::new());
+        let mut wf = sample_workflow();
+        let result = engine.execute(&mut wf).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("no adapters configured"));
+    }
+
+    #[tokio::test]
+    async fn execute_workflow_missing_adapter_aborts() {
+        // Only provide the filesystem adapter, not shell.
+        let adapters: Vec<Arc<dyn ToolAdapter>> = vec![Arc::new(MockAdapter {
+            id: "filesystem".into(),
+        })];
+
+        let engine = WorkflowEngine::new(adapters);
+        let mut wf = sample_workflow();
+        let result = engine.execute(&mut wf).await.unwrap();
+
+        assert!(!result.success);
+        // First step succeeds, second aborts because "shell" adapter is missing.
+        assert_eq!(result.step_results.len(), 2);
+        assert!(result.step_results[0].success);
+        assert!(!result.step_results[1].success);
+        assert_eq!(wf.status, WorkflowStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn execute_workflow_continue_on_error() {
+        let adapters: Vec<Arc<dyn ToolAdapter>> = vec![
+            Arc::new(FailingAdapter {
+                id: "filesystem".into(),
+            }),
+            Arc::new(MockAdapter { id: "shell".into() }),
+        ];
+
+        let engine = WorkflowEngine::new(adapters).with_continue_on_error(true);
+        let mut wf = sample_workflow();
+        let result = engine.execute(&mut wf).await.unwrap();
+
+        assert!(!result.success);
+        // Both steps attempted even though first failed.
+        assert_eq!(result.step_results.len(), 2);
+        assert!(!result.step_results[0].success);
+        assert!(result.step_results[1].success);
+        assert_eq!(wf.status, WorkflowStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn execute_workflow_abort_on_error() {
+        let adapters: Vec<Arc<dyn ToolAdapter>> = vec![
+            Arc::new(FailingAdapter {
+                id: "filesystem".into(),
+            }),
+            Arc::new(MockAdapter { id: "shell".into() }),
+        ];
+
+        let engine = WorkflowEngine::new(adapters);
+        let mut wf = sample_workflow();
+        let result = engine.execute(&mut wf).await.unwrap();
+
+        assert!(!result.success);
+        // Only first step attempted; second was skipped due to abort.
+        assert_eq!(result.step_results.len(), 1);
+        assert!(!result.step_results[0].success);
+        assert_eq!(wf.status, WorkflowStatus::Failed);
     }
 
     #[tokio::test]
     async fn empty_workflow_fails() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new(vec![Arc::new(MockAdapter { id: "test".into() })]);
         let mut wf = Workflow::new("empty", vec![]);
         let result = engine.execute(&mut wf).await;
         assert!(result.is_err());
@@ -276,9 +520,24 @@ mod tests {
 
     #[test]
     fn cancel_idle_workflow_fails() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::default();
         let mut wf = sample_workflow();
         let result = engine.cancel(&mut wf);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn with_adapters_builder() {
+        let adapters: Vec<Arc<dyn ToolAdapter>> = vec![
+            Arc::new(MockAdapter {
+                id: "filesystem".into(),
+            }),
+            Arc::new(MockAdapter { id: "shell".into() }),
+        ];
+
+        let engine = WorkflowEngine::default().with_adapters(adapters);
+        let mut wf = sample_workflow();
+        let result = engine.execute(&mut wf).await.unwrap();
+        assert!(result.success);
     }
 }

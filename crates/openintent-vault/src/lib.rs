@@ -56,6 +56,8 @@ pub mod store;
 
 // Re-export the most commonly used types at the crate root for convenience.
 pub use error::{Result, VaultError};
-pub use keychain::{FileKeychain, KeychainProvider};
+#[cfg(target_os = "macos")]
+pub use keychain::MacOSKeychain;
+pub use keychain::{FileKeychain, KeychainProvider, platform_keychain};
 pub use policy::{PolicyDecision, PolicyEngine};
 pub use store::{Credential, CredentialType, Vault};

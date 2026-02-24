@@ -1,9 +1,11 @@
-//! Service adapters for OpenIntentOS — filesystem, shell, memory, cron, and more.
+//! Service adapters for OpenIntentOS — filesystem, shell, memory, cron, email, browser, and more.
 //!
 //! Each adapter implements the [`Adapter`] trait defined in [`traits`],
 //! providing a uniform interface for tool discovery and execution.
 
+pub mod browser;
 pub mod cron;
+pub mod email;
 pub mod error;
 pub mod filesystem;
 pub mod http_request;
@@ -13,7 +15,9 @@ pub mod traits;
 pub mod web_fetch;
 pub mod web_search;
 
+pub use browser::BrowserAdapter;
 pub use cron::{CronAdapter, CronJob};
+pub use email::EmailAdapter;
 pub use error::{AdapterError, Result};
 pub use filesystem::FilesystemAdapter;
 pub use http_request::HttpRequestAdapter;

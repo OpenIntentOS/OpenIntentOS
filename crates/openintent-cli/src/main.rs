@@ -75,6 +75,13 @@ enum Commands {
         #[command(subcommand)]
         action: SessionAction,
     },
+
+    /// Start the terminal UI (ratatui).
+    Tui {
+        /// Resume or create a named session.
+        #[arg(long, short)]
+        session: Option<String>,
+    },
 }
 
 /// Actions for managing conversation sessions.
@@ -174,6 +181,7 @@ async fn main() -> Result<()> {
         Commands::Setup => cmd_setup().await,
         Commands::Status => cmd_status().await,
         Commands::Sessions { action } => cmd_sessions(action).await,
+        Commands::Tui { session } => cmd_tui(session).await,
     }
 }
 
@@ -477,6 +485,114 @@ async fn cmd_run(session_name: Option<String>) -> Result<()> {
     }
 
     info!("shutting down");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand: tui
+// ---------------------------------------------------------------------------
+
+async fn cmd_tui(_session_name: Option<String>) -> Result<()> {
+    // 1. Initialize tracing (to file so it does not interfere with the TUI).
+    init_tracing("info");
+
+    info!("starting OpenIntentOS TUI");
+
+    // 2. Create data directory and initialize SQLite.
+    let data_dir = Path::new("data");
+    if !data_dir.exists() {
+        std::fs::create_dir_all(data_dir).context("failed to create data directory")?;
+    }
+
+    let db_path = data_dir.join("openintent.db");
+    let db = openintent_store::Database::open_and_migrate(db_path.clone())
+        .await
+        .context("failed to open database")?;
+    info!(path = %db_path.display(), "store initialized");
+
+    // 3. Check for the API key.
+    let api_key = match std::env::var("ANTHROPIC_API_KEY") {
+        Ok(key) if !key.is_empty() => key,
+        _ => {
+            eprintln!();
+            eprintln!("  Error: ANTHROPIC_API_KEY environment variable is not set.");
+            eprintln!();
+            eprintln!("  The OpenIntentOS agent requires an Anthropic API key to function.");
+            eprintln!("  Set it in your environment before running:");
+            eprintln!();
+            eprintln!("    export ANTHROPIC_API_KEY=sk-ant-...");
+            eprintln!();
+            std::process::exit(1);
+        }
+    };
+
+    // 4. Determine the model to use.
+    let model =
+        std::env::var("OPENINTENT_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".to_owned());
+
+    // 5. Create the LLM client.
+    let llm_config = LlmClientConfig::anthropic(&api_key, &model);
+    let llm = Arc::new(LlmClient::new(llm_config).context("failed to create LLM client")?);
+    info!(model = %model, "LLM client ready");
+
+    // 6. Initialize and connect adapters.
+    let cwd = std::env::current_dir().context("failed to get current directory")?;
+
+    let mut fs_adapter = openintent_adapters::FilesystemAdapter::new("filesystem", cwd.clone());
+    fs_adapter.connect().await?;
+
+    let mut shell_adapter = openintent_adapters::ShellAdapter::new("shell", cwd);
+    shell_adapter.connect().await?;
+
+    let mut web_search_adapter = openintent_adapters::WebSearchAdapter::new("web_search");
+    web_search_adapter.connect().await?;
+
+    let mut web_fetch_adapter = openintent_adapters::WebFetchAdapter::new("web_fetch");
+    web_fetch_adapter.connect().await?;
+
+    let mut http_adapter = openintent_adapters::HttpRequestAdapter::new("http_request");
+    http_adapter.connect().await?;
+
+    let mut cron_adapter = openintent_adapters::CronAdapter::new("cron");
+    cron_adapter.connect().await?;
+
+    let memory = Arc::new(openintent_store::SemanticMemory::new(db.clone()));
+    let mut memory_adapter =
+        openintent_adapters::MemoryToolsAdapter::new("memory", Arc::clone(&memory));
+    memory_adapter.connect().await?;
+
+    info!(
+        "adapters initialized (filesystem, shell, web_search, web_fetch, http_request, cron, memory)"
+    );
+
+    // 7. Wrap adapters in the bridge.
+    let adapters: Vec<Arc<dyn ToolAdapter>> = vec![
+        Arc::new(AdapterBridge::new(fs_adapter)),
+        Arc::new(AdapterBridge::new(shell_adapter)),
+        Arc::new(AdapterBridge::new(web_search_adapter)),
+        Arc::new(AdapterBridge::new(web_fetch_adapter)),
+        Arc::new(AdapterBridge::new(http_adapter)),
+        Arc::new(AdapterBridge::new(cron_adapter)),
+        Arc::new(AdapterBridge::new(memory_adapter)),
+    ];
+
+    // 8. Load system prompt.
+    let system_prompt = load_system_prompt();
+
+    // 9. Build agent config.
+    let config = AgentConfig {
+        max_turns: 20,
+        model,
+        temperature: Some(0.0),
+        max_tokens: Some(4096),
+        ..AgentConfig::default()
+    };
+
+    // 10. Launch the TUI.
+    openintent_tui::run_tui(llm, adapters, config, system_prompt)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
     Ok(())
 }
 

@@ -45,6 +45,8 @@ ring = "0.17"
 # HTTP
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
 url = "2"
+tokio-tungstenite = "0.28"
+base64 = "0.22"
 
 # String matching
 aho-corasick = "1"
