@@ -524,7 +524,9 @@ impl SemanticMemory {
                         [cat.as_str()],
                         |row| row.get(0),
                     )?,
-                    None => conn.query_row("SELECT count(*) FROM memories", [], |row| row.get(0))?,
+                    None => {
+                        conn.query_row("SELECT count(*) FROM memories", [], |row| row.get(0))?
+                    }
                 };
                 Ok(count)
             })
@@ -622,7 +624,11 @@ mod tests {
         .unwrap();
 
         let id = em
-            .insert("t1", EpisodeKind::Observation, serde_json::json!({"text": "saw a cat"}))
+            .insert(
+                "t1",
+                EpisodeKind::Observation,
+                serde_json::json!({"text": "saw a cat"}),
+            )
             .await
             .unwrap();
 

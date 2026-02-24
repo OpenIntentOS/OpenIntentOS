@@ -213,10 +213,7 @@ impl WorkflowEngine {
     pub fn cancel(&self, workflow: &mut Workflow) -> Result<()> {
         if workflow.status != WorkflowStatus::Running {
             return Err(IntentError::InvalidWorkflowState {
-                reason: format!(
-                    "cannot cancel workflow in {:?} state",
-                    workflow.status
-                ),
+                reason: format!("cannot cancel workflow in {:?} state", workflow.status),
             });
         }
         warn!(workflow_id = %workflow.id, "cancelling workflow");

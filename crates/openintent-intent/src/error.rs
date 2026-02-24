@@ -9,7 +9,6 @@ use uuid::Uuid;
 #[derive(Debug, thiserror::Error)]
 pub enum IntentError {
     // -- Parser errors -------------------------------------------------------
-
     /// The intent text could not be parsed into a structured intent.
     #[error("failed to parse intent: {reason}")]
     ParseFailed { reason: String },
@@ -19,7 +18,6 @@ pub enum IntentError {
     LowConfidence { intent: String, confidence: f64 },
 
     // -- Workflow errors ------------------------------------------------------
-
     /// The referenced workflow does not exist.
     #[error("workflow not found: {workflow_id}")]
     WorkflowNotFound { workflow_id: Uuid },
@@ -33,7 +31,6 @@ pub enum IntentError {
     InvalidWorkflowState { reason: String },
 
     // -- Trigger errors ------------------------------------------------------
-
     /// A trigger could not be registered.
     #[error("failed to register trigger: {reason}")]
     TriggerRegistrationFailed { reason: String },
@@ -43,7 +40,6 @@ pub enum IntentError {
     InvalidCronExpression { expression: String, reason: String },
 
     // -- Upstream crate errors -----------------------------------------------
-
     /// An error propagated from the kernel crate.
     #[error("kernel error: {0}")]
     Kernel(#[from] openintent_kernel::KernelError),
@@ -53,13 +49,11 @@ pub enum IntentError {
     Agent(#[from] openintent_agent::AgentError),
 
     // -- Serialization -------------------------------------------------------
-
     /// JSON serialization or deserialization failed.
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
     // -- Generic -------------------------------------------------------------
-
     /// Catch-all for unexpected internal errors.
     #[error("internal intent error: {0}")]
     Internal(String),

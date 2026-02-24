@@ -1,0 +1,16 @@
+services:
+  openintent:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - openintent-data:/data
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENINTENT_BIND=0.0.0.0
+      - OPENINTENT_PORT=3000
+      - RUST_LOG=info
+    restart: unless-stopped
+
+volumes:
+  openintent-data:

@@ -164,12 +164,11 @@ fn apply(conn: &Connection, migration: &Migration) -> StoreResult<()> {
         })?;
 
     let result = (|| -> StoreResult<()> {
-        conn.execute_batch(migration.sql).map_err(|e| {
-            StoreError::Migration {
+        conn.execute_batch(migration.sql)
+            .map_err(|e| StoreError::Migration {
                 version: migration.version,
                 message: format!("SQL execution failed: {e}"),
-            }
-        })?;
+            })?;
 
         let now = chrono::Utc::now().timestamp();
         conn.execute(
@@ -186,13 +185,15 @@ fn apply(conn: &Connection, migration: &Migration) -> StoreResult<()> {
 
     match &result {
         Ok(()) => {
-            conn.execute_batch("COMMIT;").map_err(|e| {
-                StoreError::Migration {
+            conn.execute_batch("COMMIT;")
+                .map_err(|e| StoreError::Migration {
                     version: migration.version,
                     message: format!("failed to commit: {e}"),
-                }
-            })?;
-            info!(version = migration.version, "migration applied successfully");
+                })?;
+            info!(
+                version = migration.version,
+                "migration applied successfully"
+            );
         }
         Err(err) => {
             warn!(version = migration.version, %err, "migration failed, rolling back");

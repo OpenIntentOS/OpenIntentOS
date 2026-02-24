@@ -1,26 +1,36 @@
 //! CLI entry point for OpenIntentOS.
 //!
-//! This binary provides the `openintent` command with subcommands for
-//! starting the OS, running setup, and checking system status.
+//! Provides the `openintent` command with subcommands for running the AI agent
+//! REPL, launching a web server, running setup, and checking system status.
+//!
+//! The REPL uses the full ReAct (Reason + Act) loop: user input is sent to the
+//! LLM, which can invoke tools through adapters, and the results are fed back
+//! until the LLM produces a final text response.
 
-use std::io::{self, BufRead};
+use std::io::{self, Write as _};
+use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use clap::{Parser, Subcommand};
 use openintent_adapters::Adapter;
-use tracing::{error, info};
+use openintent_agent::runtime::ToolAdapter;
+use openintent_agent::{AgentConfig, AgentContext, LlmClient, LlmClientConfig, react_loop};
+use serde_json::Value;
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 // ---------------------------------------------------------------------------
 // CLI definition
 // ---------------------------------------------------------------------------
 
-/// OpenIntentOS — an AI-powered operating system.
+/// OpenIntentOS -- an AI-powered operating system.
 #[derive(Parser)]
 #[command(
     name = "openintent",
     version,
-    about = "OpenIntentOS — AI-powered operating system",
+    about = "OpenIntentOS -- AI-powered operating system",
     long_about = "An AI operating system that understands your intents and executes tasks \
                   using available tools and adapters."
 )]
@@ -31,14 +41,91 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the OpenIntentOS runtime and enter the REPL.
+    /// Start the OpenIntentOS agent REPL.
     Run,
+
+    /// Start the web server with embedded chat UI.
+    Serve {
+        /// Address to bind the HTTP server to.
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: String,
+
+        /// Port to listen on.
+        #[arg(long, short, default_value_t = 3000)]
+        port: u16,
+    },
 
     /// Run the interactive setup wizard.
     Setup,
 
     /// Show current system status.
     Status,
+}
+
+// ---------------------------------------------------------------------------
+// Adapter bridge
+// ---------------------------------------------------------------------------
+
+/// Bridges [`openintent_adapters::Adapter`] to [`openintent_agent::runtime::ToolAdapter`].
+///
+/// The two traits have slightly different signatures:
+/// - `Adapter::tools()` returns `ToolDefinition` with a `parameters` field.
+/// - `ToolAdapter::tool_definitions()` returns `ToolDefinition` with an `input_schema` field.
+/// - `Adapter::execute_tool()` returns `Result<Value>`.
+/// - `ToolAdapter::execute()` returns `Result<String>`.
+///
+/// This struct wraps an adapter and handles the conversions.
+struct AdapterBridge {
+    adapter: Arc<dyn openintent_adapters::Adapter>,
+}
+
+impl AdapterBridge {
+    fn new(adapter: impl openintent_adapters::Adapter + 'static) -> Self {
+        Self {
+            adapter: Arc::new(adapter),
+        }
+    }
+
+    /// Convert an adapter-side `ToolDefinition` to an agent-side `ToolDefinition`.
+    fn convert_tool_def(
+        td: &openintent_adapters::ToolDefinition,
+    ) -> openintent_agent::ToolDefinition {
+        openintent_agent::ToolDefinition {
+            name: td.name.clone(),
+            description: td.description.clone(),
+            input_schema: td.parameters.clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl ToolAdapter for AdapterBridge {
+    fn adapter_id(&self) -> &str {
+        self.adapter.id()
+    }
+
+    fn tool_definitions(&self) -> Vec<openintent_agent::ToolDefinition> {
+        self.adapter
+            .tools()
+            .iter()
+            .map(Self::convert_tool_def)
+            .collect()
+    }
+
+    async fn execute(&self, tool_name: &str, arguments: Value) -> openintent_agent::Result<String> {
+        let result = self
+            .adapter
+            .execute_tool(tool_name, arguments)
+            .await
+            .map_err(|e| openintent_agent::AgentError::ToolExecutionFailed {
+                tool_name: tool_name.to_owned(),
+                reason: e.to_string(),
+            })?;
+
+        // Serialize the JSON Value result to a string for the LLM.
+        let text = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+        Ok(text)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +138,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Run => cmd_run().await,
+        Commands::Serve { bind, port } => cmd_serve(bind, port).await,
         Commands::Setup => cmd_setup().await,
         Commands::Status => cmd_status().await,
     }
@@ -61,21 +149,15 @@ async fn main() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn cmd_run() -> Result<()> {
-    // 1. Initialize tracing subscriber.
+    // 1. Initialize tracing.
     init_tracing("info");
 
     info!("starting OpenIntentOS");
 
-    // 2. Load config.
-    // TODO: Load config/default.toml and merge with environment overrides.
-    // For now we use hardcoded defaults.
-    info!("configuration loaded (using defaults)");
-
-    // 3. Initialize the store (SQLite).
-    let data_dir = std::path::Path::new("data");
+    // 2. Create data directory and initialize SQLite.
+    let data_dir = Path::new("data");
     if !data_dir.exists() {
-        std::fs::create_dir_all(data_dir)
-            .context("failed to create data directory")?;
+        std::fs::create_dir_all(data_dir).context("failed to create data directory")?;
     }
 
     let db_path = data_dir.join("openintent.db");
@@ -84,33 +166,99 @@ async fn cmd_run() -> Result<()> {
         .context("failed to open database")?;
     info!(path = %db_path.display(), "store initialized");
 
-    // 4. Initialize the intent parser.
-    let parser = openintent_intent::IntentParser::new(0.6);
-    info!("intent parser ready");
+    // 3. Check for the API key.
+    let api_key = match std::env::var("ANTHROPIC_API_KEY") {
+        Ok(key) if !key.is_empty() => key,
+        _ => {
+            eprintln!();
+            eprintln!("  Error: ANTHROPIC_API_KEY environment variable is not set.");
+            eprintln!();
+            eprintln!("  The OpenIntentOS agent requires an Anthropic API key to function.");
+            eprintln!("  Set it in your environment before running:");
+            eprintln!();
+            eprintln!("    export ANTHROPIC_API_KEY=sk-ant-...");
+            eprintln!();
+            std::process::exit(1);
+        }
+    };
 
-    // 5. Initialize adapters.
-    let mut fs_adapter =
-        openintent_adapters::FilesystemAdapter::new("filesystem", std::env::current_dir()?);
+    // 4. Determine the model to use.
+    let model =
+        std::env::var("OPENINTENT_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".to_owned());
+
+    // 5. Create the LLM client.
+    let llm_config = LlmClientConfig::anthropic(&api_key, &model);
+    let llm = Arc::new(LlmClient::new(llm_config).context("failed to create LLM client")?);
+    info!(model = %model, "LLM client ready");
+
+    // 6. Initialize and connect adapters.
+    let cwd = std::env::current_dir().context("failed to get current directory")?;
+
+    let mut fs_adapter = openintent_adapters::FilesystemAdapter::new("filesystem", cwd.clone());
     fs_adapter.connect().await?;
 
-    let mut shell_adapter =
-        openintent_adapters::ShellAdapter::new("shell", std::env::current_dir()?);
+    let mut shell_adapter = openintent_adapters::ShellAdapter::new("shell", cwd);
     shell_adapter.connect().await?;
 
     info!("adapters initialized (filesystem, shell)");
 
-    // 6. Enter the REPL loop.
+    // 7. Wrap adapters in the bridge.
+    let adapters: Vec<Arc<dyn ToolAdapter>> = vec![
+        Arc::new(AdapterBridge::new(fs_adapter)),
+        Arc::new(AdapterBridge::new(shell_adapter)),
+    ];
+
+    // 8. Load system prompt.
+    let system_prompt = load_system_prompt();
+
+    // 9. Print startup banner.
     println!();
     println!("  OpenIntentOS v{}", env!("CARGO_PKG_VERSION"));
-    println!("  Type your intent, or 'quit' to exit.");
+    println!("  Model: {model}");
+    println!("  Type your request, or 'quit' to exit.");
     println!();
 
-    let stdin = io::stdin();
-    let reader = stdin.lock();
+    // 10. Set up Ctrl+C handler.
+    let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    {
+        let running = running.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                running.store(false, std::sync::atomic::Ordering::SeqCst);
+                // Print a clean exit message.
+                eprintln!("\n  Interrupted. Goodbye!");
+                std::process::exit(0);
+            }
+        });
+    }
 
-    for line in reader.lines() {
-        let line = line.context("failed to read input")?;
-        let trimmed = line.trim();
+    // 11. REPL loop.
+    let stdin = io::stdin();
+    let mut line_buf = String::new();
+
+    loop {
+        // Print prompt and flush.
+        print!("> ");
+        io::stdout().flush().ok();
+
+        // Read a line.
+        line_buf.clear();
+        let bytes_read = stdin.read_line(&mut line_buf);
+        match bytes_read {
+            Ok(0) => {
+                // EOF (Ctrl+D).
+                println!();
+                info!("EOF received, exiting");
+                break;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("  Error reading input: {e}");
+                continue;
+            }
+        }
+
+        let trimmed = line_buf.trim();
 
         if trimmed.is_empty() {
             continue;
@@ -121,98 +269,139 @@ async fn cmd_run() -> Result<()> {
             break;
         }
 
-        // Parse the intent.
-        match parser.parse(trimmed).await {
-            Ok(intent) => {
-                info!(
-                    action = %intent.action,
-                    confidence = intent.confidence,
-                    source = ?intent.source,
-                    "parsed intent"
-                );
+        // Show a thinking indicator.
+        print!("  Thinking...");
+        io::stdout().flush().ok();
 
-                // Dispatch to the appropriate adapter.
-                let result = match intent.action.as_str() {
-                    "fs_read_file" | "fs_write_file" | "fs_list_directory"
-                    | "fs_create_directory" | "fs_delete" | "fs_file_info" => {
-                        let params = serde_json::to_value(&intent.entities)
-                            .unwrap_or(serde_json::Value::Null);
-                        openintent_adapters::Adapter::execute_tool(
-                            &fs_adapter,
-                            &intent.action,
-                            params,
-                        )
-                        .await
-                    }
-                    "shell_execute" => {
-                        let params = serde_json::to_value(&intent.entities)
-                            .unwrap_or(serde_json::Value::Null);
-                        openintent_adapters::Adapter::execute_tool(
-                            &shell_adapter,
-                            "shell_execute",
-                            params,
-                        )
-                        .await
-                    }
-                    "help" => {
-                        println!();
-                        println!("  Available commands:");
-                        println!("    read <path>       - Read a file");
-                        println!("    write <path>      - Write to a file");
-                        println!("    ls [path]         - List directory contents");
-                        println!("    run <command>     - Execute a shell command");
-                        println!("    delete <path>     - Delete a file or directory");
-                        println!("    status            - Show system status");
-                        println!("    help              - Show this help");
-                        println!("    quit / exit       - Exit OpenIntentOS");
-                        println!();
-                        continue;
-                    }
-                    "system_status" => {
-                        let fs_health = fs_adapter.health_check().await?;
-                        let shell_health = shell_adapter.health_check().await?;
-                        println!();
-                        println!("  System Status:");
-                        println!("    Filesystem adapter: {fs_health}");
-                        println!("    Shell adapter:      {shell_health}");
-                        println!("    Database:           connected");
-                        println!();
-                        continue;
-                    }
-                    _ => {
-                        println!(
-                            "  I understood your intent as '{}' (confidence: {:.0}%), \
-                             but I don't have a handler for it yet.",
-                            intent.action,
-                            intent.confidence * 100.0,
-                        );
-                        continue;
-                    }
-                };
+        // Build agent context for this request.
+        let agent_config = AgentConfig {
+            max_turns: 20,
+            model: model.clone(),
+            temperature: Some(0.0),
+            max_tokens: Some(4096),
+        };
 
-                match result {
-                    Ok(output) => {
-                        let formatted =
-                            serde_json::to_string_pretty(&output).unwrap_or_default();
-                        println!("{formatted}");
-                    }
-                    Err(e) => {
-                        error!(error = %e, "tool execution failed");
-                        println!("  Error: {e}");
-                    }
+        let mut ctx = AgentContext::new(llm.clone(), adapters.clone(), agent_config)
+            .with_system_prompt(&system_prompt)
+            .with_user_message(trimmed);
+
+        // Run the ReAct loop.
+        match react_loop(&mut ctx).await {
+            Ok(response) => {
+                // Clear the "Thinking..." line.
+                print!("\r                    \r");
+                io::stdout().flush().ok();
+
+                // Print the final response.
+                println!("{}", response.text);
+
+                if response.turns_used > 1 {
+                    println!(
+                        "  ({} tool turn{} used)",
+                        response.turns_used - 1,
+                        if response.turns_used - 1 == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    );
                 }
+                println!();
             }
             Err(e) => {
-                error!(error = %e, "intent parsing failed");
-                println!(
-                    "  I couldn't understand that. Try 'help' for available commands."
-                );
+                // Clear the "Thinking..." line.
+                print!("\r                    \r");
+                io::stdout().flush().ok();
+
+                eprintln!("  Error: {e}");
+                eprintln!();
             }
+        }
+
+        // Check if we should still be running.
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
         }
     }
 
-    // Cleanup.
     info!("shutting down");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand: serve
+// ---------------------------------------------------------------------------
+
+async fn cmd_serve(bind: String, port: u16) -> Result<()> {
+    init_tracing("info");
+
+    info!("starting OpenIntentOS web server");
+
+    // 1. Create data directory and initialize SQLite.
+    let data_dir = Path::new("data");
+    if !data_dir.exists() {
+        std::fs::create_dir_all(data_dir).context("failed to create data directory")?;
+    }
+
+    let db_path = data_dir.join("openintent.db");
+    let _db = openintent_store::Database::open_and_migrate(db_path.clone())
+        .await
+        .context("failed to open database")?;
+    info!(path = %db_path.display(), "store initialized");
+
+    // 2. Check for the API key.
+    let api_key = match std::env::var("ANTHROPIC_API_KEY") {
+        Ok(key) if !key.is_empty() => key,
+        _ => {
+            eprintln!();
+            eprintln!("  Error: ANTHROPIC_API_KEY environment variable is not set.");
+            eprintln!();
+            eprintln!("  Set it in your environment before running:");
+            eprintln!("    export ANTHROPIC_API_KEY=sk-ant-...");
+            eprintln!();
+            std::process::exit(1);
+        }
+    };
+
+    // 3. Create the LLM client.
+    let model =
+        std::env::var("OPENINTENT_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".to_owned());
+    let llm_config = LlmClientConfig::anthropic(&api_key, &model);
+    let llm = Arc::new(LlmClient::new(llm_config).context("failed to create LLM client")?);
+    info!(model = %model, "LLM client ready");
+
+    // 4. Initialize and connect adapters.
+    let cwd = std::env::current_dir().context("failed to get current directory")?;
+
+    let mut fs_adapter = openintent_adapters::FilesystemAdapter::new("filesystem", cwd.clone());
+    fs_adapter.connect().await?;
+
+    let mut shell_adapter = openintent_adapters::ShellAdapter::new("shell", cwd);
+    shell_adapter.connect().await?;
+
+    let adapters: Vec<Arc<dyn openintent_adapters::Adapter>> =
+        vec![Arc::new(fs_adapter), Arc::new(shell_adapter)];
+
+    info!("adapters initialized (filesystem, shell)");
+
+    // 5. Configure and start the web server.
+    let web_config = openintent_web::WebConfig {
+        bind_addr: bind,
+        port,
+    };
+
+    println!();
+    println!("  OpenIntentOS v{}", env!("CARGO_PKG_VERSION"));
+    println!("  Model: {model}");
+    println!(
+        "  Web UI: http://{}:{}",
+        web_config.bind_addr, web_config.port
+    );
+    println!();
+
+    let server = openintent_web::WebServer::new(web_config, llm, adapters);
+    server.start().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+
     Ok(())
 }
 
@@ -229,7 +418,7 @@ async fn cmd_setup() -> Result<()> {
     println!();
 
     // Step 1: Create data directory.
-    let data_dir = std::path::Path::new("data");
+    let data_dir = Path::new("data");
     if !data_dir.exists() {
         std::fs::create_dir_all(data_dir)?;
         println!("  [+] Created data directory");
@@ -275,7 +464,7 @@ async fn cmd_status() -> Result<()> {
     println!();
 
     // Check data directory.
-    let data_dir = std::path::Path::new("data");
+    let data_dir = Path::new("data");
     if data_dir.exists() {
         println!("  Data directory:   OK");
     } else {
@@ -297,7 +486,7 @@ async fn cmd_status() -> Result<()> {
     }
 
     // Check config.
-    let config_path = std::path::Path::new("config/default.toml");
+    let config_path = Path::new("config/default.toml");
     if config_path.exists() {
         println!("  Config:           OK ({})", config_path.display());
     } else {
@@ -315,12 +504,32 @@ async fn cmd_status() -> Result<()> {
 
 /// Initialize the tracing subscriber with the given default log level.
 fn init_tracing(default_level: &str) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
         .compact()
         .init();
+}
+
+/// Load the system prompt from `config/IDENTITY.md` if it exists, otherwise
+/// return a sensible default.
+fn load_system_prompt() -> String {
+    let identity_path = Path::new("config/IDENTITY.md");
+
+    if identity_path.exists() {
+        std::fs::read_to_string(identity_path).unwrap_or_else(|_| default_system_prompt())
+    } else {
+        default_system_prompt()
+    }
+}
+
+/// The fallback system prompt used when no IDENTITY.md is found.
+fn default_system_prompt() -> String {
+    "You are OpenIntentOS, an AI-powered operating system assistant. \
+     Your role is to understand user intents and execute tasks using available tools. \
+     Be concise, accurate, and proactive. Always confirm before destructive actions."
+        .to_owned()
 }

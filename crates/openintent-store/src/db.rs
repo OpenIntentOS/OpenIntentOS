@@ -166,8 +166,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let version: String = db
             .execute(|conn| {
-                let v: String =
-                    conn.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
+                let v: String = conn.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
                 Ok(v)
             })
             .await
@@ -180,8 +179,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let journal: String = db
             .execute(|conn| {
-                let v: String =
-                    conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+                let v: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
                 Ok(v)
             })
             .await

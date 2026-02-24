@@ -16,10 +16,11 @@ use crate::error::{IntentError, Result};
 // ---------------------------------------------------------------------------
 
 /// How a workflow is triggered.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum TriggerType {
     /// Triggered manually by the user.
+    #[default]
     Manual,
 
     /// Triggered on a cron-like schedule.
@@ -39,12 +40,6 @@ pub enum TriggerType {
         /// The event name to listen for (e.g. "file_changed", "task_completed").
         event_name: String,
     },
-}
-
-impl Default for TriggerType {
-    fn default() -> Self {
-        Self::Manual
-    }
 }
 
 impl std::fmt::Display for TriggerType {
@@ -93,11 +88,7 @@ impl TriggerManager {
     /// Register a new trigger for the given workflow.
     ///
     /// Returns the unique trigger ID.
-    pub fn register(
-        &mut self,
-        workflow_id: Uuid,
-        trigger: TriggerType,
-    ) -> Result<Uuid> {
+    pub fn register(&mut self, workflow_id: Uuid, trigger: TriggerType) -> Result<Uuid> {
         // Validate cron expressions (basic check for now).
         if let TriggerType::Cron { ref expression } = trigger {
             self.validate_cron(expression)?;
@@ -136,12 +127,11 @@ impl TriggerManager {
 
     /// Deactivate a trigger without removing it.
     pub fn deactivate(&mut self, trigger_id: &Uuid) -> Result<()> {
-        let trigger = self
-            .triggers
-            .get_mut(trigger_id)
-            .ok_or_else(|| IntentError::TriggerRegistrationFailed {
+        let trigger = self.triggers.get_mut(trigger_id).ok_or_else(|| {
+            IntentError::TriggerRegistrationFailed {
                 reason: format!("trigger {trigger_id} not found"),
-            })?;
+            }
+        })?;
         trigger.active = false;
         debug!(trigger_id = %trigger_id, "trigger deactivated");
         Ok(())
@@ -149,12 +139,11 @@ impl TriggerManager {
 
     /// Reactivate a previously deactivated trigger.
     pub fn activate(&mut self, trigger_id: &Uuid) -> Result<()> {
-        let trigger = self
-            .triggers
-            .get_mut(trigger_id)
-            .ok_or_else(|| IntentError::TriggerRegistrationFailed {
+        let trigger = self.triggers.get_mut(trigger_id).ok_or_else(|| {
+            IntentError::TriggerRegistrationFailed {
                 reason: format!("trigger {trigger_id} not found"),
-            })?;
+            }
+        })?;
         trigger.active = true;
         debug!(trigger_id = %trigger_id, "trigger activated");
         Ok(())
@@ -173,16 +162,15 @@ impl TriggerManager {
             if let TriggerType::Event {
                 event_name: ref name,
             } = registered.trigger
+                && name == event_name
             {
-                if name == event_name {
-                    debug!(
-                        trigger_id = %trigger_id,
-                        workflow_id = %registered.workflow_id,
-                        event = event_name,
-                        "event trigger fired"
-                    );
-                    workflow_ids.push(registered.workflow_id);
-                }
+                debug!(
+                    trigger_id = %trigger_id,
+                    workflow_id = %registered.workflow_id,
+                    event = event_name,
+                    "event trigger fired"
+                );
+                workflow_ids.push(registered.workflow_id);
             }
         }
 

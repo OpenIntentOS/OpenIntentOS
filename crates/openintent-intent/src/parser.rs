@@ -83,16 +83,16 @@ impl IntentParser {
         debug!(text = text, "parsing intent");
 
         // Tier 1: Fast local pattern matching.
-        if let Some(intent) = self.try_fast_match(text) {
-            if intent.confidence >= self.confidence_threshold {
-                info!(
-                    action = %intent.action,
-                    confidence = intent.confidence,
-                    source = ?intent.source,
-                    "intent parsed via fast path"
-                );
-                return Ok(intent);
-            }
+        if let Some(intent) = self.try_fast_match(text)
+            && intent.confidence >= self.confidence_threshold
+        {
+            info!(
+                action = %intent.action,
+                confidence = intent.confidence,
+                source = ?intent.source,
+                "intent parsed via fast path"
+            );
+            return Ok(intent);
         }
 
         // Tier 2: LLM fallback.
@@ -280,10 +280,7 @@ mod tests {
     #[tokio::test]
     async fn parse_unknown_falls_back_to_llm() {
         let parser = IntentParser::new(0.3);
-        let intent = parser
-            .parse("what is the meaning of life")
-            .await
-            .unwrap();
+        let intent = parser.parse("what is the meaning of life").await.unwrap();
         assert_eq!(intent.source, ParseSource::Llm);
     }
 }

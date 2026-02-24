@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenIntentOS AI Operating System
+After=network.target
+
+[Service]
+Type=simple
+User=openintent
+Group=openintent
+ExecStart=/usr/local/bin/openintent run --serve
+Restart=always
+RestartSec=5
+Environment=RUST_LOG=info
+EnvironmentFile=-/etc/openintent/env
+WorkingDirectory=/var/lib/openintent
+
+[Install]
+WantedBy=multi-user.target

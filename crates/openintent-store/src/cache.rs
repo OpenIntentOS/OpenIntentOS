@@ -5,13 +5,13 @@
 //! [`CacheLayer`] struct.
 
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use moka::future::Cache;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tracing::debug;
 
 use crate::error::{StoreError, StoreResult};
@@ -211,11 +211,7 @@ where
     ///
     /// This is the preferred way to use the cache — single call that handles
     /// the hit/miss/insert flow automatically.
-    pub async fn get_or_insert_with<F, Fut>(
-        &self,
-        key: &str,
-        loader: F,
-    ) -> StoreResult<T>
+    pub async fn get_or_insert_with<F, Fut>(&self, key: &str, loader: F) -> StoreResult<T>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = StoreResult<T>>,

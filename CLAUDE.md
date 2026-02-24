@@ -61,9 +61,10 @@ openintent-cli (binary)
 ## Git Workflow
 
 - Branch names: `feat/xxx`, `fix/xxx`, `refactor/xxx`
-- Commit messages: imperative mood, < 72 chars first line
-- All commits in English
-- Sign commits with `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`
+- Commit messages: imperative mood, < 72 chars first line, English only
+- NEVER include `Co-Authored-By`, AI attribution, or any AI-related signatures in commits
+- NEVER include any Claude, Anthropic, OpenAI, or other AI tool references in commits, code comments, or documentation
+- Do not commit `.claude/` directory or any AI tool configuration
 
 ## Key Files
 
