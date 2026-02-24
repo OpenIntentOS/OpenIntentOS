@@ -439,26 +439,57 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
 
             // Build agent context with chat history.
             let mut system_prompt = load_system_prompt();
+
+            // Channel-specific context: who, where, how to format.
             system_prompt.push_str(&format!(
-                "\n\nYou are communicating via Telegram with user {} (id: {}). \
-                 Keep responses concise and suitable for chat. \
-                 You can use Telegram tools to send photos or additional messages if needed.",
-                user_name, user_id
+                "\n\n## Channel Context\n\n\
+                 You are communicating via Telegram with **{user_name}** (user_id: {user_id}, chat_id: {chat_id}).\n\n\
+                 Telegram formatting rules:\n\
+                 - Keep responses readable on mobile screens.\n\
+                 - Use plain text or simple formatting (bold with *, code with `).\n\
+                 - For long content, structure with clear sections and line breaks.\n\
+                 - You can use Telegram tools to send photos, documents, or additional messages.\n\
+                 - If your response is very long, focus on the most important points first.\n",
             ));
+
             if !skill_prompt_ext.is_empty() {
                 system_prompt.push_str(&skill_prompt_ext);
             }
 
             let agent_config = AgentConfig {
-                max_turns: 20,
+                max_turns: 25,
                 model: model.clone(),
-                temperature: Some(0.0),
-                max_tokens: Some(4096),
+                temperature: Some(0.3),
+                max_tokens: Some(8192),
                 ..AgentConfig::default()
             };
 
             let mut ctx = AgentContext::new(llm.clone(), adapters.clone(), agent_config)
                 .with_system_prompt(&system_prompt);
+
+            // Restore conversation history. If this is the first message
+            // after a restart, load recent history from the database so
+            // the agent has context from previous interactions.
+            if !chat_histories.contains_key(&chat_id) {
+                if let Ok(msgs) = sessions.get_messages(&session_key, Some(40)).await {
+                    let restored: Vec<Message> = msgs
+                        .into_iter()
+                        .filter(|m| m.role == "user" || m.role == "assistant")
+                        .map(|m| match m.role.as_str() {
+                            "user" => Message::user(&m.content),
+                            _ => Message::assistant(&m.content),
+                        })
+                        .collect();
+                    if !restored.is_empty() {
+                        info!(
+                            chat_id,
+                            count = restored.len(),
+                            "restored conversation history from database"
+                        );
+                    }
+                    chat_histories.insert(chat_id, restored);
+                }
+            }
 
             let history = chat_histories.entry(chat_id).or_default();
             for msg in history.iter() {

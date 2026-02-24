@@ -29,23 +29,54 @@ pub fn init_tracing(default_level: &str) {
 // System prompt
 // ---------------------------------------------------------------------------
 
-/// Load the system prompt from `config/IDENTITY.md` if it exists, otherwise
-/// return a sensible default.
+/// Load the system prompt by combining `config/IDENTITY.md` and
+/// `config/SOUL.md`, then appending current date/time context.
+///
+/// Cascade order (matching OpenClaw's identity architecture):
+///   1. IDENTITY.md — Who you are, capabilities, core identity
+///   2. SOUL.md — How you behave, think, and communicate
+///   3. Dynamic context — Current date/time
 pub fn load_system_prompt() -> String {
-    let identity_path = Path::new("config/IDENTITY.md");
+    let mut prompt = String::with_capacity(4096);
 
+    // 1. Identity layer.
+    let identity_path = Path::new("config/IDENTITY.md");
     if identity_path.exists() {
-        std::fs::read_to_string(identity_path).unwrap_or_else(|_| default_system_prompt())
-    } else {
-        default_system_prompt()
+        if let Ok(content) = std::fs::read_to_string(identity_path) {
+            prompt.push_str(&content);
+        }
     }
+
+    if prompt.is_empty() {
+        prompt.push_str(&default_system_prompt());
+    }
+
+    // 2. Soul layer (behavioral guidelines).
+    let soul_path = Path::new("config/SOUL.md");
+    if soul_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(soul_path) {
+            prompt.push_str("\n\n");
+            prompt.push_str(&content);
+        }
+    }
+
+    // 3. Dynamic context: current date and time.
+    let now = chrono::Local::now();
+    prompt.push_str(&format!(
+        "\n\n## Current Date & Time\n\n{}\n",
+        now.format("%Y-%m-%d %H:%M:%S %Z (%A)")
+    ));
+
+    prompt
 }
 
 /// The fallback system prompt used when no IDENTITY.md is found.
 fn default_system_prompt() -> String {
     "You are OpenIntentOS, an AI-powered operating system assistant. \
-     Your role is to understand user intents and execute tasks using available tools. \
-     Be concise, accurate, and proactive. Always confirm before destructive actions."
+     You have access to filesystem, shell, web search, web fetch, browser, \
+     email, GitHub, Telegram, calendar, memory, and many other tools. \
+     Use your tools actively to help users. Match the user's language. \
+     Be thorough, specific, and actionable in your responses."
         .to_owned()
 }
 
