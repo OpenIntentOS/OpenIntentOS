@@ -3871,6 +3871,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "skills",
  "thiserror 2.0.18",
  "tokio",
  "toml",
@@ -5514,6 +5515,20 @@ name = "siphasher"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
+
+[[package]]
+name = "skills"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.21.7",
+ "chrono",
+ "rand 0.8.5",
+ "serde",
+ "sha2",
+ "tokio",
+ "url",
+]
 
 [[package]]
 name = "skrifa"

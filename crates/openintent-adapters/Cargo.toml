@@ -18,6 +18,7 @@ uuid = { workspace = true }
 url = { workspace = true }
 openintent-vault = { workspace = true }
 openintent-store = { workspace = true }
+openintent-auth-engine = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tokio-native-tls = "0.3"
 native-tls = "0.2"

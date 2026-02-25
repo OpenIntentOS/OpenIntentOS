@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::planner::{Step, StepStatus};
 use crate::runtime::ToolAdapter;
+use skills::execute_email_oauth_setup;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -114,6 +115,40 @@ impl Executor {
             description = %step.description,
             "executing step"
         );
+
+        // Check for built-in skills first
+        if step.tool_name == "email_oauth_setup" {
+            if let Some(email) = step.arguments.get("email").and_then(|v| v.as_str()) {
+                match execute_email_oauth_setup(email).await {
+                    Ok(output) => {
+                        return StepResult {
+                            step_index: step.index,
+                            status: StepStatus::Completed,
+                            output: Some(output),
+                            error: None,
+                            attempts: 1,
+                        };
+                    }
+                    Err(e) => {
+                        return StepResult {
+                            step_index: step.index,
+                            status: StepStatus::Failed,
+                            output: None,
+                            error: Some(e.to_string()),
+                            attempts: 1,
+                        };
+                    }
+                }
+            } else {
+                return StepResult {
+                    step_index: step.index,
+                    status: StepStatus::Failed,
+                    output: None,
+                    error: Some("email_oauth_setup requires 'email' parameter".to_string()),
+                    attempts: 0,
+                };
+            }
+        }
 
         // Check that all dependencies have been satisfied.
         for dep in &step.depends_on {

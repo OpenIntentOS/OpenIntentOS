@@ -60,6 +60,29 @@ impl TelegramAdapter {
         adapter
     }
 
+    /// Send a message to a chat (public method for use by other adapters).
+    pub async fn send_message(
+        &self,
+        chat_id: &str,
+        text: &str,
+        parse_mode: Option<&str>,
+    ) -> Result<Value> {
+        let params = if let Some(mode) = parse_mode {
+            json!({
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": mode
+            })
+        } else {
+            json!({
+                "chat_id": chat_id,
+                "text": text
+            })
+        };
+
+        self.tool_send_message(params).await
+    }
+
     // -----------------------------------------------------------------------
     // URL construction
     // -----------------------------------------------------------------------
