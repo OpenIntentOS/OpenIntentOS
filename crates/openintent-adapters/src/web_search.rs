@@ -512,18 +512,18 @@ fn looks_like_binary(body: &str) -> bool {
         return true;
     }
     // Check for high ratio of non-printable characters in first 512 bytes.
+    // Use byte-level checks to avoid char-boundary issues.
     let check_len = body.len().min(512);
-    let non_text = body[..check_len]
-        .chars()
-        .filter(|c| {
-            !c.is_ascii_graphic()
-                && !c.is_ascii_whitespace()
-                && !c.is_alphanumeric()
-                && *c != '\u{feff}' // BOM
+    let non_text = bytes[..check_len]
+        .iter()
+        .filter(|&&b| {
+            // Non-printable ASCII (excluding whitespace/newline) and high bytes
+            // that aren't part of valid UTF-8 multi-byte sequences.
+            b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t'
         })
         .count();
-    // If more than 20% of the first 512 chars are non-text, treat as binary.
-    non_text * 5 > check_len
+    // If more than 10% of the first 512 bytes are control chars, treat as binary.
+    non_text * 10 > check_len
 }
 
 // ═══════════════════════════════════════════════════════════════════════
