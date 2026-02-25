@@ -224,9 +224,13 @@ pub fn is_rate_limit_error(error: &str) -> bool {
 }
 
 /// Check whether an error is a provider-level failure that should trigger
-/// failover (rate limit, model not found, auth failure on the provider, etc.).
+/// failover (rate limit, model not found, auth failure, server errors, etc.).
 pub fn is_provider_error(error: &str) -> bool {
     is_rate_limit_error(error)
+        || error.contains("401 Unauthorized")
+        || error.contains("authentication_error")
+        || error.contains("token has expired")
+        || error.contains("403 Forbidden")
         || error.contains("404 Not Found")
         || error.contains("Not found for account")
         || error.contains("model_not_found")

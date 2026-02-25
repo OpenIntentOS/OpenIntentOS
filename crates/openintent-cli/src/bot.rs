@@ -17,7 +17,7 @@ use openintent_agent::{
 use openintent_store::{BotStateStore, DevTaskStore, SessionStore};
 
 use crate::adapters::init_adapters;
-use crate::bot_helpers::{handle_auth_error, send_startup_notification, split_telegram_message};
+use crate::bot_helpers::{send_startup_notification, split_telegram_message};
 use crate::dev_commands;
 use crate::dev_worker::{DevWorker, ProgressCallback};
 use crate::failover::{self, FailoverManager};
@@ -807,6 +807,15 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                     // -------------------------------------------------------
                     if failover::is_provider_error(&err_str) {
                         tracing::warn!(error = %err_str, "provider error, attempting cascading failover");
+
+                        // For auth errors, try Keychain refresh first.
+                        if err_str.contains("401") || err_str.contains("authentication_error") {
+                            if let Some(new_token) = crate::helpers::read_claude_code_keychain_token() {
+                                llm.update_api_key(new_token);
+                                tracing::info!("refreshed OAuth token from Keychain");
+                            }
+                        }
+
                         failover_mgr.mark_rate_limited(&model);
 
                         let cr = crate::bot_helpers::handle_cascade_failover(
@@ -833,19 +842,6 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                             )
                             .await
                         }
-
-                    // -------------------------------------------------------
-                    // Handle expired OAuth token: re-read from Keychain, or
-                    // fall back to DeepSeek.
-                    // -------------------------------------------------------
-                    } else if err_str.contains("401 Unauthorized")
-                        || err_str.contains("authentication_error")
-                        || err_str.contains("token has expired")
-                    {
-                        handle_auth_error(
-                            &ctx, &llm, &adapters, &user_lang, &msgs, &model, chat_id,
-                        )
-                        .await
 
                     // -------------------------------------------------------
                     // All other errors: attempt self-repair for code bugs.
