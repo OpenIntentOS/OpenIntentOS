@@ -3,11 +3,12 @@
 //! When the bot encounters a code bug (panic, internal error), this module:
 //! 1. Analyzes the error and reads recent logs
 //! 2. Spawns a repair agent that reads source, fixes the bug
-//! 3. Runs `cargo check` → `cargo test` → `cargo build --release`
+//! 3. Runs `cargo check` -> `cargo test` -> `cargo build --release`
 //! 4. Commits the fix to git and pushes to remote
 //! 5. Restarts the process with the new binary
 //! 6. Notifies the user that the fix is deployed
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -15,6 +16,8 @@ use tracing::{error, info, warn};
 
 use openintent_agent::runtime::ToolAdapter;
 use openintent_agent::{AgentConfig, AgentContext, LlmClient, react_loop};
+
+use crate::messages::{Messages, keys};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -34,24 +37,40 @@ pub enum RepairOutcome {
     Failed { reason: String },
 }
 
-/// Telegram message sender — thin wrapper so self_repair doesn't depend on
-/// reqwest types directly.
+/// Telegram message sender with language-aware translation.
 pub struct TelegramNotifier {
     http: reqwest::Client,
     api_base: String,
     chat_id: i64,
+    user_lang: String,
+    messages: Messages,
+    llm: Arc<LlmClient>,
+    model: String,
 }
 
 impl TelegramNotifier {
-    pub fn new(http: reqwest::Client, api_base: String, chat_id: i64) -> Self {
+    pub fn new(
+        http: reqwest::Client,
+        api_base: String,
+        chat_id: i64,
+        user_lang: String,
+        messages: Messages,
+        llm: Arc<LlmClient>,
+        model: String,
+    ) -> Self {
         Self {
             http,
             api_base,
             chat_id,
+            user_lang,
+            messages,
+            llm,
+            model,
         }
     }
 
-    pub async fn send(&self, text: &str) {
+    /// Send a raw text message to the chat.
+    pub async fn send_raw(&self, text: &str) {
         let _ = self
             .http
             .post(format!("{}/sendMessage", self.api_base))
@@ -61,6 +80,24 @@ impl TelegramNotifier {
             }))
             .send()
             .await;
+    }
+
+    /// Send a message by key, auto-translated to the user's language.
+    pub async fn send_msg(&self, key: &str) {
+        let text = self
+            .messages
+            .get_translated(key, &[], &self.user_lang, &self.llm, &self.model)
+            .await;
+        self.send_raw(&text).await;
+    }
+
+    /// Send a message by key with placeholder substitution, auto-translated.
+    pub async fn send_msg_with(&self, key: &str, vars: &[(&str, &str)]) {
+        let text = self
+            .messages
+            .get_translated(key, vars, &self.user_lang, &self.llm, &self.model)
+            .await;
+        self.send_raw(&text).await;
     }
 
     pub async fn send_typing(&self) {
@@ -97,8 +134,21 @@ pub async fn attempt_repair(
     let error_text = error.to_string();
     info!(error = %error_text, "self-repair triggered");
 
-    notifier
-        .send("🔧 遇到了一个问题，正在自动分析和修复...")
+    notifier.send_msg(keys::REPAIR_STARTED).await;
+
+    // Pre-translate tool progress messages for the callback (which can't await).
+    let progress_msgs = notifier
+        .messages
+        .batch_translate(
+            &[
+                keys::REPAIR_ANALYZING,
+                keys::REPAIR_FIXING,
+                keys::REPAIR_COMPILING,
+            ],
+            &notifier.user_lang,
+            &notifier.llm,
+            &notifier.model,
+        )
         .await;
 
     // Step 1: Gather diagnostic context.
@@ -128,24 +178,29 @@ pub async fn attempt_repair(
         .with_system_prompt(&repair_prompt)
         .with_user_message(&user_prompt);
 
-    // Progress callback — notify user during repair.
+    // Progress callback — notify user during repair using pre-translated messages.
     let notifier_http = notifier.http.clone();
     let notifier_api = notifier.api_base.clone();
     let notifier_chat = notifier.chat_id;
     let sent: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
         Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let progress_map: Arc<HashMap<String, String>> = Arc::new(progress_msgs);
 
     ctx.on_tool_start = Some(Arc::new(move |tool_name: &str, _args: &serde_json::Value| {
-        let label = match tool_name {
-            "fs_read_file" | "fs_list_directory" => Some("🔍 正在分析代码..."),
-            "fs_str_replace" | "fs_write_file" => Some("✏️ 正在修复问题..."),
-            "shell_execute" => Some("⚙️ 正在编译验证..."),
+        let key = match tool_name {
+            "fs_read_file" | "fs_list_directory" => Some(keys::REPAIR_ANALYZING),
+            "fs_str_replace" | "fs_write_file" => Some(keys::REPAIR_FIXING),
+            "shell_execute" => Some(keys::REPAIR_COMPILING),
             _ => None,
         };
-        if let Some(msg) = label {
+        if let Some(msg_key) = key {
+            let msg = progress_map
+                .get(msg_key)
+                .cloned()
+                .unwrap_or_else(|| msg_key.to_string());
             let already = {
                 let mut set = sent.lock().unwrap_or_else(|e| e.into_inner());
-                !set.insert(msg.to_string())
+                !set.insert(msg_key.to_string())
             };
             if already {
                 return;
@@ -181,63 +236,54 @@ pub async fn attempt_repair(
     };
 
     // Step 3: Verify the fix independently.
-    notifier.send("🔨 正在验证修复...").await;
+    notifier.send_msg(keys::REPAIR_VERIFYING).await;
 
     if let Err(e) = run_shell(repo_path, "cargo check", 180).await {
         warn!(error = %e, "cargo check failed after repair");
-        notifier
-            .send("❌ 自动修复失败：代码验证未通过，我会继续改进。")
-            .await;
+        notifier.send_msg(keys::REPAIR_CHECK_FAILED).await;
         return RepairOutcome::Failed {
             reason: format!("cargo check failed: {e}"),
         };
     }
 
-    notifier.send("🧪 正在运行测试...").await;
+    notifier.send_msg(keys::REPAIR_TESTING).await;
 
     if let Err(e) = run_shell(repo_path, "cargo test --workspace", 300).await {
         warn!(error = %e, "cargo test failed after repair");
-        notifier
-            .send("❌ 自动修复失败：测试未通过，我会继续改进。")
-            .await;
+        notifier.send_msg(keys::REPAIR_TEST_FAILED).await;
         return RepairOutcome::Failed {
             reason: format!("cargo test failed: {e}"),
         };
     }
 
-    notifier.send("📦 正在编译新版本...").await;
+    notifier.send_msg(keys::REPAIR_BUILDING).await;
 
     if let Err(e) = run_shell(repo_path, "cargo build --release", 600).await {
         warn!(error = %e, "cargo build --release failed after repair");
-        notifier
-            .send("❌ 自动修复失败：编译新版本出错，我会继续改进。")
-            .await;
+        notifier.send_msg(keys::REPAIR_BUILD_FAILED).await;
         return RepairOutcome::Failed {
             reason: format!("cargo build --release failed: {e}"),
         };
     }
 
     // Step 4: Commit the fix.
-    notifier.send("📝 正在保存修复...").await;
+    notifier.send_msg(keys::REPAIR_COMMITTING).await;
 
     let commit_result = commit_fix(repo_path, &error_text).await;
     let commit_hash = match commit_result {
         Ok(hash) => hash,
         Err(e) => {
             warn!(error = %e, "failed to commit fix");
-            // Build succeeded but commit failed — still a successful repair.
             "unknown".to_string()
         }
     };
 
     // Step 5: Push to remote.
-    notifier.send("🚀 正在推送修复到远程仓库...").await;
+    notifier.send_msg(keys::REPAIR_PUSHING).await;
 
     if let Err(e) = run_shell(repo_path, "git push", 60).await {
         warn!(error = %e, "git push failed after self-repair commit");
-        notifier
-            .send("⚠️ 修复已保存到本地，但推送到远程仓库失败，稍后会重试。")
-            .await;
+        notifier.send_msg(keys::REPAIR_PUSH_FAILED).await;
     } else {
         info!("self-repair fix pushed to remote");
     }

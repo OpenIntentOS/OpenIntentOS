@@ -15,6 +15,7 @@ mod dev_commands;
 mod dev_worker;
 mod helpers;
 mod intent_classifier;
+mod messages;
 mod repl;
 mod self_repair;
 

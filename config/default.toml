@@ -95,3 +95,44 @@ failure_indicators = [
     "目前没有",
     "无法直接",
 ]
+
+# ---------------------------------------------------------------------------
+# User-facing messages (English templates)
+# ---------------------------------------------------------------------------
+#
+# All user-facing strings are defined here in English. The bot automatically
+# translates them to the user's language via LLM at runtime.
+# Placeholders use {name} syntax (e.g., {summary}).
+
+[messages.self_repair]
+started = "Found an issue, analyzing and fixing automatically..."
+analyzing = "Analyzing code..."
+fixing = "Fixing the issue..."
+compiling = "Compiling and verifying..."
+verifying = "Verifying the fix..."
+check_failed = "Auto-fix failed: code verification didn't pass. I'll keep improving."
+testing = "Running tests..."
+test_failed = "Auto-fix failed: tests didn't pass. I'll keep improving."
+building = "Building new version..."
+build_failed = "Auto-fix failed: build error. I'll keep improving."
+committing = "Saving the fix..."
+pushing = "Pushing fix to remote repository..."
+push_failed = "Fix saved locally, but push to remote failed. Will retry later."
+success = "I found and fixed an issue automatically!\n\nFix: {summary}\n\nRestarting now — please resend your message in a few seconds..."
+
+[messages.errors]
+general = "Sorry, something went wrong while processing your request. Please try again later or rephrase your message."
+repair_failed = "Sorry, I encountered an issue and tried to fix it automatically, but it didn't work this time. The developer has been notified. Please try again later."
+
+[messages.startup]
+with_updates = "I just restarted with updates!\n\n{summary}"
+simple = "I just restarted and I'm ready to help!"
+
+[messages.status]
+researching = "Researching..."
+searching = "Searching..."
+reading_page = "Reading page..."
+reading_files = "Reading files..."
+running_command = "Running command..."
+accessing_memory = "Accessing memory..."
+github = "Working with GitHub..."

@@ -21,11 +21,15 @@ use crate::adapters::init_adapters;
 use crate::dev_commands;
 use crate::dev_worker::{DevWorker, ProgressCallback};
 use crate::helpers::{env_non_empty, init_tracing, load_system_prompt, resolve_llm_config};
+use crate::messages::{self, Messages, keys};
 
 /// Run the Telegram bot gateway.
 pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result<()> {
     init_tracing("info");
     info!("starting Telegram bot gateway");
+
+    // Load user-facing message templates from config.
+    let msgs = Messages::load();
 
     // Parse allowed user IDs (if provided).
     let allowed_user_ids: Option<Vec<i64>> = allowed_users.map(|s| {
@@ -204,12 +208,15 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     println!();
 
     // Send startup notification with latest changes to all recent active chats.
-    send_startup_notification(&http, &telegram_api, &sessions, &llm, &model).await;
+    send_startup_notification(&http, &telegram_api, &sessions, &llm, &model, &msgs).await;
 
     // Per-chat conversation history (in-memory, keyed by chat_id).
     let mut chat_histories: HashMap<i64, Vec<Message>> = HashMap::new();
 
-    // Polling loop — restore offset from persistent state.
+    // Per-chat user language (from Telegram's language_code).
+    let mut user_languages: HashMap<i64, String> = HashMap::new();
+
+    // Polling loop -- restore offset from persistent state.
     let mut offset: i64 = bot_state
         .get_i64("telegram_offset")
         .await
@@ -285,9 +292,17 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
 
+            // Extract user's language from Telegram (e.g., "en", "zh-hans", "ja").
+            let user_lang = message
+                .pointer("/from/language_code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("en")
+                .to_string();
+            user_languages.insert(chat_id, user_lang.clone());
+
             info!(
                 chat_id,
-                user_id, user_name, text, "incoming Telegram message"
+                user_id, user_name, lang = %user_lang, text, "incoming Telegram message"
             );
 
             // Access control.
@@ -445,15 +460,17 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             // Build agent context with chat history.
             let mut system_prompt = load_system_prompt();
 
-            // Channel-specific context: who, where, how to format.
+            // Tell the agent to match the user's language.
+            let lang_name = messages::lang_display_name(&user_lang);
             system_prompt.push_str(&format!(
                 "\n\n## Channel Context\n\n\
-                 You are communicating via Telegram with **{user_name}** (user_id: {user_id}, chat_id: {chat_id}).\n\n\
+                 You are communicating via Telegram with **{user_name}** (user_id: {user_id}, chat_id: {chat_id}).\n\
+                 The user's language is **{lang_name}** (code: {user_lang}). ALWAYS respond in {lang_name}.\n\n\
                  Telegram formatting rules:\n\
                  - Use RICH formatting: bold (**text**), tables, bullet points, numbered lists, headings.\n\
                  - Structure complex responses with clear sections, categories, and tables.\n\
                  - Tables are great for comparisons and lists of items.\n\
-                 - Use emoji to mark categories (📺 Videos, 📝 Articles, 💬 Discussions, 📊 Data).\n\
+                 - Use emoji to mark categories.\n\
                  - For research results, present them in well-organized tables with columns.\n\
                  - You can use Telegram tools to send photos, documents, or additional messages.\n\
                  - Do NOT simplify or shorten your response just because it's Telegram. Give full, rich answers.\n",
@@ -464,7 +481,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             }
 
             let agent_config = AgentConfig {
-                max_turns: 100,  // Increased from 50 to handle very complex multi-step tasks
+                max_turns: 100,
                 model: model.clone(),
                 temperature: Some(0.5),
                 max_tokens: Some(8192),
@@ -474,12 +491,10 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             let mut ctx = AgentContext::new(llm.clone(), adapters.clone(), agent_config)
                 .with_system_prompt(&system_prompt);
 
-            // Restore conversation history. If this is the first message
-            // after a restart, load recent history from the database so
-            // the agent has context from previous interactions.
+            // Restore conversation history.
             if !chat_histories.contains_key(&chat_id) {
-                if let Ok(msgs) = sessions.get_messages(&session_key, Some(100)).await {
-                    let restored: Vec<Message> = msgs
+                if let Ok(db_msgs) = sessions.get_messages(&session_key, Some(100)).await {
+                    let restored: Vec<Message> = db_msgs
                         .into_iter()
                         .filter(|m| m.role == "user" || m.role == "assistant")
                         .map(|m| match m.role.as_str() {
@@ -505,27 +520,49 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             ctx = ctx.with_user_message(text);
 
             // Tool-start callback: send status messages to Telegram.
-            // Uses a set to deduplicate — each tool type only sends one status per run.
             let status_http = http.clone();
             let status_api = telegram_api.clone();
             let sent_statuses: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
                 Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+
+            // Pre-translate tool status messages for this user's language.
+            let status_msgs = msgs
+                .batch_translate(
+                    &[
+                        keys::STATUS_RESEARCHING,
+                        keys::STATUS_SEARCHING,
+                        keys::STATUS_READING_PAGE,
+                        keys::STATUS_READING_FILES,
+                        keys::STATUS_RUNNING_COMMAND,
+                        keys::STATUS_ACCESSING_MEMORY,
+                        keys::STATUS_GITHUB,
+                    ],
+                    &user_lang,
+                    &llm,
+                    &model,
+                )
+                .await;
+            let status_map: Arc<HashMap<String, String>> = Arc::new(status_msgs);
+
             ctx.on_tool_start = Some(Arc::new(move |tool_name: &str, _args: &serde_json::Value| {
-                let label = match tool_name {
-                    "web_research" => Some("🔍 Researching..."),
-                    "web_search" => Some("🔎 Searching..."),
-                    "web_fetch" => Some("📖 Reading page..."),
-                    "fs_read_file" | "fs_list_directory" => Some("📄 Reading files..."),
-                    "shell_execute" => Some("⚙️ Running command..."),
-                    "memory_search" | "memory_save" => Some("🧠 Accessing memory..."),
-                    "github_create_issue" | "github_list_repos" => Some("🐙 Working with GitHub..."),
+                let key = match tool_name {
+                    "web_research" => Some(keys::STATUS_RESEARCHING),
+                    "web_search" => Some(keys::STATUS_SEARCHING),
+                    "web_fetch" => Some(keys::STATUS_READING_PAGE),
+                    "fs_read_file" | "fs_list_directory" => Some(keys::STATUS_READING_FILES),
+                    "shell_execute" => Some(keys::STATUS_RUNNING_COMMAND),
+                    "memory_search" | "memory_save" => Some(keys::STATUS_ACCESSING_MEMORY),
+                    "github_create_issue" | "github_list_repos" => Some(keys::STATUS_GITHUB),
                     _ => None,
                 };
-                if let Some(msg) = label {
-                    // Deduplicate: only send each status type once per agent run.
+                if let Some(msg_key) = key {
+                    let msg = status_map
+                        .get(msg_key)
+                        .cloned()
+                        .unwrap_or_else(|| msg_key.to_string());
                     let already_sent = {
                         let mut set = sent_statuses.lock().unwrap_or_else(|e| e.into_inner());
-                        !set.insert(msg.to_string())
+                        !set.insert(msg_key.to_string())
                     };
                     if already_sent {
                         return;
@@ -545,8 +582,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 }
             }));
 
-            // Spawn a background task to send periodic "typing" indicators
-            // so the user sees activity while the ReAct loop runs.
+            // Spawn a background task to send periodic "typing" indicators.
             let typing_http = http.clone();
             let typing_api = telegram_api.clone();
             let typing_cancel = Arc::new(tokio::sync::Notify::new());
@@ -600,6 +636,10 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                         http.clone(),
                         telegram_api.clone(),
                         chat_id,
+                        user_lang.clone(),
+                        msgs.clone(),
+                        llm.clone(),
+                        model.clone(),
                     );
                     let repair_outcome = crate::self_repair::attempt_repair(
                         &e,
@@ -617,13 +657,17 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                             commit_hash,
                             summary,
                         } => {
-                            let _ = commit_hash; // used internally only
-                            let msg = format!(
-                                "✅ 我发现了一个问题并自动修复了！\n\n\
-                                 修复内容：{summary}\n\n\
-                                 正在重启，请稍等几秒后重新发送你的消息..."
-                            );
-                            notifier.send(&msg).await;
+                            let _ = commit_hash;
+                            let msg = msgs
+                                .get_translated(
+                                    keys::REPAIR_SUCCESS,
+                                    &[("summary", &summary)],
+                                    &user_lang,
+                                    &llm,
+                                    &model,
+                                )
+                                .await;
+                            notifier.send_raw(&msg).await;
 
                             // Persist history before restart.
                             let _ = sessions
@@ -634,25 +678,34 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                             crate::self_repair::restart_process();
                         }
                         crate::self_repair::RepairOutcome::NotACodeBug => {
-                            // Not a code bug — use normal error reporting.
                             tracing::debug!(error = %e, "not a code bug, skipping self-repair");
                             if let Some(ref evo) = evolution {
                                 let mut evo = evo.lock().await;
                                 let _ = evo.report_error(text, "telegram", &e).await;
                             }
-                            "抱歉，处理你的请求时遇到了问题。请稍后再试，或者换个方式描述你的需求。"
-                                .to_string()
+                            msgs.get_translated(
+                                keys::ERROR_GENERAL,
+                                &[],
+                                &user_lang,
+                                &llm,
+                                &model,
+                            )
+                            .await
                         }
                         crate::self_repair::RepairOutcome::Failed { reason } => {
-                            // Self-repair attempted but failed.
                             tracing::warn!(reason = %reason, "self-repair failed");
                             if let Some(ref evo) = evolution {
                                 let mut evo = evo.lock().await;
                                 let _ = evo.report_error(text, "telegram", &e).await;
                             }
-                            "抱歉，我遇到了一个问题并尝试自动修复，但这次没有成功。\
-                             开发者会收到通知来处理这个问题。请稍后再试。"
-                                .to_string()
+                            msgs.get_translated(
+                                keys::ERROR_REPAIR_FAILED,
+                                &[],
+                                &user_lang,
+                                &llm,
+                                &model,
+                            )
+                            .await
                         }
                     }
                 }
@@ -737,6 +790,7 @@ async fn send_startup_notification(
     sessions: &SessionStore,
     llm: &Arc<LlmClient>,
     model: &str,
+    msgs: &Messages,
 ) {
     // Get the latest commit messages for context.
     let commit_info = match std::process::Command::new("git")
@@ -751,17 +805,7 @@ async fn send_startup_notification(
         _ => None,
     };
 
-    // Generate a human-readable summary using the LLM.
-    let message = if let Some(ref commits) = commit_info {
-        match summarize_commits_for_user(llm, model, commits).await {
-            Some(summary) => format!("🔄 我刚刚重启更新了！\n\n{summary}"),
-            None => "🔄 我刚刚重启更新了，准备好继续为你服务！".to_string(),
-        }
-    } else {
-        "🔄 我刚刚重启了，准备好继续为你服务！".to_string()
-    };
-
-    // Find all recently active Telegram sessions and notify them.
+    // Find all recently active Telegram sessions.
     let chat_ids = match sessions.list(100, 0).await {
         Ok(all_sessions) => {
             all_sessions
@@ -779,6 +823,33 @@ async fn send_startup_notification(
     };
 
     for chat_id in chat_ids {
+        // Try to get the user's language from their most recent message.
+        // Default to "en" if unknown.
+        let user_lang = get_chat_language(http, telegram_api, chat_id).await;
+
+        // Generate a human-readable summary using the LLM in the user's language.
+        let message = if let Some(ref commits) = commit_info {
+            match summarize_commits_for_user(llm, model, commits, &user_lang).await {
+                Some(summary) => {
+                    msgs.get_translated(
+                        keys::STARTUP_WITH_UPDATES,
+                        &[("summary", &summary)],
+                        &user_lang,
+                        llm,
+                        model,
+                    )
+                    .await
+                }
+                None => {
+                    msgs.get_translated(keys::STARTUP_SIMPLE, &[], &user_lang, llm, model)
+                        .await
+                }
+            }
+        } else {
+            msgs.get_translated(keys::STARTUP_SIMPLE, &[], &user_lang, llm, model)
+                .await
+        };
+
         let _ = http
             .post(format!("{telegram_api}/sendMessage"))
             .json(&serde_json::json!({
@@ -800,17 +871,25 @@ async fn summarize_commits_for_user(
     llm: &Arc<LlmClient>,
     model: &str,
     commits: &str,
+    user_lang: &str,
 ) -> Option<String> {
-    let system = "你是一个 AI 助手。把下面的 git commit 记录翻译成简短、友好的中文摘要，\
-                  让普通用户能看懂最近更新了什么功能或修复了什么问题。\
-                  不要提及 commit hash、分支名、文件名等技术细节。\
-                  用 2-4 个要点，每个要点一句话，用 emoji 开头。";
+    let lang_name = messages::lang_display_name(user_lang);
+
+    let system = format!(
+        "You are an AI assistant. Translate the git commit log below into a short, \
+         friendly summary in {lang_name} that a non-technical user can understand. \
+         Describe what features were added or bugs were fixed. \
+         Do NOT mention commit hashes, branch names, or file names. \
+         Use 2-4 bullet points, each one sentence, starting with an emoji."
+    );
 
     let request = ChatRequest {
         model: model.to_owned(),
         messages: vec![
-            Message::system(system),
-            Message::user(format!("把这些更新翻译成用户能看懂的中文：\n{commits}")),
+            Message::system(&system),
+            Message::user(format!(
+                "Summarize these updates in {lang_name}:\n{commits}"
+            )),
         ],
         tools: vec![],
         temperature: Some(0.3),
@@ -822,4 +901,17 @@ async fn summarize_commits_for_user(
         Ok(LlmResponse::Text(text)) => Some(text),
         _ => None,
     }
+}
+
+/// Try to determine a chat's language. Returns "en" as default.
+async fn get_chat_language(
+    _http: &reqwest::Client,
+    _telegram_api: &str,
+    _chat_id: i64,
+) -> String {
+    // Telegram doesn't provide language_code for chats directly,
+    // only in message updates. We default to "en" for startup
+    // notifications. Once the user sends a message, their language
+    // is detected and used for subsequent messages.
+    "en".to_string()
 }
