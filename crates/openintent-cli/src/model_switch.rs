@@ -187,9 +187,13 @@ pub fn try_switch_model(text: &str, llm: &Arc<LlmClient>) -> Option<ModelSwitch>
         return Some(result);
     }
 
-    // 2. If target contains '/', treat as OpenRouter `provider/model` format.
+    // 2. If target contains '/', treat as `provider/model` format.
+    //    First check direct providers (ollama/qwen, deepseek/chat, etc.),
+    //    then fall back to OpenRouter.
     if target.contains('/') {
-        return try_openrouter_direct(&target, llm);
+        if let Some(result) = try_slash_format(&target, llm) {
+            return Some(result);
+        }
     }
 
     None
@@ -211,27 +215,127 @@ fn try_alias_switch(target: &str, llm: &Arc<LlmClient>) -> Option<ModelSwitch> {
     })
 }
 
-/// Switch to any model via OpenRouter using `provider/model` format.
-fn try_openrouter_direct(model_id: &str, llm: &Arc<LlmClient>) -> Option<ModelSwitch> {
-    let api_key = crate::helpers::env_non_empty("OPENROUTER_API_KEY")?;
+/// Handle `provider/model` format — route to direct providers first, then OpenRouter.
+///
+/// Examples:
+/// - `ollama/qwen2.5` → Ollama at localhost:11434
+/// - `deepseek/deepseek-reasoner` → DeepSeek API
+/// - `groq/llama-3.3-70b` → Groq API
+/// - `google/gemini-2.5-pro` → OpenRouter (no direct Google support)
+fn try_slash_format(target: &str, llm: &Arc<LlmClient>) -> Option<ModelSwitch> {
+    let (provider_prefix, model_name) = target.split_once('/')?;
+    if model_name.is_empty() {
+        return None;
+    }
 
+    // Direct provider routing.
+    match provider_prefix {
+        "ollama" | "local" => {
+            llm.update_api_key("ollama".to_string());
+            llm.switch_provider(
+                LlmProvider::OpenAI,
+                OLLAMA_BASE_URL.to_string(),
+                model_name.to_string(),
+            );
+            return Some(ModelSwitch {
+                provider_name: "Ollama".to_string(),
+                model: model_name.to_string(),
+            });
+        }
+        "deepseek" => {
+            let key = crate::helpers::env_non_empty("DEEPSEEK_API_KEY")?;
+            llm.update_api_key(key);
+            llm.switch_provider(
+                LlmProvider::OpenAI,
+                DEEPSEEK_BASE_URL.to_string(),
+                model_name.to_string(),
+            );
+            return Some(ModelSwitch {
+                provider_name: "DeepSeek".to_string(),
+                model: model_name.to_string(),
+            });
+        }
+        "groq" => {
+            let key = crate::helpers::env_non_empty("GROQ_API_KEY")?;
+            llm.update_api_key(key);
+            llm.switch_provider(
+                LlmProvider::OpenAI,
+                GROQ_BASE_URL.to_string(),
+                model_name.to_string(),
+            );
+            return Some(ModelSwitch {
+                provider_name: "Groq".to_string(),
+                model: model_name.to_string(),
+            });
+        }
+        "xai" => {
+            let key = crate::helpers::env_non_empty("XAI_API_KEY")?;
+            llm.update_api_key(key);
+            llm.switch_provider(
+                LlmProvider::OpenAI,
+                XAI_BASE_URL.to_string(),
+                model_name.to_string(),
+            );
+            return Some(ModelSwitch {
+                provider_name: "xAI".to_string(),
+                model: model_name.to_string(),
+            });
+        }
+        "mistral" => {
+            let key = crate::helpers::env_non_empty("MISTRAL_API_KEY")?;
+            llm.update_api_key(key);
+            llm.switch_provider(
+                LlmProvider::OpenAI,
+                MISTRAL_BASE_URL.to_string(),
+                model_name.to_string(),
+            );
+            return Some(ModelSwitch {
+                provider_name: "Mistral".to_string(),
+                model: model_name.to_string(),
+            });
+        }
+        "openai" => {
+            let key = crate::helpers::env_non_empty("OPENAI_API_KEY")?;
+            llm.update_api_key(key);
+            llm.switch_provider(
+                LlmProvider::OpenAI,
+                "https://api.openai.com/v1".to_string(),
+                model_name.to_string(),
+            );
+            return Some(ModelSwitch {
+                provider_name: "OpenAI".to_string(),
+                model: model_name.to_string(),
+            });
+        }
+        "anthropic" => {
+            let key = crate::helpers::env_non_empty("ANTHROPIC_API_KEY")
+                .or_else(|| crate::helpers::read_claude_code_keychain_token())?;
+            llm.update_api_key(key);
+            llm.switch_provider(
+                LlmProvider::Anthropic,
+                "https://api.anthropic.com".to_string(),
+                model_name.to_string(),
+            );
+            return Some(ModelSwitch {
+                provider_name: "Anthropic".to_string(),
+                model: model_name.to_string(),
+            });
+        }
+        _ => {}
+    }
+
+    // Fall back to OpenRouter for unknown providers (google, meta-llama, etc.)
+    let api_key = crate::helpers::env_non_empty("OPENROUTER_API_KEY")?;
     llm.update_api_key(api_key);
     llm.switch_provider(
         LlmProvider::OpenAI,
         OPENROUTER_BASE_URL.to_string(),
-        model_id.to_string(),
+        target.to_string(),
     );
 
-    // Extract a friendly provider name from the model ID.
-    let provider_name = model_id
-        .split('/')
-        .next()
-        .unwrap_or("OpenRouter")
-        .to_string();
-
     Some(ModelSwitch {
-        provider_name,
-        model: model_id.to_string(),
+        provider_name: provider_prefix.to_string(),
+        model: target.to_string(),
     })
 }
 

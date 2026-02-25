@@ -57,13 +57,14 @@ impl SkillAdapter {
             for script in &skill.scripts {
                 let tool_name = format!(
                     "skill_{}_{}",
-                    skill.name.replace('-', "_"),
-                    script
-                        .filename
-                        .rsplit('.')
-                        .next_back()
-                        .unwrap_or(&script.filename)
-                        .replace('-', "_")
+                    sanitize_tool_name(&skill.name),
+                    sanitize_tool_name(
+                        script
+                            .filename
+                            .rsplit('.')
+                            .next_back()
+                            .unwrap_or(&script.filename),
+                    )
                 );
 
                 script_tools.push(ScriptTool {
@@ -251,6 +252,46 @@ impl Adapter for SkillAdapter {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Sanitize a string for use in a tool name.
+///
+/// LLM APIs require tool names to match `^[a-zA-Z0-9_-]{1,128}$`.
+/// This replaces any disallowed characters with underscores and lowercases.
+fn sanitize_tool_name(s: &str) -> String {
+    let sanitized: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    // Collapse multiple underscores and trim trailing ones.
+    let mut result = String::with_capacity(sanitized.len());
+    let mut prev_underscore = false;
+    for c in sanitized.chars() {
+        if c == '_' {
+            if !prev_underscore {
+                result.push('_');
+            }
+            prev_underscore = true;
+        } else {
+            result.push(c);
+            prev_underscore = false;
+        }
+    }
+
+    // Truncate to 128 chars max.
+    result.truncate(128);
+    result.trim_end_matches('_').to_string()
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -276,6 +317,14 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_tool_name_spaces_and_caps() {
+        assert_eq!(sanitize_tool_name("Email OAuth Setup"), "email_oauth_setup");
+        assert_eq!(sanitize_tool_name("my-tool"), "my-tool");
+        assert_eq!(sanitize_tool_name("hello  world"), "hello_world");
+        assert_eq!(sanitize_tool_name("a.b.c"), "a_b_c");
+    }
+
+    #[test]
     fn adapter_with_scripts() {
         let skills = vec![SkillDefinition {
             name: "my-tool".into(),
@@ -294,6 +343,6 @@ mod tests {
         let adapter = SkillAdapter::new("skills", &skills);
         let tools = adapter.tools();
         assert_eq!(tools.len(), 1);
-        assert!(tools[0].name.contains("my_tool"));
+        assert!(tools[0].name.contains("my-tool"));
     }
 }
