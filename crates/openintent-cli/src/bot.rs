@@ -500,19 +500,31 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             ctx = ctx.with_user_message(text);
 
             // Tool-start callback: send status messages to Telegram.
+            // Uses a set to deduplicate — each tool type only sends one status per run.
             let status_http = http.clone();
             let status_api = telegram_api.clone();
+            let sent_statuses: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+                Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
             ctx.on_tool_start = Some(Arc::new(move |tool_name: &str, _args: &serde_json::Value| {
                 let label = match tool_name {
                     "web_research" => Some("🔍 Researching..."),
                     "web_search" => Some("🔎 Searching..."),
                     "web_fetch" => Some("📖 Reading page..."),
-                    "fs_read_file" => Some("📄 Reading file..."),
+                    "fs_read_file" | "fs_list_directory" => Some("📄 Reading files..."),
                     "shell_execute" => Some("⚙️ Running command..."),
-                    "memory_search" => Some("🧠 Searching memory..."),
+                    "memory_search" | "memory_save" => Some("🧠 Accessing memory..."),
+                    "github_create_issue" | "github_list_repos" => Some("🐙 Working with GitHub..."),
                     _ => None,
                 };
                 if let Some(msg) = label {
+                    // Deduplicate: only send each status type once per agent run.
+                    let already_sent = {
+                        let mut set = sent_statuses.lock().unwrap_or_else(|e| e.into_inner());
+                        !set.insert(msg.to_string())
+                    };
+                    if already_sent {
+                        return;
+                    }
                     let client = status_http.clone();
                     let api = status_api.clone();
                     tokio::spawn(async move {

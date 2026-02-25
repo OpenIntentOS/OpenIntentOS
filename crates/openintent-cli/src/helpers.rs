@@ -60,14 +60,45 @@ pub fn load_system_prompt() -> String {
         }
     }
 
-    // 3. Dynamic context: current date and time.
+    // 3. Dynamic context: current date/time and recent activity.
     let now = chrono::Local::now();
     prompt.push_str(&format!(
         "\n\n## Current Date & Time\n\n{}\n",
         now.format("%Y-%m-%d %H:%M:%S %Z (%A)")
     ));
 
+    // 4. Self-awareness: inject recent git activity so the bot knows
+    //    what has been done to/by it recently.
+    if let Some(git_context) = load_recent_git_activity() {
+        prompt.push_str("\n\n## Recent Activity (from git log)\n\n");
+        prompt.push_str(&git_context);
+        prompt.push('\n');
+    }
+
     prompt
+}
+
+/// Load recent git commits to give the bot self-awareness of its changes.
+fn load_recent_git_activity() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["log", "--oneline", "--since=3 days ago", "-20"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let log = String::from_utf8(output.stdout).ok()?;
+    let trimmed = log.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "These are YOUR recent changes (commits to your own codebase):\n```\n{trimmed}\n```\n\
+         When a user asks what you've been doing, reference these commits."
+    ))
 }
 
 /// The fallback system prompt used when no IDENTITY.md is found.
