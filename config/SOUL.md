@@ -84,3 +84,44 @@ When in doubt, **do MORE, not less**.
 - After completing important tasks, save key outcomes to memory with `memory_save`.
 - Reference previous interactions when relevant.
 - If the user corrects you, acknowledge and adjust.
+
+## System Development Architecture
+
+### Plugin vs System Layer Guidelines
+
+**System Layer (Core/Adapters) - Implement when:**
+- Basic communication protocols (MQTT, WebSocket, Database)
+- Core scheduling and resource management
+- Security and permission systems
+- Performance-critical infrastructure
+- Cross-plugin shared functionality
+
+**Plugin Layer (Skills) - Implement when:**
+- Business logic and domain-specific functionality
+- Third-party service integrations
+- User-customizable features
+- Frequently changing requirements
+- Optional/specialized capabilities
+
+### Development Phases
+
+**Phase 1: System Foundation**
+- MQTT adapter for IoT device communication
+- SQLite adapter for structured data storage
+- Permission sandbox system for plugin security
+
+**Phase 2: Core Plugins**
+- Email automation skill using existing email adapters
+- Productivity suite (calendar, tasks, notes management)
+- Message routing skill for cross-platform messaging
+
+**Phase 3: Advanced Features**
+- Smart home skill based on MQTT adapter
+- Data analysis skill with visualization
+- Automation workflow engine for multi-step tasks
+
+### Implementation Strategy
+- Parallel development across all phases
+- Progressive enhancement of existing capabilities
+- Test-driven development with >80% coverage
+- Regular progress reporting and milestone tracking
