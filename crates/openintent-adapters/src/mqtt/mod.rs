@@ -1,11 +1,12 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
 use crate::traits::{Adapter, AdapterType, ToolDefinition, AuthRequirement, HealthStatus};
-use crate::error::Result;
+use crate::error::{AdapterError, Result};
 
 /// MQTT Quality of Service levels
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -64,10 +65,9 @@ impl Default for MqttConfig {
 /// MQTT adapter for IoT device communication
 pub struct MqttAdapter {
     config: MqttConfig,
-    client: Option<rumqttc::AsyncClient>,
-    event_loop: Option<rumqttc::EventLoop>,
-    message_sender: Option<mpsc::UnboundedSender<MqttMessage>>,
-    subscriptions: HashMap<String, QoS>,
+    client: Arc<Mutex<Option<rumqttc::AsyncClient>>>,
+    message_sender: Arc<Mutex<Option<mpsc::UnboundedSender<MqttMessage>>>>,
+    subscriptions: Arc<Mutex<HashMap<String, QoS>>>,
 }
 
 impl MqttAdapter {
@@ -75,10 +75,9 @@ impl MqttAdapter {
     pub fn new(config: MqttConfig) -> Self {
         Self {
             config,
-            client: None,
-            event_loop: None,
-            message_sender: None,
-            subscriptions: HashMap::new(),
+            client: Arc::new(Mutex::new(None)),
+            message_sender: Arc::new(Mutex::new(None)),
+            subscriptions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -102,62 +101,62 @@ impl MqttAdapter {
             let ca = std::fs::read(ca_cert)
                 .map_err(|e| AdapterError::ConfigError(format!("Failed to read CA cert: {}", e)))?;
             
-            let mut tls_config = rumqttc::TlsConfiguration::Simple {
-                ca: ca.into(),
-                alpn: None,
-                client_auth: None,
-            };
-
-            if let (Some(client_cert), Some(client_key)) = (&self.config.client_cert, &self.config.client_key) {
+            let tls_config = if let (Some(client_cert), Some(client_key)) = (&self.config.client_cert, &self.config.client_key) {
                 let cert = std::fs::read(client_cert)
                     .map_err(|e| AdapterError::ConfigError(format!("Failed to read client cert: {}", e)))?;
                 let key = std::fs::read(client_key)
                     .map_err(|e| AdapterError::ConfigError(format!("Failed to read client key: {}", e)))?;
 
-                tls_config = rumqttc::TlsConfiguration::Simple {
+                rumqttc::TlsConfiguration::Simple {
                     ca: ca.into(),
                     alpn: None,
-                    client_auth: Some(rumqttc::ClientAuth {
-                        certs: cert.into(),
-                        key: key.into(),
-                    }),
-                };
-            }
+                    client_auth: Some((cert.into(), key.into())),
+                }
+            } else {
+                rumqttc::TlsConfiguration::Simple {
+                    ca: ca.into(),
+                    alpn: None,
+                    client_auth: None,
+                }
+            };
 
             mqttoptions.set_transport(rumqttc::Transport::Tls(tls_config));
         }
 
-        let (client, event_loop) = rumqttc::AsyncClient::new(mqttoptions, 10);
+        let (client, _event_loop) = rumqttc::AsyncClient::new(mqttoptions, 10);
         
-        self.client = Some(client);
-        self.event_loop = Some(event_loop);
+        *self.client.lock().await = Some(client.clone());
 
         // Start message handling task
         let (tx, mut rx) = mpsc::unbounded_channel::<MqttMessage>();
-        self.message_sender = Some(tx);
+        *self.message_sender.lock().await = Some(tx);
 
-        if let Some(client) = &self.client {
-            let client_clone = client.clone();
-            tokio::spawn(async move {
-                while let Some(message) = rx.recv().await {
-                    if let Err(e) = client_clone.publish(
-                        &message.topic,
-                        message.qos as u8,
-                        message.retain,
-                        message.payload,
-                    ).await {
-                        eprintln!("Failed to publish MQTT message: {}", e);
-                    }
+        tokio::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                let rumqtt_qos = match message.qos {
+                    QoS::AtMostOnce => rumqttc::QoS::AtMostOnce,
+                    QoS::AtLeastOnce => rumqttc::QoS::AtLeastOnce,
+                    QoS::ExactlyOnce => rumqttc::QoS::ExactlyOnce,
+                };
+                
+                if let Err(e) = client.publish(
+                    &message.topic,
+                    rumqtt_qos,
+                    message.retain,
+                    message.payload,
+                ).await {
+                    eprintln!("Failed to publish MQTT message: {}", e);
                 }
-            });
-        }
+            }
+        });
 
         Ok(())
     }
 
     /// Publish a message to a topic
     pub async fn publish(&self, topic: &str, payload: Vec<u8>, qos: QoS, retain: bool) -> Result<()> {
-        if let Some(sender) = &self.message_sender {
+        let sender = self.message_sender.lock().await;
+        if let Some(sender) = sender.as_ref() {
             let message = MqttMessage {
                 topic: topic.to_string(),
                 payload,
@@ -166,7 +165,7 @@ impl MqttAdapter {
             };
             
             sender.send(message)
-                .map_err(|e| crate::error::AdapterError::ExecutionError(format!("Failed to send message: {}", e)))?;
+                .map_err(|e| AdapterError::ExecutionError(format!("Failed to send message: {}", e)))?;
             
             Ok(())
         } else {
@@ -176,46 +175,55 @@ impl MqttAdapter {
 
     /// Subscribe to a topic
     pub async fn subscribe(&mut self, topic: &str, qos: QoS) -> Result<()> {
-        if let Some(client) = &self.client {
-            client.subscribe(topic, rumqttc::QoS::from(qos as u8)).await
-                .map_err(|e| crate::error::AdapterError::ExecutionError(format!("Failed to subscribe: {}", e)))?;
+        let client = self.client.lock().await;
+        if let Some(client) = client.as_ref() {
+            let rumqtt_qos = match qos {
+                QoS::AtMostOnce => rumqttc::QoS::AtMostOnce,
+                QoS::AtLeastOnce => rumqttc::QoS::AtLeastOnce,
+                QoS::ExactlyOnce => rumqttc::QoS::ExactlyOnce,
+            };
             
-            self.subscriptions.insert(topic.to_string(), qos);
+            client.subscribe(topic, rumqtt_qos).await
+                .map_err(|e| AdapterError::ExecutionError(format!("Failed to subscribe: {}", e)))?;
+            
+            self.subscriptions.lock().await.insert(topic.to_string(), qos);
             Ok(())
         } else {
-            Err(crate::error::AdapterError::ConfigError("MQTT client not connected".to_string()).into())
+            Err(AdapterError::ConfigError("MQTT client not connected".to_string()))
         }
     }
 
     /// Unsubscribe from a topic
     pub async fn unsubscribe(&mut self, topic: &str) -> Result<()> {
-        if let Some(client) = &self.client {
+        let client = self.client.lock().await;
+        if let Some(client) = client.as_ref() {
             client.unsubscribe(topic).await
-                .map_err(|e| crate::error::AdapterError::ExecutionError(format!("Failed to unsubscribe: {}", e)))?;
+                .map_err(|e| AdapterError::ExecutionError(format!("Failed to unsubscribe: {}", e)))?;
             
-            self.subscriptions.remove(topic);
+            self.subscriptions.lock().await.remove(topic);
             Ok(())
         } else {
-            Err(crate::error::AdapterError::ConfigError("MQTT client not connected".to_string()).into())
+            Err(AdapterError::ConfigError("MQTT client not connected".to_string()))
         }
     }
 
     /// Get list of active subscriptions
-    pub fn get_subscriptions(&self) -> &HashMap<String, QoS> {
-        &self.subscriptions
+    pub async fn get_subscriptions(&self) -> HashMap<String, QoS> {
+        self.subscriptions.lock().await.clone()
     }
 
     /// Disconnect from MQTT broker
     pub async fn disconnect_mqtt(&mut self) -> Result<()> {
-        if let Some(client) = &self.client {
+        let client = self.client.lock().await;
+        if let Some(client) = client.as_ref() {
             client.disconnect().await
                 .map_err(|e| AdapterError::ExecutionError(format!("Failed to disconnect: {}", e)))?;
         }
         
-        self.client = None;
-        self.event_loop = None;
-        self.message_sender = None;
-        self.subscriptions.clear();
+        drop(client);
+        *self.client.lock().await = None;
+        *self.message_sender.lock().await = None;
+        self.subscriptions.lock().await.clear();
         
         Ok(())
     }
@@ -232,62 +240,16 @@ impl Adapter for MqttAdapter {
     }
 
     async fn connect(&mut self) -> Result<()> {
-        let mut mqttoptions = rumqttc::MqttOptions::new(
-            self.config.client_id.clone().unwrap_or_else(|| format!("openintent-{}", Uuid::new_v4())),
-            &self.config.broker_url,
-            1883,
-        );
-
-        mqttoptions.set_keep_alive(std::time::Duration::from_secs(self.config.keep_alive as u64));
-        mqttoptions.set_clean_session(self.config.clean_session);
-
-        if let (Some(username), Some(password)) = (&self.config.username, &self.config.password) {
-            mqttoptions.set_credentials(username, password);
-        }
-
-        let (client, event_loop) = rumqttc::AsyncClient::new(mqttoptions, 10);
-        
-        self.client = Some(client);
-        self.event_loop = Some(event_loop);
-
-        // Start message handling task
-        let (tx, mut rx) = mpsc::unbounded_channel::<MqttMessage>();
-        self.message_sender = Some(tx);
-
-        if let Some(client) = &self.client {
-            let client_clone = client.clone();
-            tokio::spawn(async move {
-                while let Some(message) = rx.recv().await {
-                    if let Err(e) = client_clone.publish(
-                        &message.topic,
-                        rumqttc::QoS::from(message.qos as u8),
-                        message.retain,
-                        message.payload,
-                    ).await {
-                        eprintln!("Failed to publish MQTT message: {}", e);
-                    }
-                }
-            });
-        }
-
-        Ok(())
+        self.connect_mqtt().await
     }
 
     async fn disconnect(&mut self) -> Result<()> {
-        if let Some(client) = &self.client {
-            let _ = client.disconnect().await;
-        }
-        
-        self.client = None;
-        self.event_loop = None;
-        self.message_sender = None;
-        self.subscriptions.clear();
-        
-        Ok(())
+        self.disconnect_mqtt().await
     }
 
     async fn health_check(&self) -> Result<HealthStatus> {
-        if self.client.is_some() {
+        let client = self.client.lock().await;
+        if client.is_some() {
             Ok(HealthStatus::Healthy)
         } else {
             Ok(HealthStatus::Unhealthy)
@@ -376,10 +338,10 @@ impl Adapter for MqttAdapter {
         match name {
             "mqtt_publish" => {
                 let topic = params["topic"].as_str()
-                    .ok_or_else(|| crate::error::AdapterError::InvalidInput("Missing 'topic' parameter".to_string()))?;
+                    .ok_or_else(|| AdapterError::InvalidInput("Missing 'topic' parameter".to_string()))?;
                 
                 let payload = params["payload"].as_str()
-                    .ok_or_else(|| crate::error::AdapterError::InvalidInput("Missing 'payload' parameter".to_string()))?
+                    .ok_or_else(|| AdapterError::InvalidInput("Missing 'payload' parameter".to_string()))?
                     .as_bytes().to_vec();
 
                 let qos = match params["qos"].as_u64().unwrap_or(0) {
@@ -391,31 +353,19 @@ impl Adapter for MqttAdapter {
 
                 let retain = params["retain"].as_bool().unwrap_or(false);
 
-                if let Some(sender) = &self.message_sender {
-                    let message = MqttMessage {
-                        topic: topic.to_string(),
-                        payload,
-                        qos,
-                        retain,
-                    };
-                    
-                    sender.send(message)
-                        .map_err(|e| crate::error::AdapterError::ExecutionError(format!("Failed to send message: {}", e)))?;
-                    
-                    Ok(serde_json::json!({
-                        "success": true,
-                        "topic": topic,
-                        "qos": qos as u8,
-                        "retain": retain
-                    }))
-                } else {
-                    Err(crate::error::AdapterError::ConfigError("MQTT client not connected".to_string()).into())
-                }
+                self.publish(topic, payload, qos, retain).await?;
+                
+                Ok(serde_json::json!({
+                    "success": true,
+                    "topic": topic,
+                    "qos": qos as u8,
+                    "retain": retain
+                }))
             },
             
             "mqtt_subscribe" => {
                 let topic = params["topic"].as_str()
-                    .ok_or_else(|| crate::error::AdapterError::InvalidInput("Missing 'topic' parameter".to_string()))?;
+                    .ok_or_else(|| AdapterError::InvalidInput("Missing 'topic' parameter".to_string()))?;
                 
                 let qos = match params["qos"].as_u64().unwrap_or(0) {
                     0 => QoS::AtMostOnce,
@@ -424,9 +374,16 @@ impl Adapter for MqttAdapter {
                     _ => QoS::AtMostOnce,
                 };
 
-                if let Some(client) = &self.client {
-                    client.subscribe(topic, rumqttc::QoS::from(qos as u8)).await
-                        .map_err(|e| crate::error::AdapterError::ExecutionError(format!("Failed to subscribe: {}", e)))?;
+                let client = self.client.lock().await;
+                if let Some(client) = client.as_ref() {
+                    let rumqtt_qos = match qos {
+                        QoS::AtMostOnce => rumqttc::QoS::AtMostOnce,
+                        QoS::AtLeastOnce => rumqttc::QoS::AtLeastOnce,
+                        QoS::ExactlyOnce => rumqttc::QoS::ExactlyOnce,
+                    };
+                    
+                    client.subscribe(topic, rumqtt_qos).await
+                        .map_err(|e| AdapterError::ExecutionError(format!("Failed to subscribe: {}", e)))?;
                     
                     Ok(serde_json::json!({
                         "success": true,
@@ -434,29 +391,31 @@ impl Adapter for MqttAdapter {
                         "qos": qos as u8
                     }))
                 } else {
-                    Err(crate::error::AdapterError::ConfigError("MQTT client not connected".to_string()).into())
+                    Err(AdapterError::ConfigError("MQTT client not connected".to_string()))
                 }
             },
             
             "mqtt_unsubscribe" => {
                 let topic = params["topic"].as_str()
-                    .ok_or_else(|| crate::error::AdapterError::InvalidInput("Missing 'topic' parameter".to_string()))?;
+                    .ok_or_else(|| AdapterError::InvalidInput("Missing 'topic' parameter".to_string()))?;
                 
-                if let Some(client) = &self.client {
+                let client = self.client.lock().await;
+                if let Some(client) = client.as_ref() {
                     client.unsubscribe(topic).await
-                        .map_err(|e| crate::error::AdapterError::ExecutionError(format!("Failed to unsubscribe: {}", e)))?;
+                        .map_err(|e| AdapterError::ExecutionError(format!("Failed to unsubscribe: {}", e)))?;
                     
                     Ok(serde_json::json!({
                         "success": true,
                         "topic": topic
                     }))
                 } else {
-                    Err(crate::error::AdapterError::ConfigError("MQTT client not connected".to_string()).into())
+                    Err(AdapterError::ConfigError("MQTT client not connected".to_string()))
                 }
             },
             
             "mqtt_list_subscriptions" => {
-                let subscriptions: Vec<serde_json::Value> = self.subscriptions.iter()
+                let subscriptions = self.get_subscriptions().await;
+                let subscriptions: Vec<serde_json::Value> = subscriptions.iter()
                     .map(|(topic, qos)| serde_json::json!({
                         "topic": topic,
                         "qos": *qos as u8
@@ -468,7 +427,7 @@ impl Adapter for MqttAdapter {
                 }))
             },
             
-            _ => Err(crate::error::AdapterError::InvalidInput(format!("Unknown tool: {}", name)).into())
+            _ => Err(AdapterError::InvalidInput(format!("Unknown tool: {}", name)))
         }
     }
 
@@ -495,8 +454,9 @@ mod tests {
         let config = MqttConfig::default();
         let adapter = MqttAdapter::new(config);
         
-        assert_eq!(adapter.name(), "mqtt");
-        assert!(adapter.subscriptions.is_empty());
+        assert_eq!(adapter.id(), "mqtt");
+        let subscriptions = adapter.get_subscriptions().await;
+        assert!(subscriptions.is_empty());
     }
 
     #[test]

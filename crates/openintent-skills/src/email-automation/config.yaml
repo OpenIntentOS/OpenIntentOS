@@ -1,0 +1,223 @@
+# Email Automation Configuration
+email_automation:
+  # IMAP/SMTP Settings
+  imap:
+    host: "imap.gmail.com"
+    port: 993
+    use_ssl: true
+    
+  smtp:
+    host: "smtp.gmail.com"
+    port: 587
+    use_tls: true
+  
+  # Authentication (use environment variables or vault)
+  auth:
+    username: "${EMAIL_USERNAME}"
+    password: "${EMAIL_PASSWORD}"
+  
+  # Batch Processing Configuration
+  batch_processing:
+    # Maximum emails to process in one batch
+    max_emails_per_batch: 100
+    
+    # Auto-archive emails older than X days
+    auto_archive_days: 30
+    
+    # Spam detection threshold (0.0 - 1.0)
+    spam_threshold: 0.8
+    
+    # Email categories and keywords
+    categories:
+      work:
+        keywords: ["work", "business", "meeting", "project", "deadline", "client"]
+        domains: ["company.com", "work.org"]
+        priority: 8
+        
+      personal:
+        keywords: ["family", "friend", "personal", "birthday", "vacation"]
+        domains: ["gmail.com", "yahoo.com", "hotmail.com"]
+        priority: 5
+        
+      newsletters:
+        keywords: ["newsletter", "unsubscribe", "marketing", "promotion", "deal"]
+        auto_archive: true
+        priority: 2
+        
+      notifications:
+        keywords: ["notification", "alert", "system", "automated", "noreply"]
+        auto_read: true
+        priority: 3
+        
+      spam:
+        keywords: ["spam", "phishing", "scam", "suspicious", "winner", "lottery"]
+        auto_delete: true
+        priority: 10
+        
+      financial:
+        keywords: ["bank", "payment", "invoice", "receipt", "transaction"]
+        domains: ["bank.com", "paypal.com", "stripe.com"]
+        mark_important: true
+        priority: 9
+    
+    # Automatic actions configuration
+    auto_actions:
+      # Archive old emails automatically
+      archive_old: true
+      
+      # Delete obvious spam
+      delete_spam: true
+      
+      # Categorize emails based on content
+      categorize_emails: true
+      
+      # Mark important emails
+      mark_important: true
+      
+      # Auto-reply to certain emails
+      auto_reply: false
+      
+      # Forward specific emails
+      auto_forward: false
+    
+    # Custom processing rules
+    rules:
+      - name: "VIP Senders"
+        conditions:
+          from_emails: ["boss@company.com", "client@important.com"]
+        actions: ["mark_important", "categorize:work", "notify"]
+        priority: 10
+        
+      - name: "Social Media Notifications"
+        conditions:
+          from_domains: ["facebook.com", "twitter.com", "linkedin.com"]
+          keywords: ["notification", "mentioned", "tagged"]
+        actions: ["categorize:notifications", "archive"]
+        priority: 3
+        
+      - name: "Old Newsletters"
+        conditions:
+          age_days: 7
+          keywords: ["unsubscribe", "newsletter"]
+        actions: ["archive", "mark_read"]
+        priority: 2
+        
+      - name: "Urgent Work Emails"
+        conditions:
+          keywords: ["urgent", "asap", "emergency", "critical"]
+          from_domains: ["company.com"]
+        actions: ["mark_important", "categorize:work", "notify"]
+        priority: 9
+        
+      - name: "Automated System Emails"
+        conditions:
+          from_keywords: ["noreply", "automated", "system", "donotreply"]
+        actions: ["categorize:notifications", "mark_read"]
+        priority: 4
+    
+    # Notification settings
+    notifications:
+      # Notify on important emails
+      important_emails: true
+      
+      # Daily processing summary
+      daily_summary: true
+      
+      # Error notifications
+      error_alerts: true
+      
+      # Processing completion
+      completion_notice: false
+    
+    # Backup and archiving
+    archiving:
+      # Create backup before processing
+      backup_before_processing: true
+      
+      # Archive location
+      archive_folder: "Processed"
+      
+      # Keep original emails
+      keep_originals: true
+      
+      # Compression for archived emails
+      compress_archives: true
+    
+    # Performance settings
+    performance:
+      # Concurrent processing threads
+      max_threads: 4
+      
+      # Rate limiting (emails per minute)
+      rate_limit: 60
+      
+      # Timeout for individual operations (seconds)
+      operation_timeout: 30
+      
+      # Retry failed operations
+      retry_attempts: 3
+      
+      # Memory limit for batch processing (MB)
+      memory_limit: 512
+    
+    # Logging and reporting
+    logging:
+      # Log level (DEBUG, INFO, WARN, ERROR)
+      level: "INFO"
+      
+      # Log file location
+      file: "logs/email_automation.log"
+      
+      # Rotate log files
+      rotate: true
+      
+      # Keep log files for X days
+      retention_days: 30
+    
+    # Report generation
+    reporting:
+      # Generate processing reports
+      enabled: true
+      
+      # Report format (JSON, HTML, PDF)
+      format: "JSON"
+      
+      # Report location
+      output_dir: "reports"
+      
+      # Include detailed statistics
+      detailed_stats: true
+      
+      # Email processing metrics
+      metrics:
+        - "total_processed"
+        - "categorized"
+        - "archived"
+        - "deleted"
+        - "errors"
+        - "processing_time"
+        - "rules_applied"
+
+# Integration settings
+integrations:
+  # Telegram notifications
+  telegram:
+    enabled: false
+    bot_token: "${TELEGRAM_BOT_TOKEN}"
+    chat_id: "${TELEGRAM_CHAT_ID}"
+  
+  # Slack notifications
+  slack:
+    enabled: false
+    webhook_url: "${SLACK_WEBHOOK_URL}"
+  
+  # Discord notifications
+  discord:
+    enabled: false
+    webhook_url: "${DISCORD_WEBHOOK_URL}"
+  
+  # Calendar integration
+  calendar:
+    enabled: false
+    create_events_for_meetings: true
+    calendar_name: "Email Events"

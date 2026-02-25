@@ -41,6 +41,18 @@ pub enum AdapterError {
     #[error("timeout after {seconds}s: {reason}")]
     Timeout { seconds: u64, reason: String },
 
+    /// Configuration error in adapter setup.
+    #[error("configuration error: {0}")]
+    ConfigError(String),
+
+    /// Invalid input provided to adapter.
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+
+    /// Execution error during adapter operation.
+    #[error("execution error: {0}")]
+    ExecutionError(String),
+
     /// Catch-all for unexpected internal errors.  Prefer a typed variant
     /// whenever possible.
     #[error("internal adapter error: {0}")]
