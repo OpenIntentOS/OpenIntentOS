@@ -274,10 +274,37 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 None => continue,
             };
 
-            let text = match message.get("text").and_then(|v| v.as_str()) {
+            let raw_text = match message.get("text").and_then(|v| v.as_str()) {
                 Some(t) => t,
                 None => continue,
             };
+
+            // Extract quoted/replied-to message context (if user is replying).
+            let reply_context = message
+                .get("reply_to_message")
+                .and_then(|reply| {
+                    let reply_text = reply.get("text").and_then(|v| v.as_str())?;
+                    let reply_from = reply
+                        .pointer("/from/first_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("someone");
+                    let reply_is_bot = reply
+                        .pointer("/from/is_bot")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let who = if reply_is_bot { "you (the bot)" } else { reply_from };
+                    Some(format!(
+                        "[Replying to {who}'s message: \"{reply_text}\"]\n\n"
+                    ))
+                });
+
+            // Combine reply context with the user's message.
+            let text = if let Some(ref ctx) = reply_context {
+                format!("{ctx}{raw_text}")
+            } else {
+                raw_text.to_string()
+            };
+            let text = text.as_str();
 
             let chat_id = message
                 .pointer("/chat/id")
