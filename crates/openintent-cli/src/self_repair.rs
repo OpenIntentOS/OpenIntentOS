@@ -293,11 +293,7 @@ pub async fn attempt_repair(
         "self-repair completed successfully"
     );
 
-    let short_summary = if agent_summary.len() > 200 {
-        format!("{}...", &agent_summary[..200])
-    } else {
-        agent_summary.clone()
-    };
+    let short_summary = crate::messages::safe_truncate(&agent_summary, 200);
 
     RepairOutcome::Fixed {
         commit_hash,
@@ -416,11 +412,7 @@ fn build_repair_system_prompt(repo_path: &Path) -> String {
     let rules_section = if claude_md.is_empty() {
         String::new()
     } else {
-        let truncated = if claude_md.len() > 2000 {
-            format!("{}...", &claude_md[..2000])
-        } else {
-            claude_md
-        };
+        let truncated = crate::messages::safe_truncate(&claude_md, 2000);
         format!("\n## Project Rules\n\n{truncated}\n")
     };
 
@@ -471,8 +463,14 @@ fn build_repair_user_prompt(
     );
 
     if !log_tail.is_empty() {
+        // Take the last 3000 bytes, respecting char boundaries.
         let log_section = if log_tail.len() > 3000 {
-            &log_tail[log_tail.len() - 3000..]
+            let start = log_tail.len() - 3000;
+            let mut safe_start = start;
+            while safe_start < log_tail.len() && !log_tail.is_char_boundary(safe_start) {
+                safe_start += 1;
+            }
+            &log_tail[safe_start..]
         } else {
             log_tail
         };
@@ -541,11 +539,7 @@ async fn commit_fix(repo_path: &Path, error_summary: &str) -> Result<String, Str
     }
 
     // Build a commit message from the error.
-    let short_error = if error_summary.len() > 60 {
-        format!("{}...", &error_summary[..60])
-    } else {
-        error_summary.to_string()
-    };
+    let short_error = crate::messages::safe_truncate(error_summary, 60);
     // Sanitize for shell safety.
     let safe_msg = short_error.replace('\'', "").replace('\n', " ");
     let commit_msg = format!("fix: self-repair for {safe_msg}");

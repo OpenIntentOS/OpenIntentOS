@@ -21,12 +21,29 @@ use crate::adapters::init_adapters;
 use crate::dev_commands;
 use crate::dev_worker::{DevWorker, ProgressCallback};
 use crate::helpers::{env_non_empty, init_tracing, load_system_prompt, resolve_llm_config};
-use crate::messages::{self, Messages, keys};
+use crate::messages::{self, Messages, keys, safe_prefix};
 
 /// Run the Telegram bot gateway.
 pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result<()> {
     init_tracing("info");
     info!("starting Telegram bot gateway");
+
+    // Install a global panic hook that LOGS instead of crashing.
+    // The default hook prints to stderr and aborts; ours logs and continues.
+    std::panic::set_hook(Box::new(|info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".to_string());
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        };
+        tracing::error!(location = %location, payload = %payload, "PANIC caught (non-fatal)");
+    }));
 
     // Load user-facing message templates from config.
     let msgs = Messages::load();
@@ -148,7 +165,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     if let Ok(recoverable) = dev_task_store.list_recoverable().await {
         for task in &recoverable {
             if let Some(cid) = task.chat_id {
-                let short_id = &task.id[..8.min(task.id.len())];
+                let short_id = safe_prefix(&task.id, 8);
                 let _ = http
                     .post(format!("{telegram_api}/sendMessage"))
                     .json(&serde_json::json!({
@@ -167,7 +184,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
         if let Ok(pending) = dev_task_store.list_by_status("pending", 50, 0).await {
             for task in &pending {
                 if let Some(cid) = task.chat_id {
-                    let short_id = &task.id[..8.min(task.id.len())];
+                    let short_id = safe_prefix(&task.id, 8);
                     let _ = http
                         .post(format!("{telegram_api}/sendMessage"))
                         .json(&serde_json::json!({
@@ -798,9 +815,14 @@ fn split_telegram_message(text: &str, max_len: usize) -> Vec<String> {
             boundary -= 1;
         }
 
-        let split_at = remaining[..boundary]
+        let mut split_at = remaining[..boundary]
             .rfind('\n')
             .unwrap_or_else(|| remaining[..boundary].rfind(' ').unwrap_or(boundary));
+
+        // Guard against infinite loop: if split_at is 0, force it to boundary.
+        if split_at == 0 {
+            split_at = boundary;
+        }
 
         chunks.push(remaining[..split_at].to_owned());
         remaining = remaining[split_at..].trim_start();

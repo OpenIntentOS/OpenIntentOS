@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.openintent.bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/openintent</string>
+        <string>bot</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/var/lib/openintent</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>3</integer>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/openintent/bot.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/openintent/bot.error.log</string>
+</dict>
+</plist>

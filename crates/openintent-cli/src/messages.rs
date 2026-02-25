@@ -436,6 +436,36 @@ async fn batch_translate_messages(
     results
 }
 
+/// Safely truncate a string to at most `max_bytes`, respecting UTF-8
+/// char boundaries. Appends "..." if truncated.
+///
+/// This MUST be used instead of `&s[..n]` to avoid char-boundary panics.
+pub fn safe_truncate(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut result = s[..end].to_string();
+    result.push_str("...");
+    result
+}
+
+/// Safely take the first `max_bytes` of a string without "..." suffix.
+/// Useful for IDs and short labels.
+pub fn safe_prefix(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Helper: serialize vars to a string for cache key.
 fn vars_to_string(vars: &[(&str, &str)]) -> String {
     vars.iter()
@@ -513,5 +543,27 @@ mod tests {
         assert_eq!(out.get("self_repair.started").unwrap(), "Starting...");
         assert_eq!(out.get("self_repair.done").unwrap(), "Done!");
         assert_eq!(out.get("errors.general").unwrap(), "Oops");
+    }
+
+    #[test]
+    fn safe_truncate_ascii() {
+        assert_eq!(safe_truncate("hello", 10), "hello");
+        assert_eq!(safe_truncate("hello world", 5), "hello...");
+    }
+
+    #[test]
+    fn safe_truncate_multibyte() {
+        // "代码" = 6 bytes. Truncating at 4 should back up to 3 (end of "代").
+        let s = "代码提交";
+        let result = safe_truncate(s, 4);
+        assert!(result.is_char_boundary(result.len()));
+        assert_eq!(result, "代...");
+    }
+
+    #[test]
+    fn safe_prefix_multibyte() {
+        let s = "代码提交";
+        let result = safe_prefix(s, 4);
+        assert_eq!(result, "代"); // 3 bytes, next char starts at 3
     }
 }
