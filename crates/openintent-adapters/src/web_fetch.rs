@@ -451,22 +451,43 @@ fn collapse_whitespace(text: &str) -> String {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Truncate content intelligently at a paragraph or sentence boundary.
+///
+/// Uses char-boundary-safe slicing to avoid panics on multi-byte UTF-8 content.
 pub fn smart_truncate(content: &str, max_length: usize) -> (String, usize) {
     let original_length = content.len();
     if original_length <= max_length {
         return (content.to_string(), original_length);
     }
 
-    let search_region = &content[..max_length];
+    // Find a valid char boundary at or before max_length.
+    let safe_end = find_char_boundary(content, max_length);
+    if safe_end == 0 {
+        return ("... [content truncated]".to_string(), original_length);
+    }
+
+    let search_region = &content[..safe_end];
     let truncation_point = search_region
         .rfind("\n\n")
         .or_else(|| search_region.rfind('\n'))
         .or_else(|| search_region.rfind(". "))
-        .unwrap_or(max_length);
+        .unwrap_or(safe_end);
 
     let mut truncated = content[..truncation_point].to_string();
     truncated.push_str("\n\n... [content truncated]");
     (truncated, original_length)
+}
+
+/// Find the largest valid char boundary at or before `byte_index`.
+fn find_char_boundary(s: &str, byte_index: usize) -> usize {
+    if byte_index >= s.len() {
+        return s.len();
+    }
+    // Walk backwards up to 4 bytes (max UTF-8 char length) to find a boundary.
+    let mut idx = byte_index;
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -771,6 +792,35 @@ mod tests {
         let (content, len) = smart_truncate("short", 100);
         assert_eq!(content, "short");
         assert_eq!(len, 5);
+    }
+
+    #[test]
+    fn smart_truncate_multibyte_chars() {
+        // Chinese characters are 3 bytes each in UTF-8.
+        let text = "Hello 你好世界 this is a test";
+        // Try truncating at a byte offset that falls inside a multi-byte char.
+        let (content, len) = smart_truncate(text, 8); // byte 8 is inside '好'
+        assert_eq!(len, text.len());
+        assert!(content.len() > 0);
+        // Should not panic and should produce valid UTF-8.
+        assert!(content.is_char_boundary(0));
+    }
+
+    #[test]
+    fn smart_truncate_binary_like_content() {
+        // Simulate binary-ish content that contains multi-byte sequences.
+        let mut text = String::new();
+        for _ in 0..5000 {
+            text.push('A');
+        }
+        text.push('中'); // 3-byte char
+        text.push('文'); // 3-byte char
+        for _ in 0..5000 {
+            text.push('B');
+        }
+        // Truncate somewhere in the middle -- should never panic.
+        let (content, _) = smart_truncate(&text, 5001);
+        assert!(content.len() > 0);
     }
 
     #[test]

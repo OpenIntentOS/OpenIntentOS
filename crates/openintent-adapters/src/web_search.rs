@@ -440,12 +440,28 @@ impl WebSearchAdapter {
             .unwrap_or("text/plain")
             .to_string();
 
+        // Skip binary/non-text content types entirely.
+        if is_binary_content_type(&content_type) {
+            return Err(AdapterError::ExecutionFailed {
+                tool_name: "web_research".into(),
+                reason: format!("skipping binary content type: {content_type}"),
+            });
+        }
+
         let body = response.text().await.map_err(|e| {
             AdapterError::ExecutionFailed {
                 tool_name: "web_research".into(),
                 reason: format!("body read failed: {e}"),
             }
         })?;
+
+        // Skip content that looks like binary/compressed data (gzip magic, PDF, etc.).
+        if looks_like_binary(&body) {
+            return Err(AdapterError::ExecutionFailed {
+                tool_name: "web_research".into(),
+                reason: "skipping binary/compressed content".into(),
+            });
+        }
 
         let content = if content_type.contains("text/html") {
             let (text, _extractor) = web_fetch::extract_content_from_html(&body, url_str);
@@ -462,6 +478,52 @@ impl WebSearchAdapter {
 /// Read a non-empty environment variable.
 fn env_non_empty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+/// Check if a Content-Type header indicates binary/non-text content.
+fn is_binary_content_type(ct: &str) -> bool {
+    let ct_lower = ct.to_ascii_lowercase();
+    ct_lower.starts_with("image/")
+        || ct_lower.starts_with("audio/")
+        || ct_lower.starts_with("video/")
+        || ct_lower.contains("octet-stream")
+        || ct_lower.contains("application/pdf")
+        || ct_lower.contains("application/zip")
+        || ct_lower.contains("application/gzip")
+        || ct_lower.contains("application/x-gzip")
+}
+
+/// Heuristic: check if the body starts with known binary signatures.
+fn looks_like_binary(body: &str) -> bool {
+    if body.len() < 4 {
+        return false;
+    }
+    let bytes = body.as_bytes();
+    // Gzip magic: 0x1f 0x8b
+    if bytes[0] == 0x1f && bytes[1] == 0x8b {
+        return true;
+    }
+    // PDF magic: %PDF
+    if bytes.starts_with(b"%PDF") {
+        return true;
+    }
+    // PK (ZIP/DOCX/XLSX): 0x50 0x4b 0x03 0x04
+    if bytes.starts_with(&[0x50, 0x4b, 0x03, 0x04]) {
+        return true;
+    }
+    // Check for high ratio of non-printable characters in first 512 bytes.
+    let check_len = body.len().min(512);
+    let non_text = body[..check_len]
+        .chars()
+        .filter(|c| {
+            !c.is_ascii_graphic()
+                && !c.is_ascii_whitespace()
+                && !c.is_alphanumeric()
+                && *c != '\u{feff}' // BOM
+        })
+        .count();
+    // If more than 20% of the first 512 chars are non-text, treat as binary.
+    non_text * 5 > check_len
 }
 
 // ═══════════════════════════════════════════════════════════════════════
