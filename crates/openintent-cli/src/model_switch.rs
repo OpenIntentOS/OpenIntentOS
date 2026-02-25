@@ -4,9 +4,9 @@
 //! `/model` command) and hot-swaps the LLM provider without restarting.
 //!
 //! Supports:
-//! - Direct providers: Anthropic, OpenAI, DeepSeek, Groq, xAI, Mistral, Ollama
+//! - Direct providers: Anthropic, OpenAI, DeepSeek, NVIDIA, Groq, xAI, Mistral, Ollama
 //! - OpenRouter: universal access to 700+ models via `provider/model` format
-//! - Short aliases: "claude", "gpt", "gemini", "grok", "llama", etc.
+//! - Short aliases: "claude", "gpt", "gemini", "grok", "nvidia", "llama", etc.
 
 use std::sync::Arc;
 
@@ -18,6 +18,7 @@ use openintent_agent::{LlmClient, LlmProvider};
 
 const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
+const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
 const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 const MISTRAL_BASE_URL: &str = "https://api.mistral.ai/v1";
@@ -74,6 +75,19 @@ const ALIASES: &[AliasEntry] = &[
     AliasEntry { alias: "deepseek", provider: "DeepSeek", model: "deepseek-chat", base_url: DEEPSEEK_BASE_URL, key_env: "DEEPSEEK_API_KEY" },
     AliasEntry { alias: "deepseek-chat", provider: "DeepSeek", model: "deepseek-chat", base_url: DEEPSEEK_BASE_URL, key_env: "DEEPSEEK_API_KEY" },
     AliasEntry { alias: "deepseek-reasoner", provider: "DeepSeek", model: "deepseek-reasoner", base_url: DEEPSEEK_BASE_URL, key_env: "DEEPSEEK_API_KEY" },
+
+    // -- NVIDIA (direct, free tier) ---------------------------------------------
+    AliasEntry { alias: "nvidia", provider: "NVIDIA", model: "nvidia/llama-3.1-nemotron-70b-instruct", base_url: NVIDIA_BASE_URL, key_env: "NVIDIA_API_KEY" },
+    AliasEntry { alias: "nemotron", provider: "NVIDIA", model: "nvidia/llama-3.1-nemotron-70b-instruct", base_url: NVIDIA_BASE_URL, key_env: "NVIDIA_API_KEY" },
+    AliasEntry { alias: "nemotron-70b", provider: "NVIDIA", model: "nvidia/llama-3.1-nemotron-70b-instruct", base_url: NVIDIA_BASE_URL, key_env: "NVIDIA_API_KEY" },
+    AliasEntry { alias: "nemotron-mini", provider: "NVIDIA", model: "nvidia/nemotron-mini-4b-instruct", base_url: NVIDIA_BASE_URL, key_env: "NVIDIA_API_KEY" },
+    AliasEntry { alias: "nvidia-llama", provider: "NVIDIA", model: "meta/llama-3.3-70b-instruct", base_url: NVIDIA_BASE_URL, key_env: "NVIDIA_API_KEY" },
+    AliasEntry { alias: "nvidia-llama-405b", provider: "NVIDIA", model: "meta/llama-3.1-405b-instruct", base_url: NVIDIA_BASE_URL, key_env: "NVIDIA_API_KEY" },
+    AliasEntry { alias: "nvidia-qwen", provider: "NVIDIA", model: "qwen/qwen2.5-72b-instruct", base_url: NVIDIA_BASE_URL, key_env: "NVIDIA_API_KEY" },
+    AliasEntry { alias: "nvidia-deepseek", provider: "NVIDIA", model: "deepseek-ai/deepseek-r1", base_url: NVIDIA_BASE_URL, key_env: "NVIDIA_API_KEY" },
+    AliasEntry { alias: "nvidia-gemma", provider: "NVIDIA", model: "google/gemma-2-27b-it", base_url: NVIDIA_BASE_URL, key_env: "NVIDIA_API_KEY" },
+    AliasEntry { alias: "nvidia-mistral", provider: "NVIDIA", model: "mistralai/mistral-large-2-instruct", base_url: NVIDIA_BASE_URL, key_env: "NVIDIA_API_KEY" },
+    AliasEntry { alias: "nvidia-codestral", provider: "NVIDIA", model: "mistralai/codestral-22b-instruct-v0.1", base_url: NVIDIA_BASE_URL, key_env: "NVIDIA_API_KEY" },
 
     // -- Groq (direct) --------------------------------------------------------
     AliasEntry { alias: "groq", provider: "Groq", model: "llama-3.3-70b-versatile", base_url: GROQ_BASE_URL, key_env: "GROQ_API_KEY" },
@@ -133,6 +147,17 @@ pub const PROVIDER_GROUPS: &[(&str, &[(&str, &str)])] = &[
     ("Google Gemini", &[
         ("Gemini 2.5 Pro", "gemini-pro"),
         ("Gemini 2.5 Flash", "gemini-flash"),
+    ]),
+    ("NVIDIA (free)", &[
+        ("Nemotron 70B", "nemotron-70b"),
+        ("Nemotron Mini 4B", "nemotron-mini"),
+        ("Llama 3.3 70B", "nvidia-llama"),
+        ("Llama 3.1 405B", "nvidia-llama-405b"),
+        ("Qwen 2.5 72B", "nvidia-qwen"),
+        ("DeepSeek R1", "nvidia-deepseek"),
+        ("Gemma 2 27B", "nvidia-gemma"),
+        ("Mistral Large 2", "nvidia-mistral"),
+        ("Codestral 22B", "nvidia-codestral"),
     ]),
     ("Groq", &[
         ("Llama 3.3 70B", "groq-llama"),
@@ -255,6 +280,20 @@ fn try_slash_format(target: &str, llm: &Arc<LlmClient>) -> Option<ModelSwitch> {
                 model: model_name.to_string(),
             });
         }
+        "nvidia" => {
+            let key = crate::helpers::env_non_empty("NVIDIA_API_KEY")?;
+            llm.update_api_key(key);
+            // NVIDIA uses provider/model format in model IDs.
+            llm.switch_provider(
+                LlmProvider::OpenAI,
+                NVIDIA_BASE_URL.to_string(),
+                model_name.to_string(),
+            );
+            return Some(ModelSwitch {
+                provider_name: "NVIDIA".to_string(),
+                model: model_name.to_string(),
+            });
+        }
         "groq" => {
             let key = crate::helpers::env_non_empty("GROQ_API_KEY")?;
             llm.update_api_key(key);
@@ -347,6 +386,7 @@ fn resolve_api_key(provider: &str, key_env: &str) -> Option<String> {
                 .or_else(|| crate::helpers::read_claude_code_keychain_token())
         }
         "Ollama" => Some("ollama".to_string()),
+        "NVIDIA" => crate::helpers::env_non_empty("NVIDIA_API_KEY"),
         "OpenRouter" => crate::helpers::env_non_empty("OPENROUTER_API_KEY"),
         _ => crate::helpers::env_non_empty(key_env),
     }
@@ -512,6 +552,9 @@ mod tests {
         assert_eq!(extract_model_target("use groq"), Some("groq".into()));
         assert_eq!(extract_model_target("切换到mistral"), Some("mistral".into()));
         assert_eq!(extract_model_target("switch to gemini"), Some("gemini".into()));
+        assert_eq!(extract_model_target("switch to nvidia"), Some("nvidia".into()));
+        assert_eq!(extract_model_target("use nemotron"), Some("nemotron".into()));
+        assert_eq!(extract_model_target("切换到nvidia-llama"), Some("nvidia-llama".into()));
     }
 
     #[test]

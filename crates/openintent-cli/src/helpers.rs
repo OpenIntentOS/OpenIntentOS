@@ -118,6 +118,7 @@ fn default_system_prompt() -> String {
 const DEFAULT_MODEL_ANTHROPIC: &str = "claude-sonnet-4-20250514";
 const DEFAULT_MODEL_OPENAI: &str = "gpt-4o";
 const DEFAULT_MODEL_DEEPSEEK: &str = "deepseek-chat";
+const DEFAULT_MODEL_NVIDIA: &str = "nvidia/llama-3.1-nemotron-70b-instruct";
 const DEFAULT_MODEL_OPENROUTER: &str = "anthropic/claude-sonnet-4";
 const DEFAULT_MODEL_GROQ: &str = "llama-3.3-70b-versatile";
 const DEFAULT_MODEL_XAI: &str = "grok-3";
@@ -125,6 +126,7 @@ const DEFAULT_MODEL_MISTRAL: &str = "mistral-large-latest";
 const DEFAULT_MODEL_OLLAMA: &str = "qwen2.5:latest";
 
 const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
+const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
 const XAI_BASE_URL: &str = "https://api.x.ai/v1";
@@ -138,8 +140,9 @@ const OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 /// 1. If `OPENINTENT_PROVIDER` is set, use that provider explicitly.
 /// 2. Otherwise, auto-detect based on available credentials:
 ///    `ANTHROPIC_API_KEY` -> `OPENAI_API_KEY` -> `DEEPSEEK_API_KEY` ->
-///    `OPENROUTER_API_KEY` -> `GROQ_API_KEY` -> `XAI_API_KEY` ->
-///    `MISTRAL_API_KEY` -> Claude Code Keychain -> Ollama (no key).
+///    `NVIDIA_API_KEY` -> `OPENROUTER_API_KEY` -> `GROQ_API_KEY` ->
+///    `XAI_API_KEY` -> `MISTRAL_API_KEY` -> Claude Code Keychain ->
+///    Ollama (no key).
 ///
 /// The model can always be overridden with `OPENINTENT_MODEL`.
 /// A custom base URL can be set with `OPENINTENT_API_BASE_URL`.
@@ -184,6 +187,17 @@ pub fn resolve_llm_config() -> LlmClientConfig {
         let base = base_url_override
             .clone()
             .unwrap_or_else(|| DEEPSEEK_BASE_URL.to_owned());
+        Some(LlmClientConfig::openai_compatible(key, model, base))
+    };
+
+    let try_nvidia = || -> Option<LlmClientConfig> {
+        let key = env_non_empty("NVIDIA_API_KEY")?;
+        let model = model_override
+            .clone()
+            .unwrap_or_else(|| DEFAULT_MODEL_NVIDIA.to_owned());
+        let base = base_url_override
+            .clone()
+            .unwrap_or_else(|| NVIDIA_BASE_URL.to_owned());
         Some(LlmClientConfig::openai_compatible(key, model, base))
     };
 
@@ -254,6 +268,9 @@ pub fn resolve_llm_config() -> LlmClientConfig {
             "deepseek" => try_deepseek().unwrap_or_else(|| {
                 exit_no_key("deepseek", "DEEPSEEK_API_KEY");
             }),
+            "nvidia" | "nim" => try_nvidia().unwrap_or_else(|| {
+                exit_no_key("nvidia", "NVIDIA_API_KEY");
+            }),
             "openrouter" => try_openrouter().unwrap_or_else(|| {
                 exit_no_key("openrouter", "OPENROUTER_API_KEY");
             }),
@@ -289,6 +306,9 @@ pub fn resolve_llm_config() -> LlmClientConfig {
         return cfg;
     }
     if let Some(cfg) = try_deepseek() {
+        return cfg;
+    }
+    if let Some(cfg) = try_nvidia() {
         return cfg;
     }
     if let Some(cfg) = try_openrouter() {
