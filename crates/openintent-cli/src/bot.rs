@@ -249,7 +249,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             .json(&serde_json::json!({
                 "offset": offset,
                 "timeout": poll_timeout,
-                "allowed_updates": ["message"],
+                "allowed_updates": ["message", "callback_query"],
             }))
             .send()
             .await;
@@ -285,6 +285,66 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
 
             // Persist offset so we don't reprocess messages after a restart.
             let _ = bot_state.set_i64("telegram_offset", offset).await;
+
+            // Handle inline keyboard callback queries (e.g. model selection).
+            if let Some(cb) = update.get("callback_query") {
+                let cb_id = cb.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let cb_data = cb.get("data").and_then(|v| v.as_str()).unwrap_or("");
+                let cb_chat_id = cb
+                    .pointer("/message/chat/id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+
+                // Answer the callback to dismiss the loading spinner.
+                let _ = http
+                    .post(format!("{telegram_api}/answerCallbackQuery"))
+                    .json(&serde_json::json!({ "callback_query_id": cb_id }))
+                    .send()
+                    .await;
+
+                if let Some(alias) = cb_data.strip_prefix("model:") {
+                    if alias == "noop" {
+                        continue;
+                    }
+                    // Synthesize a /model command.
+                    let synthetic = format!("/model {alias}");
+                    if let Some(switch_result) =
+                        crate::model_switch::try_switch_model(&synthetic, &llm)
+                    {
+                        model = switch_result.model.clone();
+                        let reply = format!(
+                            "Switched to **{}** (`{}`)",
+                            switch_result.provider_name, switch_result.model
+                        );
+                        info!(
+                            chat_id = cb_chat_id,
+                            provider = %switch_result.provider_name,
+                            model = %switch_result.model,
+                            "user switched model via keyboard"
+                        );
+                        let _ = http
+                            .post(format!("{telegram_api}/sendMessage"))
+                            .json(&serde_json::json!({
+                                "chat_id": cb_chat_id,
+                                "text": reply,
+                                "parse_mode": "Markdown",
+                            }))
+                            .send()
+                            .await;
+                    } else {
+                        let _ = http
+                            .post(format!("{telegram_api}/sendMessage"))
+                            .json(&serde_json::json!({
+                                "chat_id": cb_chat_id,
+                                "text": format!("Failed to switch to `{alias}`. Check that the API key is configured."),
+                                "parse_mode": "Markdown",
+                            }))
+                            .send()
+                            .await;
+                    }
+                }
+                continue;
+            }
 
             let message = match update.get("message") {
                 Some(m) => m,
@@ -473,6 +533,21 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                         .send()
                         .await;
                 }
+                continue;
+            }
+
+            // Handle /models command — show inline keyboard with available models.
+            if text == "/models" {
+                let keyboard = crate::model_switch::build_models_keyboard();
+                let _ = http
+                    .post(format!("{telegram_api}/sendMessage"))
+                    .json(&serde_json::json!({
+                        "chat_id": chat_id,
+                        "text": "Select a model:",
+                        "reply_markup": keyboard,
+                    }))
+                    .send()
+                    .await;
                 continue;
             }
 
