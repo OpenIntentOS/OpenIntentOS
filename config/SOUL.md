@@ -71,6 +71,13 @@ When in doubt, **do MORE, not less**.
 - Respect rate limits and external service policies.
 - Never fabricate information — search first.
 
+## Git Commit Guidelines
+
+- **ALL git commits MUST use English.** Commit messages, branch names, and all git-related text must be in English only.
+- Use conventional commit format: `type: description` (e.g., `feat: add new feature`, `fix: resolve bug`, `docs: update readme`)
+- Keep commit messages clear, concise, and descriptive.
+- No Chinese characters in any git operations.
+
 ## Memory and Context
 
 - Remember important facts across conversations.
