@@ -51,6 +51,10 @@ pub type TextDeltaCallback = Arc<std::sync::Mutex<dyn FnMut(&str) + Send>>;
 /// Callback invoked before each tool execution for policy decisions.
 pub type PolicyCheckerFn = Arc<dyn Fn(&str, &Value) -> ToolPermission + Send + Sync>;
 
+/// Callback invoked when a tool execution starts.
+/// Receives `(tool_name, arguments)`.
+pub type ToolStartCallback = Arc<dyn Fn(&str, &Value) + Send + Sync>;
+
 /// The outcome of a pre-tool policy check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolPermission {
@@ -124,6 +128,10 @@ pub struct AgentContext {
     /// Optional policy checker invoked before each tool execution.
     /// Returns [`ToolPermission::Allow`] or [`ToolPermission::Deny`].
     pub policy_checker: Option<PolicyCheckerFn>,
+
+    /// Optional callback invoked when a tool execution starts.
+    /// Useful for sending progress indicators (e.g., "Searching...").
+    pub on_tool_start: Option<ToolStartCallback>,
 }
 
 impl AgentContext {
@@ -141,6 +149,7 @@ impl AgentContext {
             config,
             on_text_delta: None,
             policy_checker: None,
+            on_tool_start: None,
         }
     }
 
@@ -382,6 +391,11 @@ async fn execute_tool_calls(calls: &[ToolCall], ctx: &AgentContext) -> Result<Ve
                 }));
                 continue;
             }
+        }
+
+        // Notify tool-start callback if set.
+        if let Some(ref on_start) = ctx.on_tool_start {
+            on_start(&call.name, &call.arguments);
         }
 
         let adapter = ctx

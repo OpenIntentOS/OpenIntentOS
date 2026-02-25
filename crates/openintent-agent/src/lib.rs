@@ -49,5 +49,5 @@ pub use llm::{
 pub use planner::{Plan, Planner, PlannerConfig, Step, StepStatus};
 pub use runtime::{
     AgentConfig, AgentContext, AgentResponse, PolicyCheckerFn, TextDeltaCallback, ToolAdapter,
-    ToolPermission, react_loop,
+    ToolPermission, ToolStartCallback, react_loop,
 };

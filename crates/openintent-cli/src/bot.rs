@@ -499,6 +499,59 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             }
             ctx = ctx.with_user_message(text);
 
+            // Tool-start callback: send status messages to Telegram.
+            let status_http = http.clone();
+            let status_api = telegram_api.clone();
+            ctx.on_tool_start = Some(Arc::new(move |tool_name: &str, _args: &serde_json::Value| {
+                let label = match tool_name {
+                    "web_research" => Some("🔍 Researching..."),
+                    "web_search" => Some("🔎 Searching..."),
+                    "web_fetch" => Some("📖 Reading page..."),
+                    "fs_read_file" => Some("📄 Reading file..."),
+                    "shell_execute" => Some("⚙️ Running command..."),
+                    "memory_search" => Some("🧠 Searching memory..."),
+                    _ => None,
+                };
+                if let Some(msg) = label {
+                    let client = status_http.clone();
+                    let api = status_api.clone();
+                    tokio::spawn(async move {
+                        let _ = client
+                            .post(format!("{api}/sendMessage"))
+                            .json(&serde_json::json!({
+                                "chat_id": chat_id,
+                                "text": msg,
+                            }))
+                            .send()
+                            .await;
+                    });
+                }
+            }));
+
+            // Spawn a background task to send periodic "typing" indicators
+            // so the user sees activity while the ReAct loop runs.
+            let typing_http = http.clone();
+            let typing_api = telegram_api.clone();
+            let typing_cancel = Arc::new(tokio::sync::Notify::new());
+            let typing_cancel_clone = typing_cancel.clone();
+            let typing_handle = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = typing_cancel_clone.notified() => break,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(4)) => {
+                            let _ = typing_http
+                                .post(format!("{typing_api}/sendChatAction"))
+                                .json(&serde_json::json!({
+                                    "chat_id": chat_id,
+                                    "action": "typing",
+                                }))
+                                .send()
+                                .await;
+                        }
+                    }
+                }
+            });
+
             // Run the ReAct loop.
             let reply_text = match react_loop(&mut ctx).await {
                 Ok(response) => {
@@ -539,6 +592,10 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                     }
                 }
             };
+
+            // Stop the periodic typing indicator.
+            typing_cancel.notify_one();
+            let _ = typing_handle.await;
 
             // Update chat history (keep last 20 exchanges).
             history.push(Message::user(text));
