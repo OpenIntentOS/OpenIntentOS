@@ -1,3 +1,30 @@
+---
+name: "Email OAuth Setup"
+description: "Automatically configure OAuth 2.0 authentication for email providers to enable secure, passwordless email access"
+version: "1.0.0"
+author: "OpenIntentOS"
+category: "email"
+tags: ["oauth", "email", "authentication", "gmail", "outlook"]
+scripts:
+  - name: "setup"
+    description: "Set up OAuth authentication for an email provider"
+    file: "setup.sh"
+    parameters:
+      - name: "email"
+        description: "Email address to configure"
+        required: true
+        type: "string"
+      - name: "provider"
+        description: "Email provider (gmail, outlook, yahoo, or auto-detect)"
+        required: false
+        type: "string"
+        default: "auto"
+      - name: "scopes"
+        description: "Custom OAuth scopes (comma-separated)"
+        required: false
+        type: "string"
+---
+
 # Email OAuth Setup
 
 Automatically configure OAuth 2.0 authentication for email providers to enable secure, passwordless email access.
