@@ -14,6 +14,7 @@ pub mod filesystem;
 pub mod github;
 pub mod http_request;
 pub mod memory_tools;
+pub mod mqtt;
 pub mod shell;
 pub mod telegram;
 pub mod traits;

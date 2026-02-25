@@ -462,7 +462,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             }
 
             let agent_config = AgentConfig {
-                max_turns: 25,
+                max_turns: 50,  // Increased from 25 to handle complex multi-step tasks
                 model: model.clone(),
                 temperature: Some(0.5),
                 max_tokens: Some(8192),

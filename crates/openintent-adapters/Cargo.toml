@@ -28,5 +28,8 @@ readability = { version = "0.3", default-features = false }
 html2text = "0.16"
 regex = { workspace = true }
 
+# MQTT support
+rumqttc = "0.25"
+
 [dev-dependencies]
 tempfile = { workspace = true }
