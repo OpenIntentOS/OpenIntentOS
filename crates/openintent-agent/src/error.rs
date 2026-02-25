@@ -56,6 +56,15 @@ pub enum AgentError {
     #[error("adapter not available: {adapter_id}")]
     AdapterNotAvailable { adapter_id: String },
 
+    // -- Configuration errors ------------------------------------------------
+    /// Configuration validation or loading failed.
+    #[error("config error: {reason}")]
+    ConfigError { reason: String },
+
+    /// Validation failed for input data.
+    #[error("validation error: {reason}")]
+    ValidationError { reason: String },
+
     // -- Serialization -------------------------------------------------------
     /// JSON serialization or deserialization failed.
     #[error("json error: {0}")]
@@ -65,6 +74,10 @@ pub enum AgentError {
     /// An error propagated from the kernel crate.
     #[error("kernel error: {0}")]
     Kernel(#[from] openintent_kernel::KernelError),
+
+    /// File system notification error.
+    #[error("notify error: {0}")]
+    Notify(#[from] notify::Error),
 
     // -- Generic -------------------------------------------------------------
     /// Catch-all for unexpected internal errors.  Prefer a typed variant

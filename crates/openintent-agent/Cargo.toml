@@ -20,6 +20,9 @@ toml = { workspace = true }
 openintent-kernel = { workspace = true }
 openintent-store = { workspace = true }
 skills = { path = "../skills" }
+notify = "6.0"
+jsonschema = "0.18"
+tempfile = "3.0"
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -200,6 +200,60 @@ impl LlmClient {
         }
     }
 
+    /// Create a failover chain of providers for automatic fallback.
+    /// Returns a vector of (provider, base_url, model) tuples.
+    pub fn create_failover_chain() -> Vec<(LlmProvider, String, String)> {
+        vec![
+            // Primary: Anthropic Claude
+            (
+                LlmProvider::Anthropic,
+                "https://api.anthropic.com".to_string(),
+                "claude-sonnet-4-20250514".to_string(),
+            ),
+            // Fallback 1: OpenAI
+            (
+                LlmProvider::OpenAI,
+                "https://api.openai.com/v1".to_string(),
+                "gpt-4o".to_string(),
+            ),
+            // Fallback 2: DeepSeek
+            (
+                LlmProvider::OpenAI,
+                "https://api.deepseek.com/v1".to_string(),
+                "deepseek-chat".to_string(),
+            ),
+            // Fallback 3: Local Ollama
+            (
+                LlmProvider::OpenAI,
+                "http://localhost:11434/v1".to_string(),
+                "qwen2.5:latest".to_string(),
+            ),
+        ]
+    }
+
+    /// Attempt to failover to the next provider in the chain.
+    /// Returns true if failover was successful, false if no more providers.
+    pub async fn attempt_failover(&self, current_provider_index: usize) -> bool {
+        let chain = Self::create_failover_chain();
+        
+        if current_provider_index + 1 >= chain.len() {
+            tracing::warn!("Failover chain exhausted, no more providers available");
+            return false;
+        }
+
+        let (provider, base_url, model) = &chain[current_provider_index + 1];
+        
+        tracing::info!(
+            provider = ?provider,
+            base_url = %base_url,
+            model = %model,
+            "Failing over to next provider"
+        );
+
+        self.switch_provider(provider.clone(), base_url.clone(), model.clone());
+        true
+    }
+
     /// Reset all runtime overrides back to the original config defaults.
     /// This is used after a failover cascade exhausts all providers, so the
     /// client returns to its initial (primary) state.

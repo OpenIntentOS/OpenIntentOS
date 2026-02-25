@@ -30,6 +30,7 @@
 //! - [`error`] -- Agent error types.
 
 pub mod compaction;
+pub mod config;
 pub mod error;
 pub mod evolution;
 pub mod executor;
