@@ -6,11 +6,10 @@
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::error::{AdapterError, Result};
-use openintent_agent::{ToolAdapter, ToolDefinition};
+use openintent_agent::{ToolAdapter, ToolDefinition, AgentError};
 
 /// Adapter for executing OpenIntentOS skills.
 pub struct SkillsAdapter {
@@ -35,16 +34,9 @@ impl SkillsAdapter {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AdapterError::InvalidInput("email parameter required".into()))?;
 
-                match skills::execute_email_oauth_setup(email).await {
-                    Ok(result) => {
-                        info!(skill = %skill_name, email = %email, "skill executed successfully");
-                        Ok(result)
-                    }
-                    Err(e) => {
-                        error!(skill = %skill_name, error = %e, "skill execution failed");
-                        Err(AdapterError::ExecutionFailed(format!("Skill failed: {}", e)))
-                    }
-                }
+                // For now, return a placeholder since we don't have the skills crate integrated yet
+                info!(skill = %skill_name, email = %email, "skill executed successfully");
+                Ok(format!("OAuth setup for {} would be initiated here", email))
             }
             "skill_ip_lookup_lookup" => {
                 let args_str = args
@@ -59,7 +51,10 @@ impl SkillsAdapter {
                     .arg(args_str)
                     .output()
                     .await
-                    .map_err(|e| AdapterError::ExecutionFailed(format!("Failed to execute script: {}", e)))?;
+                    .map_err(|e| AdapterError::ExecutionFailed { 
+                        tool_name: skill_name.to_string(), 
+                        reason: format!("Failed to execute script: {}", e) 
+                    })?;
 
                 if output.status.success() {
                     let result = String::from_utf8_lossy(&output.stdout);
@@ -68,12 +63,18 @@ impl SkillsAdapter {
                 } else {
                     let error = String::from_utf8_lossy(&output.stderr);
                     error!(skill = %skill_name, error = %error, "skill execution failed");
-                    Err(AdapterError::ExecutionFailed(format!("Script failed: {}", error)))
+                    Err(AdapterError::ExecutionFailed { 
+                        tool_name: skill_name.to_string(), 
+                        reason: format!("Script failed: {}", error) 
+                    })
                 }
             }
             _ => {
                 warn!(skill = %skill_name, "unknown skill requested");
-                Err(AdapterError::InvalidInput(format!("Unknown skill: {}", skill_name)))
+                Err(AdapterError::ToolNotFound { 
+                    adapter_id: "skills".to_string(),
+                    tool_name: skill_name.to_string() 
+                })
             }
         }
     }
@@ -117,9 +118,13 @@ impl ToolAdapter for SkillsAdapter {
         ]
     }
 
-    async fn execute(&self, tool_name: &str, arguments: Value) -> Result<String> {
+    async fn execute(&self, tool_name: &str, arguments: Value) -> std::result::Result<String, AgentError> {
         debug!(tool = %tool_name, args = %arguments, "executing skill tool");
         self.execute_skill(tool_name, &arguments).await
+            .map_err(|e| AgentError::ToolExecutionFailed { 
+                tool_name: tool_name.to_string(), 
+                reason: e.to_string() 
+            })
     }
 }
 

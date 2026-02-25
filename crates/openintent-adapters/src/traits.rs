@@ -25,6 +25,8 @@ pub enum AdapterType {
     DevTools,
     /// System-level services (filesystem, shell, processes).
     System,
+    /// Skills and automation scripts.
+    Skills,
 }
 
 impl std::fmt::Display for AdapterType {
@@ -34,6 +36,7 @@ impl std::fmt::Display for AdapterType {
             Self::Productivity => write!(f, "productivity"),
             Self::DevTools => write!(f, "devtools"),
             Self::System => write!(f, "system"),
+            Self::Skills => write!(f, "skills"),
         }
     }
 }

@@ -15,7 +15,6 @@ use serde_json::Value;
 
 use crate::planner::{Step, StepStatus};
 use crate::runtime::ToolAdapter;
-use skills::execute_email_oauth_setup;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -117,24 +116,49 @@ impl Executor {
         );
 
         // Check for built-in skills first
-        if step.tool_name == "email_oauth_setup" {
+        if step.tool_name == "skill_email_oauth_setup_setup" {
             if let Some(email) = step.arguments.get("email").and_then(|v| v.as_str()) {
-                match execute_email_oauth_setup(email).await {
+                // Execute the email OAuth setup script
+                let script_path = "/Users/cw/development/OpenIntentOS/skills/email-oauth-setup/setup.sh";
+                let mut cmd = tokio::process::Command::new("bash");
+                cmd.arg(script_path)
+                   .arg("--email")
+                   .arg(email);
+                
+                // Add provider if specified
+                if let Some(provider) = step.arguments.get("provider").and_then(|v| v.as_str()) {
+                    cmd.arg("--provider").arg(provider);
+                }
+                
+                match cmd.output().await {
                     Ok(output) => {
-                        return StepResult {
-                            step_index: step.index,
-                            status: StepStatus::Completed,
-                            output: Some(output),
-                            error: None,
-                            attempts: 1,
-                        };
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        
+                        if output.status.success() {
+                            return StepResult {
+                                step_index: step.index,
+                                status: StepStatus::Completed,
+                                output: Some(format!("OAuth setup completed:\n{}", stdout)),
+                                error: None,
+                                attempts: 1,
+                            };
+                        } else {
+                            return StepResult {
+                                step_index: step.index,
+                                status: StepStatus::Failed,
+                                output: None,
+                                error: Some(format!("OAuth setup failed:\n{}\n{}", stdout, stderr)),
+                                attempts: 1,
+                            };
+                        }
                     }
                     Err(e) => {
                         return StepResult {
                             step_index: step.index,
                             status: StepStatus::Failed,
                             output: None,
-                            error: Some(e.to_string()),
+                            error: Some(format!("Failed to execute OAuth setup script: {}", e)),
                             attempts: 1,
                         };
                     }
@@ -144,7 +168,7 @@ impl Executor {
                     step_index: step.index,
                     status: StepStatus::Failed,
                     output: None,
-                    error: Some("email_oauth_setup requires 'email' parameter".to_string()),
+                    error: Some("skill_email_oauth_setup_setup requires 'email' parameter".to_string()),
                     attempts: 0,
                 };
             }
