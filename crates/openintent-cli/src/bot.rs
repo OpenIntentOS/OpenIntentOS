@@ -445,11 +445,13 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 "\n\n## Channel Context\n\n\
                  You are communicating via Telegram with **{user_name}** (user_id: {user_id}, chat_id: {chat_id}).\n\n\
                  Telegram formatting rules:\n\
-                 - Keep responses readable on mobile screens.\n\
-                 - Use plain text or simple formatting (bold with *, code with `).\n\
-                 - For long content, structure with clear sections and line breaks.\n\
+                 - Use RICH formatting: bold (**text**), tables, bullet points, numbered lists, headings.\n\
+                 - Structure complex responses with clear sections, categories, and tables.\n\
+                 - Tables are great for comparisons and lists of items.\n\
+                 - Use emoji to mark categories (📺 Videos, 📝 Articles, 💬 Discussions, 📊 Data).\n\
+                 - For research results, present them in well-organized tables with columns.\n\
                  - You can use Telegram tools to send photos, documents, or additional messages.\n\
-                 - If your response is very long, focus on the most important points first.\n",
+                 - Do NOT simplify or shorten your response just because it's Telegram. Give full, rich answers.\n",
             ));
 
             if !skill_prompt_ext.is_empty() {
@@ -459,7 +461,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             let agent_config = AgentConfig {
                 max_turns: 25,
                 model: model.clone(),
-                temperature: Some(0.3),
+                temperature: Some(0.5),
                 max_tokens: Some(8192),
                 ..AgentConfig::default()
             };

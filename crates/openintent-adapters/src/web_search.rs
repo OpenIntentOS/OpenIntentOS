@@ -723,10 +723,10 @@ impl Adapter for WebSearchAdapter {
         vec![
             ToolDefinition {
                 name: "web_search".into(),
-                description: "Search the web and return titles, URLs, and snippets. \
-                              Uses Brave Search, Perplexity Sonar, or DuckDuckGo \
-                              depending on available API keys. Results are cached \
-                              for 15 minutes. Returns up to 10 results by default."
+                description: "Quick web search returning only titles, URLs, and short snippets. \
+                              Use this ONLY when you need a quick URL lookup or a single fact. \
+                              For any research, analysis, or comprehensive information, use \
+                              web_research instead — it reads full page content."
                     .into(),
                 parameters: json!({
                     "type": "object",
@@ -745,12 +745,14 @@ impl Adapter for WebSearchAdapter {
             },
             ToolDefinition {
                 name: "web_research".into(),
-                description: "Deep web research: searches the web, then automatically \
-                              fetches and reads the top result pages to extract their \
-                              full content. Use this instead of web_search when you need \
-                              comprehensive information, detailed analysis, or when search \
-                              snippets alone are insufficient. Returns both search results \
-                              and extracted page content."
+                description: "PRIMARY research tool. Searches the web AND automatically \
+                              fetches and reads the full content of top result pages. \
+                              THIS IS YOUR DEFAULT TOOL for any information request. \
+                              Use it whenever the user asks to search, find, research, \
+                              summarize, or learn about anything. Call it MULTIPLE TIMES \
+                              with different queries (English + Chinese + different angles) \
+                              to get comprehensive coverage. Returns search results plus \
+                              full extracted page content for thorough analysis."
                     .into(),
                 parameters: json!({
                     "type": "object",
