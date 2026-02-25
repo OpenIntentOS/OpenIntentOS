@@ -354,12 +354,12 @@ impl Adapter for FilesystemAdapter {
             },
             ToolDefinition {
                 name: "fs_str_replace".into(),
-                description: "Replace a unique string in a file with a new string".into(),
+                description: "Replace a unique string in a file. IMPORTANT: Always fs_read_file FIRST to get the exact current content. The old_string must match EXACTLY (whitespace, indentation, newlines). If it fails, re-read the file and try again.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "Path to the file to edit" },
-                        "old_string": { "type": "string", "description": "Exact string to find (must appear exactly once)" },
+                        "old_string": { "type": "string", "description": "Exact string to find (must appear exactly once). ALWAYS read the file first to get exact content." },
                         "new_string": { "type": "string", "description": "Replacement string" }
                     },
                     "required": ["path", "old_string", "new_string"]

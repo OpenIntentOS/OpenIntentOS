@@ -356,7 +356,7 @@ mod tests {
             let filtered: Vec<_> = memories
                 .iter()
                 .filter(|(_, entry)| {
-                    let type_matches = memory_type.map_or(true, |t| entry.memory_type == t);
+                    let type_matches = memory_type.as_ref().map_or(true, |t| entry.memory_type == *t);
                     let content_matches = entry.content.to_lowercase().contains(&query.to_lowercase());
                     type_matches && content_matches
                 })
@@ -370,7 +370,7 @@ mod tests {
             let memories = self.memories.lock().await;
             let mut filtered: Vec<_> = memories
                 .iter()
-                .filter(|(_, entry)| memory_type.map_or(true, |t| entry.memory_type == t))
+                .filter(|(_, entry)| memory_type.as_ref().map_or(true, |t| entry.memory_type == *t))
                 .cloned()
                 .collect();
             filtered.sort_by(|a, b| b.1.timestamp.cmp(&a.1.timestamp));

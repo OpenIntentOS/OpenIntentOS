@@ -14,7 +14,11 @@ use crate::error::{AdapterError, Result};
 use crate::traits::{Adapter, AdapterType, AuthRequirement, HealthStatus, ToolDefinition};
 
 /// Default command timeout in seconds.
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
+///
+/// Set to 180s to accommodate long-running commands like `cargo build`,
+/// `cargo test`, and CI/CD operations.  Individual commands can override
+/// via the `timeout_secs` parameter.
+const DEFAULT_TIMEOUT_SECS: u64 = 180;
 
 /// Maximum output size in bytes (100 KB).  Stdout and stderr are each
 /// independently truncated to this limit.
@@ -209,7 +213,7 @@ impl Adapter for ShellAdapter {
                     },
                     "timeout_secs": {
                         "type": "integer",
-                        "description": "Timeout in seconds (default: 30)"
+                        "description": "Timeout in seconds (default: 180). Use 300+ for cargo build --release or long CI tasks."
                     }
                 },
                 "required": ["command"]

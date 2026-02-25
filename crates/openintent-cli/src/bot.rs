@@ -101,6 +101,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     let dev_worker_llm = llm.clone();
     let dev_worker_adapters = adapters.clone();
     let dev_worker_model = model.clone();
+    let repo_path = cwd.clone();
     let dev_worker_repo_path = cwd;
 
     let progress_cb: ProgressCallback = {
@@ -593,17 +594,88 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 Err(e) => {
                     tracing::error!(error = %e, "agent error");
 
-                    if let Some(ref evo) = evolution {
-                        let mut evo = evo.lock().await;
-                        if let Some(issue_url) = evo.report_error(text, "telegram", &e).await {
-                            format!(
-                                "Error: {e}\n\nA feature request has been auto-filed: {issue_url}"
-                            )
-                        } else {
-                            format!("Error: {e}")
+                    // Attempt self-repair for code bugs.
+                    let notifier = crate::self_repair::TelegramNotifier::new(
+                        http.clone(),
+                        telegram_api.clone(),
+                        chat_id,
+                    );
+                    let repair_outcome = crate::self_repair::attempt_repair(
+                        &e,
+                        text,
+                        &notifier,
+                        &llm,
+                        &adapters,
+                        &model,
+                        &repo_path,
+                    )
+                    .await;
+
+                    match repair_outcome {
+                        crate::self_repair::RepairOutcome::Fixed {
+                            commit_hash,
+                            summary,
+                        } => {
+                            let msg = format!(
+                                "✅ Self-repair successful!\n\n\
+                                 Commit: {commit_hash}\n\
+                                 Fix: {summary}\n\n\
+                                 Restarting with the fixed version..."
+                            );
+                            notifier.send(&msg).await;
+
+                            // Persist history before restart.
+                            let _ = sessions
+                                .append_message(&session_key, "assistant", &msg, None, None)
+                                .await;
+
+                            // Restart the process with the new binary.
+                            crate::self_repair::restart_process();
                         }
-                    } else {
-                        format!("Error: {e}")
+                        crate::self_repair::RepairOutcome::NotACodeBug => {
+                            // Not a code bug — use normal error reporting.
+                            if let Some(ref evo) = evolution {
+                                let mut evo = evo.lock().await;
+                                if let Some(issue_url) =
+                                    evo.report_error(text, "telegram", &e).await
+                                {
+                                    format!(
+                                        "Error: {e}\n\n\
+                                         A feature request has been auto-filed: {issue_url}"
+                                    )
+                                } else {
+                                    format!("Error: {e}")
+                                }
+                            } else {
+                                format!("Error: {e}")
+                            }
+                        }
+                        crate::self_repair::RepairOutcome::Failed { reason } => {
+                            // Self-repair attempted but failed.
+                            tracing::warn!(reason = %reason, "self-repair failed");
+                            if let Some(ref evo) = evolution {
+                                let mut evo = evo.lock().await;
+                                if let Some(issue_url) =
+                                    evo.report_error(text, "telegram", &e).await
+                                {
+                                    format!(
+                                        "Error: {e}\n\n\
+                                         Self-repair attempted but failed: {reason}\n\
+                                         A feature request has been auto-filed: {issue_url}"
+                                    )
+                                } else {
+                                    format!(
+                                        "Error: {e}\n\n\
+                                         Self-repair attempted but failed: {reason}"
+                                    )
+                                }
+                            } else {
+                                format!(
+                                    "Error: {e}\n\n\
+                                     Self-repair attempted but failed: {reason}"
+                                )
+                            }
+                        }
                     }
                 }
             };

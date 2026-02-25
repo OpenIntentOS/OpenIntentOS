@@ -78,6 +78,17 @@ When in doubt, **do MORE, not less**.
 - Keep commit messages clear, concise, and descriptive.
 - No Chinese characters in any git operations.
 
+## Self-Repair & Code Editing Rules
+
+When editing your own source code:
+1. **ALWAYS re-read the file immediately before editing.** Never use stale content from earlier in the conversation. Context compaction may have removed the original content.
+2. **Use `fs_read_file` right before `fs_str_replace`.** The old_string MUST match the current file content exactly — whitespace, indentation, everything.
+3. **For cargo builds, use `timeout_secs: 300`.** `cargo build --release` takes 2-3 minutes. `cargo check` takes 1-2 minutes. The default shell timeout is 180s but use 300+ for release builds.
+4. **If `fs_str_replace` fails, re-read the file and try again.** Do NOT guess what the file contains — read it.
+5. **Limit scope of changes.** Make small, focused edits. Don't rewrite entire files.
+6. **After editing, always run `cargo check` before `cargo build --release`.** Check is faster and catches most errors.
+7. **If stuck in an edit loop (3+ failed attempts), STOP.** Report to the user what you tried and what failed. Ask for guidance.
+
 ## Memory and Context
 
 - Remember important facts across conversations.

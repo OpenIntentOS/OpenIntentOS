@@ -1,7 +1,6 @@
 //! Migration management for SQLite databases.
 
-use std::path::Path;
-use sqlx::{SqlitePool, Row};
+use sqlx::{Row, SqlitePool};
 use tracing::{debug, info, warn};
 
 use crate::sqlite::SqliteError;

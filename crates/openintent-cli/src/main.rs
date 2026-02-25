@@ -16,6 +16,7 @@ mod dev_worker;
 mod helpers;
 mod intent_classifier;
 mod repl;
+mod self_repair;
 
 use std::path::Path;
 use std::sync::Arc;

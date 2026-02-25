@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use sqlx::{Pool, Sqlite, SqlitePool, sqlite::SqlitePoolOptions};
-use tracing::{debug, error, info};
+use std::path::PathBuf;
+use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
+use tracing::debug;
 
 use crate::sqlite::SqliteError;
 
