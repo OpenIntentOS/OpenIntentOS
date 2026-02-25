@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use sqlx::{Pool, Sqlite, SqlitePool, Row};
 use tracing::{debug, error, info};
 
-use crate::runtime::ToolAdapter;
+use crate::traits::{Adapter, ToolDefinition, AdapterType, HealthStatus};
 use crate::sqlite::{SqliteConnectionPool, MigrationManager, SqliteError};
 
 /// SQLite database adapter for OpenIntentOS
@@ -17,8 +17,9 @@ pub struct SqliteAdapter {
 
 impl SqliteAdapter {
     /// Create a new SQLite adapter
-    pub async fn new(default_db_path: Option<PathBuf>) -> Result<Self, SqliteError> {
-        let pool = SqliteConnectionPool::new(default_db_path).await?;
+    pub async fn new(default_db_path: Option<PathBuf>) -> Result<Self> {
+        let pool = SqliteConnectionPool::new(default_db_path).await
+            .map_err(|e| AdapterError::ConnectionFailed(e.to_string()))?;
         let migrations = MigrationManager::new();
         
         Ok(Self {
@@ -29,9 +30,10 @@ impl SqliteAdapter {
     }
 
     /// Get or create a database connection
-    pub async fn get_database(&mut self, db_name: &str) -> Result<&SqlitePool, SqliteError> {
+    async fn get_database(&mut self, db_name: &str) -> Result<&SqlitePool> {
         if !self.databases.contains_key(db_name) {
-            let pool = self.pool.get_or_create_database(db_name).await?;
+            let pool = self.pool.get_or_create_database(db_name).await
+                .map_err(|e| AdapterError::ConnectionFailed(e.to_string()))?;
             self.databases.insert(db_name.to_string(), pool);
         }
         
@@ -39,8 +41,12 @@ impl SqliteAdapter {
     }
 
     /// Execute a SQL query and return results
-    async fn execute_query(&mut self, db_name: &str, query: &str, params: Vec<Value>) -> Result<Value, SqliteError> {
-        let pool = self.get_database(db_name).await?;
+    async fn execute_query(&self, db_name: &str, query: &str, params: Vec<Value>) -> Result<Value> {
+        let pool = if db_name == "main" {
+            self.pool.get_main_pool()
+        } else {
+            return Err(AdapterError::InvalidInput(format!("Database '{}' not supported yet", db_name)));
+        };
         
         // Convert JSON values to SQL parameters
         let mut sql_query = sqlx::query(query);
@@ -56,12 +62,12 @@ impl SqliteAdapter {
                 }
                 Value::Bool(b) => sql_query = sql_query.bind(b),
                 Value::Null => sql_query = sql_query.bind(Option::<String>::None),
-                _ => return Err(SqliteError::InvalidParameter(format!("Unsupported parameter type: {}", param))),
+                _ => return Err(AdapterError::InvalidInput(format!("Unsupported parameter type: {}", param))),
             }
         }
 
         let rows = sql_query.fetch_all(pool).await
-            .map_err(|e| SqliteError::QueryExecution(e.to_string()))?;
+            .map_err(|e| AdapterError::ExecutionFailed(e.to_string()))?;
 
         // Convert rows to JSON
         let mut results = Vec::new();
@@ -94,8 +100,12 @@ impl SqliteAdapter {
     }
 
     /// Execute a SQL command (INSERT, UPDATE, DELETE)
-    async fn execute_command(&mut self, db_name: &str, query: &str, params: Vec<Value>) -> Result<Value, SqliteError> {
-        let pool = self.get_database(db_name).await?;
+    async fn execute_command(&self, db_name: &str, query: &str, params: Vec<Value>) -> Result<Value> {
+        let pool = if db_name == "main" {
+            self.pool.get_main_pool()
+        } else {
+            return Err(AdapterError::InvalidInput(format!("Database '{}' not supported yet", db_name)));
+        };
         
         let mut sql_query = sqlx::query(query);
         for param in params {
@@ -110,12 +120,12 @@ impl SqliteAdapter {
                 }
                 Value::Bool(b) => sql_query = sql_query.bind(b),
                 Value::Null => sql_query = sql_query.bind(Option::<String>::None),
-                _ => return Err(SqliteError::InvalidParameter(format!("Unsupported parameter type: {}", param))),
+                _ => return Err(AdapterError::InvalidInput(format!("Unsupported parameter type: {}", param))),
             }
         }
 
         let result = sql_query.execute(pool).await
-            .map_err(|e| SqliteError::QueryExecution(e.to_string()))?;
+            .map_err(|e| AdapterError::ExecutionFailed(e.to_string()))?;
 
         Ok(serde_json::json!({
             "rows_affected": result.rows_affected(),
@@ -125,22 +135,45 @@ impl SqliteAdapter {
 }
 
 #[async_trait]
-impl ToolAdapter for SqliteAdapter {
-    fn name(&self) -> &'static str {
+impl Adapter for SqliteAdapter {
+    fn id(&self) -> &str {
         "sqlite"
+    }
+
+    fn adapter_type(&self) -> AdapterType {
+        AdapterType::System
+    }
+
+    async fn connect(&mut self) -> Result<()> {
+        // Already connected during new()
+        Ok(())
+    }
+
+    async fn disconnect(&mut self) -> Result<()> {
+        // SQLite connections are automatically closed when dropped
+        Ok(())
+    }
+
+    async fn health_check(&self) -> Result<HealthStatus> {
+        // Try a simple query to check database health
+        match self.pool.get_main_pool().execute("SELECT 1").await {
+            Ok(_) => Ok(HealthStatus::Healthy),
+            Err(_) => Ok(HealthStatus::Unhealthy),
+        }
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {
                 name: "sqlite_query".to_string(),
-                description: "Execute a SQL SELECT query and return results".to_string(),
+                description: "Execute a SELECT query on a SQLite database".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "database": {
                             "type": "string",
-                            "description": "Database name (default: 'main')"
+                            "description": "Database name (default: 'main')",
+                            "default": "main"
                         },
                         "query": {
                             "type": "string",
@@ -149,7 +182,8 @@ impl ToolAdapter for SqliteAdapter {
                         "params": {
                             "type": "array",
                             "description": "Query parameters",
-                            "items": {}
+                            "items": {},
+                            "default": []
                         }
                     },
                     "required": ["query"]
@@ -157,13 +191,14 @@ impl ToolAdapter for SqliteAdapter {
             },
             ToolDefinition {
                 name: "sqlite_execute".to_string(),
-                description: "Execute a SQL command (INSERT, UPDATE, DELETE, CREATE, etc.)".to_string(),
+                description: "Execute an INSERT, UPDATE, or DELETE command on a SQLite database".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "database": {
                             "type": "string",
-                            "description": "Database name (default: 'main')"
+                            "description": "Database name (default: 'main')",
+                            "default": "main"
                         },
                         "query": {
                             "type": "string",
@@ -172,7 +207,8 @@ impl ToolAdapter for SqliteAdapter {
                         "params": {
                             "type": "array",
                             "description": "Query parameters",
-                            "items": {}
+                            "items": {},
+                            "default": []
                         }
                     },
                     "required": ["query"]
@@ -186,29 +222,30 @@ impl ToolAdapter for SqliteAdapter {
                     "properties": {
                         "database": {
                             "type": "string",
-                            "description": "Database name (default: 'main')"
+                            "description": "Database name (default: 'main')",
+                            "default": "main"
                         },
                         "migration_dir": {
                             "type": "string",
                             "description": "Directory containing migration files"
                         }
-                    },
-                    "required": []
+                    }
                 }),
             },
             ToolDefinition {
                 name: "sqlite_backup".to_string(),
-                description: "Create a backup of the database".to_string(),
+                description: "Create a backup of a SQLite database".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "database": {
                             "type": "string",
-                            "description": "Database name (default: 'main')"
+                            "description": "Database name (default: 'main')",
+                            "default": "main"
                         },
                         "backup_path": {
                             "type": "string",
-                            "description": "Path for the backup file"
+                            "description": "Path where the backup file will be created"
                         }
                     },
                     "required": ["backup_path"]
@@ -217,12 +254,12 @@ impl ToolAdapter for SqliteAdapter {
         ]
     }
 
-    async fn execute_tool(&mut self, name: &str, params: Value) -> ToolResult {
+    async fn execute_tool(&self, tool_name: &str, params: Value) -> Result<Value> {
         let database = params.get("database")
             .and_then(|v| v.as_str())
             .unwrap_or("main");
 
-        match name {
+        match tool_name {
             "sqlite_query" => {
                 let query = params.get("query")
                     .and_then(|v| v.as_str())
@@ -233,10 +270,8 @@ impl ToolAdapter for SqliteAdapter {
                     .cloned()
                     .unwrap_or_default();
 
-                match self.execute_query(database, query, query_params).await {
-                    Ok(result) => Ok(result),
-                    Err(e) => Err(AdapterError::ExecutionFailed(e.to_string())),
-                }
+                self.execute_query(database, query, query_params).await
+                    .map_err(|e| AdapterError::ExecutionFailed(e.to_string()))
             }
             "sqlite_execute" => {
                 let query = params.get("query")
@@ -248,31 +283,33 @@ impl ToolAdapter for SqliteAdapter {
                     .cloned()
                     .unwrap_or_default();
 
-                match self.execute_command(database, query, query_params).await {
-                    Ok(result) => Ok(result),
-                    Err(e) => Err(AdapterError::ExecutionFailed(e.to_string())),
-                }
+                self.execute_command(database, query, query_params).await
+                    .map_err(|e| AdapterError::ExecutionFailed(e.to_string()))
             }
             "sqlite_migrate" => {
                 let migration_dir = params.get("migration_dir")
                     .and_then(|v| v.as_str());
 
-                match self.migrations.run_migrations(database, migration_dir).await {
-                    Ok(_) => Ok(serde_json::json!({"status": "migrations_completed"})),
-                    Err(e) => Err(AdapterError::ExecutionFailed(e.to_string())),
-                }
+                self.migrations.run_migrations(database, migration_dir).await
+                    .map_err(|e| AdapterError::ExecutionFailed(e.to_string()))?;
+                
+                Ok(serde_json::json!({"status": "migrations_completed"}))
             }
             "sqlite_backup" => {
                 let backup_path = params.get("backup_path")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AdapterError::InvalidInput("Missing 'backup_path' parameter".to_string()))?;
 
-                match self.pool.backup_database(database, backup_path).await {
-                    Ok(_) => Ok(serde_json::json!({"status": "backup_completed", "path": backup_path})),
-                    Err(e) => Err(AdapterError::ExecutionFailed(e.to_string())),
-                }
+                self.pool.backup_database(database, backup_path).await
+                    .map_err(|e| AdapterError::ExecutionFailed(e.to_string()))?;
+                
+                Ok(serde_json::json!({"status": "backup_completed", "path": backup_path}))
             }
-            _ => Err(AdapterError::UnknownTool(name.to_string())),
+            _ => Err(AdapterError::UnknownTool(tool_name.to_string())),
         }
+    }
+
+    fn required_auth(&self) -> Option<crate::traits::AuthRequirement> {
+        None
     }
 }

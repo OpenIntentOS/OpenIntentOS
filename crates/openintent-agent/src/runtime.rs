@@ -92,7 +92,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_turns: 50,  // Increased from 20 to handle complex multi-step tasks
+            max_turns: 100,  // Increased from 50 to handle very complex multi-step tasks
             model: String::new(),
             temperature: Some(0.0),
             max_tokens: Some(4096),

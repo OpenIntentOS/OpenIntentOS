@@ -142,24 +142,8 @@ impl SqliteConnectionPool {
         db_path.exists()
     }
 
-    /// Delete a database file
-    pub async fn delete_database(&mut self, db_name: &str) -> Result<(), SqliteError> {
-        // Close the connection first
-        self.close_database(db_name).await?;
-
-        let db_path = if db_name == "main" {
-            return Err(SqliteError::InvalidParameter("Cannot delete main database".to_string()));
-        } else {
-            let mut path = self.default_db_path.clone();
-            path.set_file_name(format!("{}.db", db_name));
-            path
-        };
-
-        if db_path.exists() {
-            tokio::fs::remove_file(&db_path).await
-                .map_err(|e| SqliteError::Configuration(format!("Failed to delete database file: {}", e)))?;
-        }
-
-        Ok(())
+    /// Get the main database pool
+    pub fn get_main_pool(&self) -> &SqlitePool {
+        self.pools.get("main").expect("Main database should always be available")
     }
 }
