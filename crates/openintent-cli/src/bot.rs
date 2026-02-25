@@ -12,7 +12,8 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 use openintent_agent::{
-    AgentConfig, AgentContext, EvolutionEngine, LlmClient, Message, react_loop,
+    AgentConfig, AgentContext, ChatRequest, EvolutionEngine, LlmClient, LlmResponse, Message,
+    react_loop,
 };
 use openintent_store::{BotStateStore, DevTaskStore, SessionStore};
 
@@ -203,7 +204,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     println!();
 
     // Send startup notification with latest changes to all recent active chats.
-    send_startup_notification(&http, &telegram_api, &sessions).await;
+    send_startup_notification(&http, &telegram_api, &sessions, &llm, &model).await;
 
     // Per-chat conversation history (in-memory, keyed by chat_id).
     let mut chat_histories: HashMap<i64, Vec<Message>> = HashMap::new();
@@ -616,11 +617,11 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                             commit_hash,
                             summary,
                         } => {
+                            let _ = commit_hash; // used internally only
                             let msg = format!(
-                                "✅ Self-repair successful!\n\n\
-                                 Commit: {commit_hash}\n\
-                                 Fix: {summary}\n\n\
-                                 Restarting with the fixed version..."
+                                "✅ 我发现了一个问题并自动修复了！\n\n\
+                                 修复内容：{summary}\n\n\
+                                 正在重启，请稍等几秒后重新发送你的消息..."
                             );
                             notifier.send(&msg).await;
 
@@ -634,47 +635,24 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                         }
                         crate::self_repair::RepairOutcome::NotACodeBug => {
                             // Not a code bug — use normal error reporting.
+                            tracing::debug!(error = %e, "not a code bug, skipping self-repair");
                             if let Some(ref evo) = evolution {
                                 let mut evo = evo.lock().await;
-                                if let Some(issue_url) =
-                                    evo.report_error(text, "telegram", &e).await
-                                {
-                                    format!(
-                                        "Error: {e}\n\n\
-                                         A feature request has been auto-filed: {issue_url}"
-                                    )
-                                } else {
-                                    format!("Error: {e}")
-                                }
-                            } else {
-                                format!("Error: {e}")
+                                let _ = evo.report_error(text, "telegram", &e).await;
                             }
+                            "抱歉，处理你的请求时遇到了问题。请稍后再试，或者换个方式描述你的需求。"
+                                .to_string()
                         }
                         crate::self_repair::RepairOutcome::Failed { reason } => {
                             // Self-repair attempted but failed.
                             tracing::warn!(reason = %reason, "self-repair failed");
                             if let Some(ref evo) = evolution {
                                 let mut evo = evo.lock().await;
-                                if let Some(issue_url) =
-                                    evo.report_error(text, "telegram", &e).await
-                                {
-                                    format!(
-                                        "Error: {e}\n\n\
-                                         Self-repair attempted but failed: {reason}\n\
-                                         A feature request has been auto-filed: {issue_url}"
-                                    )
-                                } else {
-                                    format!(
-                                        "Error: {e}\n\n\
-                                         Self-repair attempted but failed: {reason}"
-                                    )
-                                }
-                            } else {
-                                format!(
-                                    "Error: {e}\n\n\
-                                     Self-repair attempted but failed: {reason}"
-                                )
+                                let _ = evo.report_error(text, "telegram", &e).await;
                             }
+                            "抱歉，我遇到了一个问题并尝试自动修复，但这次没有成功。\
+                             开发者会收到通知来处理这个问题。请稍后再试。"
+                                .to_string()
                         }
                     }
                 }
@@ -757,8 +735,10 @@ async fn send_startup_notification(
     http: &reqwest::Client,
     telegram_api: &str,
     sessions: &SessionStore,
+    llm: &Arc<LlmClient>,
+    model: &str,
 ) {
-    // Get the latest commit message for the notification.
+    // Get the latest commit messages for context.
     let commit_info = match std::process::Command::new("git")
         .args(["log", "--oneline", "-5"])
         .output()
@@ -771,12 +751,14 @@ async fn send_startup_notification(
         _ => None,
     };
 
+    // Generate a human-readable summary using the LLM.
     let message = if let Some(ref commits) = commit_info {
-        format!(
-            "🔄 *Bot restarted with updates*\n\nRecent changes:\n```\n{commits}\n```"
-        )
+        match summarize_commits_for_user(llm, model, commits).await {
+            Some(summary) => format!("🔄 我刚刚重启更新了！\n\n{summary}"),
+            None => "🔄 我刚刚重启更新了，准备好继续为你服务！".to_string(),
+        }
     } else {
-        "🔄 *Bot restarted*".to_string()
+        "🔄 我刚刚重启了，准备好继续为你服务！".to_string()
     };
 
     // Find all recently active Telegram sessions and notify them.
@@ -802,13 +784,42 @@ async fn send_startup_notification(
             .json(&serde_json::json!({
                 "chat_id": chat_id,
                 "text": message,
-                "parse_mode": "Markdown",
             }))
             .send()
             .await;
     }
 
-    if !commit_info.is_none() {
+    if commit_info.is_some() {
         info!("sent startup notification to active chats");
+    }
+}
+
+/// Use the LLM to translate raw git commit messages into a short,
+/// human-readable summary in the user's language.
+async fn summarize_commits_for_user(
+    llm: &Arc<LlmClient>,
+    model: &str,
+    commits: &str,
+) -> Option<String> {
+    let system = "你是一个 AI 助手。把下面的 git commit 记录翻译成简短、友好的中文摘要，\
+                  让普通用户能看懂最近更新了什么功能或修复了什么问题。\
+                  不要提及 commit hash、分支名、文件名等技术细节。\
+                  用 2-4 个要点，每个要点一句话，用 emoji 开头。";
+
+    let request = ChatRequest {
+        model: model.to_owned(),
+        messages: vec![
+            Message::system(system),
+            Message::user(format!("把这些更新翻译成用户能看懂的中文：\n{commits}")),
+        ],
+        tools: vec![],
+        temperature: Some(0.3),
+        max_tokens: Some(512),
+        stream: false,
+    };
+
+    match llm.chat(&request).await {
+        Ok(LlmResponse::Text(text)) => Some(text),
+        _ => None,
     }
 }

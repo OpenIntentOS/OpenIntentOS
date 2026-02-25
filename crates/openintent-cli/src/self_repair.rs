@@ -98,7 +98,7 @@ pub async fn attempt_repair(
     info!(error = %error_text, "self-repair triggered");
 
     notifier
-        .send("🔧 Error detected. Analyzing and attempting self-repair...")
+        .send("🔧 遇到了一个问题，正在自动分析和修复...")
         .await;
 
     // Step 1: Gather diagnostic context.
@@ -137,9 +137,9 @@ pub async fn attempt_repair(
 
     ctx.on_tool_start = Some(Arc::new(move |tool_name: &str, _args: &serde_json::Value| {
         let label = match tool_name {
-            "fs_read_file" | "fs_list_directory" => Some("🔍 Reading source code..."),
-            "fs_str_replace" | "fs_write_file" => Some("✏️ Applying fix..."),
-            "shell_execute" => Some("⚙️ Building & testing..."),
+            "fs_read_file" | "fs_list_directory" => Some("🔍 正在分析代码..."),
+            "fs_str_replace" | "fs_write_file" => Some("✏️ 正在修复问题..."),
+            "shell_execute" => Some("⚙️ 正在编译验证..."),
             _ => None,
         };
         if let Some(msg) = label {
@@ -181,36 +181,36 @@ pub async fn attempt_repair(
     };
 
     // Step 3: Verify the fix independently.
-    notifier.send("🔨 Verifying fix: cargo check...").await;
+    notifier.send("🔨 正在验证修复...").await;
 
     if let Err(e) = run_shell(repo_path, "cargo check", 180).await {
         warn!(error = %e, "cargo check failed after repair");
         notifier
-            .send(&format!("❌ Self-repair failed: cargo check error\n{e}"))
+            .send("❌ 自动修复失败：代码验证未通过，我会继续改进。")
             .await;
         return RepairOutcome::Failed {
             reason: format!("cargo check failed: {e}"),
         };
     }
 
-    notifier.send("🧪 Running tests...").await;
+    notifier.send("🧪 正在运行测试...").await;
 
     if let Err(e) = run_shell(repo_path, "cargo test --workspace", 300).await {
         warn!(error = %e, "cargo test failed after repair");
         notifier
-            .send(&format!("❌ Self-repair failed: tests failed\n{e}"))
+            .send("❌ 自动修复失败：测试未通过，我会继续改进。")
             .await;
         return RepairOutcome::Failed {
             reason: format!("cargo test failed: {e}"),
         };
     }
 
-    notifier.send("📦 Building release binary...").await;
+    notifier.send("📦 正在编译新版本...").await;
 
     if let Err(e) = run_shell(repo_path, "cargo build --release", 600).await {
         warn!(error = %e, "cargo build --release failed after repair");
         notifier
-            .send(&format!("❌ Self-repair failed: release build error\n{e}"))
+            .send("❌ 自动修复失败：编译新版本出错，我会继续改进。")
             .await;
         return RepairOutcome::Failed {
             reason: format!("cargo build --release failed: {e}"),
@@ -218,7 +218,7 @@ pub async fn attempt_repair(
     }
 
     // Step 4: Commit the fix.
-    notifier.send("📝 Committing fix...").await;
+    notifier.send("📝 正在保存修复...").await;
 
     let commit_result = commit_fix(repo_path, &error_text).await;
     let commit_hash = match commit_result {
