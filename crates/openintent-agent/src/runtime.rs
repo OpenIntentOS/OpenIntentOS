@@ -16,6 +16,7 @@ use crate::error::{AgentError, Result};
 use crate::llm::LlmClient;
 use crate::llm::router::ModelRouter;
 use crate::llm::types::{ChatRequest, LlmResponse, Message, ToolCall, ToolDefinition, ToolResult};
+use crate::memory::{AutoMemoryManager, MemoryType};
 
 // ---------------------------------------------------------------------------
 // Tool adapter trait
@@ -91,7 +92,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_turns: 20,
+            max_turns: 50,  // Increased from 20 to handle complex multi-step tasks
             model: String::new(),
             temperature: Some(0.0),
             max_tokens: Some(4096),
@@ -132,6 +133,9 @@ pub struct AgentContext {
     /// Optional callback invoked when a tool execution starts.
     /// Useful for sending progress indicators (e.g., "Searching...").
     pub on_tool_start: Option<ToolStartCallback>,
+
+    /// Optional auto-memory manager for intelligent conversation tracking.
+    pub memory_manager: Option<Arc<AutoMemoryManager>>,
 }
 
 impl AgentContext {
@@ -150,6 +154,7 @@ impl AgentContext {
             on_text_delta: None,
             policy_checker: None,
             on_tool_start: None,
+            memory_manager: None,
         }
     }
 
@@ -162,6 +167,12 @@ impl AgentContext {
     /// Add a user message to the conversation.
     pub fn with_user_message(mut self, message: impl Into<String>) -> Self {
         self.messages.push(Message::user(message));
+        self
+    }
+
+    /// Set the memory manager for this context.
+    pub fn with_memory_manager(mut self, memory_manager: Arc<AutoMemoryManager>) -> Self {
+        self.memory_manager = Some(memory_manager);
         self
     }
 
@@ -323,7 +334,13 @@ pub async fn react_loop(ctx: &mut AgentContext) -> Result<AgentResponse> {
                 );
 
                 // Append the assistant's final message to history.
-                ctx.messages.push(Message::assistant(&text));
+                let assistant_message = Message::assistant(&text);
+                ctx.messages.push(assistant_message.clone());
+
+                // Record the conversation in memory if available
+                if let Some(ref memory) = ctx.memory_manager {
+                    memory.add_message(assistant_message).await;
+                }
 
                 return Ok(AgentResponse::new(text, turn + 1, task_id));
             }

@@ -34,6 +34,7 @@ pub mod error;
 pub mod evolution;
 pub mod executor;
 pub mod llm;
+pub mod memory;
 pub mod planner;
 pub mod runtime;
 
@@ -46,6 +47,7 @@ pub use llm::{
     ChatRequest, LlmClient, LlmClientConfig, LlmResponse, Message, ModelConfig, ModelRouter, Role,
     ToolCall, ToolDefinition, ToolResult,
 };
+pub use memory::{AutoMemoryConfig, AutoMemoryManager, MemoryEntry, MemoryStore, MemoryType};
 pub use planner::{Plan, Planner, PlannerConfig, Step, StepStatus};
 pub use runtime::{
     AgentConfig, AgentContext, AgentResponse, PolicyCheckerFn, TextDeltaCallback, ToolAdapter,
