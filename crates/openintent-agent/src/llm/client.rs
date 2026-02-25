@@ -115,13 +115,24 @@ impl LlmClientConfig {
 ///
 /// Supports both streaming and non-streaming modes, tool use, and system
 /// prompts.  The API key can be hot-swapped at runtime (e.g. after an OAuth
-/// token refresh) via [`update_api_key`].
+/// token refresh) via [`update_api_key`] and provider failover via
+/// [`switch_provider`].
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     config: Arc<LlmClientConfig>,
-    /// Swappable API key — allows token refresh without re-creating the client.
-    api_key: Arc<RwLock<String>>,
+    /// Swappable runtime overrides — allows token refresh and provider failover
+    /// without re-creating the client.
+    overrides: Arc<RwLock<RuntimeOverrides>>,
     http: reqwest::Client,
+}
+
+/// Mutable runtime overrides for the LLM client.
+#[derive(Debug, Clone)]
+struct RuntimeOverrides {
+    api_key: String,
+    provider: Option<LlmProvider>,
+    base_url: Option<String>,
+    default_model: Option<String>,
 }
 
 impl LlmClient {
@@ -144,33 +155,75 @@ impl LlmClient {
                 reason: format!("failed to build HTTP client: {e}"),
             })?;
 
-        let api_key = Arc::new(RwLock::new(config.api_key.clone()));
+        let overrides = Arc::new(RwLock::new(RuntimeOverrides {
+            api_key: config.api_key.clone(),
+            provider: None,
+            base_url: None,
+            default_model: None,
+        }));
 
         Ok(Self {
             config: Arc::new(config),
-            api_key,
+            overrides,
             http,
         })
     }
 
-    /// Returns a reference to the provider type for this client.
-    pub fn provider(&self) -> &LlmProvider {
-        &self.config.provider
+    /// Returns the current provider (respects runtime overrides).
+    pub fn provider(&self) -> LlmProvider {
+        self.overrides
+            .read()
+            .ok()
+            .and_then(|o| o.provider.clone())
+            .unwrap_or_else(|| self.config.provider.clone())
     }
 
     /// Hot-swap the API key at runtime (e.g. after an OAuth token refresh).
     pub fn update_api_key(&self, new_key: String) {
-        if let Ok(mut key) = self.api_key.write() {
-            *key = new_key;
+        if let Ok(mut o) = self.overrides.write() {
+            o.api_key = new_key;
+        }
+    }
+
+    /// Switch to a different provider at runtime (e.g. failover from
+    /// Anthropic to DeepSeek when the OAuth token cannot be refreshed).
+    pub fn switch_provider(
+        &self,
+        provider: LlmProvider,
+        base_url: String,
+        default_model: String,
+    ) {
+        if let Ok(mut o) = self.overrides.write() {
+            o.provider = Some(provider);
+            o.base_url = Some(base_url);
+            o.default_model = Some(default_model);
         }
     }
 
     /// Read the current API key (snapshot).
     fn current_api_key(&self) -> String {
-        self.api_key
+        self.overrides
             .read()
-            .map(|k| k.clone())
+            .map(|o| o.api_key.clone())
             .unwrap_or_else(|_| self.config.api_key.clone())
+    }
+
+    /// Read the current base URL (snapshot, respects overrides).
+    fn current_base_url(&self) -> String {
+        self.overrides
+            .read()
+            .ok()
+            .and_then(|o| o.base_url.clone())
+            .unwrap_or_else(|| self.config.base_url.clone())
+    }
+
+    /// Read the current default model (snapshot, respects overrides).
+    fn current_default_model(&self) -> String {
+        self.overrides
+            .read()
+            .ok()
+            .and_then(|o| o.default_model.clone())
+            .unwrap_or_else(|| self.config.default_model.clone())
     }
 
     // -----------------------------------------------------------------------
@@ -182,7 +235,7 @@ impl LlmClient {
     /// This blocks until the entire response is received and then parses it
     /// into an [`LlmResponse`].
     pub async fn chat(&self, request: &ChatRequest) -> Result<LlmResponse> {
-        match self.config.provider {
+        match self.provider() {
             LlmProvider::Anthropic => self.chat_anthropic(request).await,
             LlmProvider::OpenAI => self.chat_openai(request).await,
         }
@@ -194,7 +247,7 @@ impl LlmClient {
     /// Internally consumes the SSE stream, accumulating text and tool-call
     /// fragments until the message is complete.
     pub async fn stream_chat(&self, request: &ChatRequest) -> Result<LlmResponse> {
-        match self.config.provider {
+        match self.provider() {
             LlmProvider::Anthropic => self.stream_chat_anthropic(request).await,
             LlmProvider::OpenAI => self.stream_chat_openai(request, &mut |_| {}).await,
         }
@@ -210,7 +263,7 @@ impl LlmClient {
     where
         F: FnMut(&str) + Send,
     {
-        match self.config.provider {
+        match self.provider() {
             LlmProvider::Anthropic => {
                 self.stream_chat_anthropic_with_callback(request, &mut on_text)
                     .await
@@ -283,10 +336,11 @@ impl LlmClient {
     /// Build the JSON body for the Anthropic Messages API.
     fn build_anthropic_request_body(&self, request: &ChatRequest, stream: bool) -> Value {
         let (system_text, messages) = messages_to_anthropic(&request.messages);
+        let default_model = self.current_default_model();
 
         let mut body = json!({
             "model": if request.model.is_empty() {
-                &self.config.default_model
+                &default_model
             } else {
                 &request.model
             },
@@ -319,7 +373,7 @@ impl LlmClient {
     /// (`Authorization: Bearer` header).  OAuth tokens are detected by their
     /// `sk-ant-oat` prefix.
     async fn send_anthropic_request(&self, body: &Value) -> Result<reqwest::Response> {
-        let url = format!("{}/v1/messages", self.config.base_url);
+        let url = format!("{}/v1/messages", self.current_base_url());
 
         let mut headers = HeaderMap::new();
 
@@ -475,10 +529,11 @@ impl LlmClient {
     /// Build the JSON body for the OpenAI Chat Completions API.
     fn build_openai_request_body(&self, request: &ChatRequest, stream: bool) -> Value {
         let messages = messages_to_openai(&request.messages);
+        let default_model = self.current_default_model();
 
         let mut body = json!({
             "model": if request.model.is_empty() {
-                &self.config.default_model
+                &default_model
             } else {
                 &request.model
             },
@@ -503,7 +558,7 @@ impl LlmClient {
 
     /// Send the HTTP request to the OpenAI Chat Completions API endpoint.
     async fn send_openai_request(&self, body: &Value) -> Result<reqwest::Response> {
-        let url = format!("{}/chat/completions", self.config.base_url);
+        let url = format!("{}/chat/completions", self.current_base_url());
 
         let mut headers = HeaderMap::new();
         let auth_value = format!("Bearer {}", self.current_api_key());
@@ -1282,11 +1337,11 @@ mod tests {
     fn provider_detection() {
         let anthropic_config = LlmClientConfig::anthropic("key", "claude-sonnet-4-20250514");
         let anthropic_client = LlmClient::new(anthropic_config).unwrap();
-        assert_eq!(*anthropic_client.provider(), LlmProvider::Anthropic);
+        assert_eq!(anthropic_client.provider(), LlmProvider::Anthropic);
 
         let openai_config = LlmClientConfig::openai("key", "gpt-4o");
         let openai_client = LlmClient::new(openai_config).unwrap();
-        assert_eq!(*openai_client.provider(), LlmProvider::OpenAI);
+        assert_eq!(openai_client.provider(), LlmProvider::OpenAI);
     }
 
     // -- LlmProvider equality ------------------------------------------------

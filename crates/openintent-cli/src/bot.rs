@@ -675,53 +675,74 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 Err(e) => {
                     let err_str = e.to_string();
 
-                    // Handle expired OAuth token: re-read from Keychain and retry.
+                    // Handle expired OAuth token: re-read from Keychain, or fall back to DeepSeek.
                     if err_str.contains("401 Unauthorized")
                         || err_str.contains("authentication_error")
                         || err_str.contains("token has expired")
                     {
                         tracing::warn!("OAuth token expired, attempting refresh from Keychain");
-                        if let Some(new_token) =
+
+                        // Try 1: refresh from Keychain.
+                        let refreshed = if let Some(new_token) =
                             crate::helpers::read_claude_code_keychain_token()
                         {
                             llm.update_api_key(new_token);
                             tracing::info!("OAuth token refreshed from Keychain, retrying");
-
-                            // Rebuild context and retry once.
-                            // Re-build agent context with same config but fresh task_id.
-                            let retry_config = ctx.config.clone();
-                            let mut retry_ctx =
-                                AgentContext::new(llm.clone(), adapters.clone(), retry_config);
-                            // Copy all messages from the original context (includes system prompt).
-                            retry_ctx.messages = ctx.messages.clone();
-
-                            match react_loop(&mut retry_ctx).await {
-                                Ok(response) => {
-                                    info!(chat_id, turns = response.turns_used, "agent completed (after token refresh)");
-                                    response.text
-                                }
-                                Err(retry_err) => {
-                                    tracing::error!(error = %retry_err, "agent error after token refresh");
-                                    msgs.get_translated(
-                                        keys::ERROR_GENERAL,
-                                        &[],
-                                        &user_lang,
-                                        &llm,
-                                        &model,
-                                    )
-                                    .await
-                                }
-                            }
+                            true
                         } else {
-                            tracing::error!("failed to read fresh OAuth token from Keychain");
-                            msgs.get_translated(
-                                keys::ERROR_GENERAL,
-                                &[],
-                                &user_lang,
-                                &llm,
-                                &model,
-                            )
-                            .await
+                            false
+                        };
+
+                        // Try 2: if Keychain failed, fall back to DeepSeek.
+                        if !refreshed {
+                            if let Some(ds_key) = crate::helpers::env_non_empty("DEEPSEEK_API_KEY")
+                            {
+                                tracing::warn!(
+                                    "Keychain refresh failed, falling back to DeepSeek"
+                                );
+                                llm.update_api_key(ds_key);
+                                llm.switch_provider(
+                                    openintent_agent::LlmProvider::OpenAI,
+                                    "https://api.deepseek.com/v1".to_owned(),
+                                    "deepseek-chat".to_owned(),
+                                );
+                            } else {
+                                tracing::error!(
+                                    "no fallback: Keychain refresh failed and DEEPSEEK_API_KEY not set"
+                                );
+                                msgs.get_translated(
+                                    keys::ERROR_GENERAL,
+                                    &[],
+                                    &user_lang,
+                                    &llm,
+                                    &model,
+                                )
+                                .await;
+                            }
+                        }
+
+                        // Retry with refreshed/fallback credentials.
+                        let retry_config = ctx.config.clone();
+                        let mut retry_ctx =
+                            AgentContext::new(llm.clone(), adapters.clone(), retry_config);
+                        retry_ctx.messages = ctx.messages.clone();
+
+                        match react_loop(&mut retry_ctx).await {
+                            Ok(response) => {
+                                info!(chat_id, turns = response.turns_used, "agent completed (after token refresh)");
+                                response.text
+                            }
+                            Err(retry_err) => {
+                                tracing::error!(error = %retry_err, "agent error after token refresh");
+                                msgs.get_translated(
+                                    keys::ERROR_GENERAL,
+                                    &[],
+                                    &user_lang,
+                                    &llm,
+                                    &model,
+                                )
+                                .await
+                            }
                         }
                     } else {
                     tracing::error!(error = %e, "agent error");

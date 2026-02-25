@@ -44,8 +44,8 @@ pub use error::{AgentError, Result};
 pub use evolution::{EvolutionConfig, EvolutionEngine, UnhandledIntent};
 pub use executor::{Executor, ExecutorConfig, StepResult};
 pub use llm::{
-    ChatRequest, LlmClient, LlmClientConfig, LlmResponse, Message, ModelConfig, ModelRouter, Role,
-    ToolCall, ToolDefinition, ToolResult,
+    ChatRequest, LlmClient, LlmClientConfig, LlmProvider, LlmResponse, Message, ModelConfig,
+    ModelRouter, Role, ToolCall, ToolDefinition, ToolResult,
 };
 pub use memory::{AutoMemoryConfig, AutoMemoryManager, MemoryEntry, MemoryStore, MemoryType};
 pub use planner::{Plan, Planner, PlannerConfig, Step, StepStatus};
