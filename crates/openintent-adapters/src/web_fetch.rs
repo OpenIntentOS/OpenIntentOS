@@ -1,19 +1,31 @@
-//! Web fetch adapter -- fetch any URL and return its content as text.
+//! Web fetch adapter -- fetch any URL and return clean, readable content.
 //!
 //! Features:
+//!   - **Readability extraction** via `readability` crate (like Mozilla Readability)
+//!   - **html2text fallback** for pages Readability cannot parse
+//!   - **SSRF protection** -- blocks requests to private/internal networks
+//!   - **In-memory LRU cache** (15 min TTL, 100 entries) via moka
 //!   - Real browser User-Agent to avoid being blocked
-//!   - Strips `<script>`, `<style>`, `<nav>`, `<header>`, `<footer>` before
-//!     extracting text from HTML
+//!   - Strips `<script>`, `<style>`, `<nav>`, `<noscript>` before extraction
 //!   - Collapses excessive whitespace for cleaner output
 //!   - Smart truncation at paragraph boundaries
 //!   - Automatic retry on transient failures
 
+use std::io::Cursor;
+use std::net::IpAddr;
+use std::time::Duration;
+
 use async_trait::async_trait;
+use moka::future::Cache;
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 
 use crate::error::{AdapterError, Result};
 use crate::traits::{Adapter, AdapterType, AuthRequirement, HealthStatus, ToolDefinition};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Constants
+// ═══════════════════════════════════════════════════════════════════════
 
 /// Default maximum content length in characters.
 const DEFAULT_MAX_LENGTH: usize = 80_000;
@@ -24,19 +36,29 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Maximum number of retries for transient failures.
 const MAX_RETRIES: u32 = 2;
 
+/// Maximum HTML size (in bytes) to feed into Readability.
+const READABILITY_MAX_HTML_BYTES: usize = 2_000_000;
+
+/// Cache TTL in minutes.
+const CACHE_TTL_MINUTES: u64 = 15;
+/// Maximum cached entries.
+const CACHE_MAX_ENTRIES: u64 = 100;
+
 /// Realistic browser User-Agent to avoid being blocked.
 const BROWSER_USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
      AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-/// Web fetch service adapter.
+// ═══════════════════════════════════════════════════════════════════════
+//  Adapter
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Web fetch service adapter with Readability extraction, SSRF guard, and caching.
 pub struct WebFetchAdapter {
-    /// Unique identifier for this adapter instance.
     id: String,
-    /// Whether the adapter has been connected.
     connected: bool,
-    /// HTTP client for making requests.
     client: reqwest::Client,
+    cache: Cache<String, Value>,
 }
 
 impl WebFetchAdapter {
@@ -44,19 +66,25 @@ impl WebFetchAdapter {
     pub fn new(id: impl Into<String>) -> Self {
         let client = reqwest::Client::builder()
             .user_agent(BROWSER_USER_AGENT)
-            .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .redirect(reqwest::redirect::Policy::limited(10))
             .build()
             .unwrap_or_default();
+
+        let cache = Cache::builder()
+            .max_capacity(CACHE_MAX_ENTRIES)
+            .time_to_live(Duration::from_secs(CACHE_TTL_MINUTES * 60))
+            .build();
 
         Self {
             id: id.into(),
             connected: false,
             client,
+            cache,
         }
     }
 
-    /// Fetch a URL and return its content with automatic retry.
+    /// Fetch a URL and return its content with cache-first, retry, and SSRF guard.
     async fn tool_web_fetch(&self, params: Value) -> Result<Value> {
         let url_str = params.get("url").and_then(|v| v.as_str()).ok_or_else(|| {
             AdapterError::InvalidParams {
@@ -72,10 +100,20 @@ impl WebFetchAdapter {
             .unwrap_or(DEFAULT_MAX_LENGTH);
 
         // Validate URL.
-        let _parsed_url = url::Url::parse(url_str).map_err(|e| AdapterError::InvalidParams {
+        let parsed_url = url::Url::parse(url_str).map_err(|e| AdapterError::InvalidParams {
             tool_name: "web_fetch".into(),
             reason: format!("invalid URL `{url_str}`: {e}"),
         })?;
+
+        // SSRF guard: block requests to private/internal networks.
+        check_ssrf(&parsed_url).await?;
+
+        // Check cache first.
+        let cache_key = url_str.to_string();
+        if let Some(cached) = self.cache.get(&cache_key).await {
+            debug!(url = url_str, "returning cached fetch result");
+            return Ok(cached);
+        }
 
         debug!(url = url_str, max_length, "fetching URL");
 
@@ -83,13 +121,16 @@ impl WebFetchAdapter {
         let mut last_error = None;
         for attempt in 0..=MAX_RETRIES {
             if attempt > 0 {
-                let delay = std::time::Duration::from_millis(500 * u64::from(attempt));
+                let delay = Duration::from_millis(500 * u64::from(attempt));
                 tokio::time::sleep(delay).await;
                 debug!(url = url_str, attempt, "retrying fetch");
             }
 
             match self.do_fetch(url_str, max_length).await {
-                Ok(result) => return Ok(result),
+                Ok(result) => {
+                    self.cache.insert(cache_key, result.clone()).await;
+                    return Ok(result);
+                }
                 Err(e) => {
                     warn!(url = url_str, attempt, error = %e, "fetch attempt failed");
                     last_error = Some(e);
@@ -108,7 +149,10 @@ impl WebFetchAdapter {
         let response = self
             .client
             .get(url_str)
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header(
+                "Accept",
+                "text/markdown, text/html;q=0.9, application/xhtml+xml;q=0.8, */*;q=0.1",
+            )
             .header("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7")
             .send()
             .await
@@ -124,7 +168,6 @@ impl WebFetchAdapter {
             });
         }
 
-        // Determine content type from the response headers.
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -140,24 +183,28 @@ impl WebFetchAdapter {
                 reason: format!("failed to read response body: {e}"),
             })?;
 
-        // Process content based on type.
-        let content = if content_type.contains("text/html") {
-            extract_text_from_html(&raw_body)
+        // Extract content based on type.
+        let (content, extractor) = if content_type.contains("text/markdown") {
+            // Cloudflare Markdown for Agents or similar.
+            (raw_body.clone(), "markdown-native")
+        } else if content_type.contains("text/html") {
+            extract_content_from_html(&raw_body, url_str)
         } else if content_type.contains("application/json") {
-            match serde_json::from_str::<Value>(&raw_body) {
+            let formatted = match serde_json::from_str::<Value>(&raw_body) {
                 Ok(parsed) => serde_json::to_string_pretty(&parsed).unwrap_or(raw_body),
                 Err(_) => raw_body,
-            }
+            };
+            (formatted, "json")
         } else {
-            raw_body
+            (raw_body, "raw")
         };
 
-        // Smart truncation.
         let (final_content, original_length) = smart_truncate(&content, max_length);
 
         debug!(
             url = url_str,
             content_type = content_type.as_str(),
+            extractor,
             original_length,
             final_length = final_content.len(),
             "fetch completed"
@@ -166,6 +213,7 @@ impl WebFetchAdapter {
         Ok(json!({
             "url": url_str,
             "content_type": content_type,
+            "extractor": extractor,
             "content": final_content,
             "length": original_length,
         }))
@@ -173,22 +221,145 @@ impl WebFetchAdapter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  HTML content extraction
+//  SSRF protection
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Extract readable text from HTML by removing scripts, styles, nav,
-/// header, footer, and then stripping remaining tags.
-fn extract_text_from_html(html: &str) -> String {
-    // 1. Remove <script>...</script>, <style>...</style>, and noise tags.
+/// Check if a URL targets a private/internal network and block it.
+async fn check_ssrf(url: &url::Url) -> Result<()> {
+    // Only allow http/https.
+    match url.scheme() {
+        "http" | "https" => {}
+        scheme => {
+            return Err(AdapterError::ExecutionFailed {
+                tool_name: "web_fetch".into(),
+                reason: format!("SSRF blocked: unsupported scheme `{scheme}`"),
+            });
+        }
+    }
+
+    let host = match url.host_str() {
+        Some(h) => h,
+        None => {
+            return Err(AdapterError::ExecutionFailed {
+                tool_name: "web_fetch".into(),
+                reason: "SSRF blocked: no host in URL".into(),
+            });
+        }
+    };
+
+    // Check if the host is directly an IP address.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if is_private_ip(ip) {
+            return Err(AdapterError::ExecutionFailed {
+                tool_name: "web_fetch".into(),
+                reason: format!("SSRF blocked: {host} is a private IP address"),
+            });
+        }
+        return Ok(());
+    }
+
+    // Resolve hostname and check all resulting IPs.
+    let port = url.port_or_known_default().unwrap_or(443);
+    let addr_str = format!("{host}:{port}");
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(&addr_str)
+        .await
+        .map_err(|e| AdapterError::ExecutionFailed {
+            tool_name: "web_fetch".into(),
+            reason: format!("DNS resolution failed for `{host}`: {e}"),
+        })?
+        .collect();
+
+    for addr in &addrs {
+        if is_private_ip(addr.ip()) {
+            return Err(AdapterError::ExecutionFailed {
+                tool_name: "web_fetch".into(),
+                reason: format!("SSRF blocked: {host} resolves to private IP {}", addr.ip()),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Check if an IP address is private, loopback, link-local, or otherwise internal.
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                // 100.64.0.0/10 (CGNAT / Shared Address Space)
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
+                // 192.0.0.0/24 (IETF Protocol Assignments)
+                || (v4.octets()[0] == 192 && v4.octets()[1] == 0 && v4.octets()[2] == 0)
+        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HTML content extraction (Readability -> html2text -> regex fallback)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Extract readable content from HTML using a multi-stage pipeline.
+/// Returns `(content, extractor_name)`.
+fn extract_content_from_html(html: &str, url_str: &str) -> (String, &'static str) {
+    // Guard: skip Readability for very large HTML.
+    if html.len() <= READABILITY_MAX_HTML_BYTES {
+        // Stage 1: Try Readability (highest quality -- like Mozilla Readability).
+        if let Some(text) = try_readability(html, url_str) {
+            if text.len() > 100 {
+                return (text, "readability");
+            }
+        }
+    }
+
+    // Stage 2: Try html2text (handles more edge cases than regex).
+    if let Some(text) = try_html2text(html) {
+        if text.len() > 50 {
+            return (text, "html2text");
+        }
+    }
+
+    // Stage 3: Regex-based fallback (always works).
+    let text = extract_text_regex(html);
+    (text, "regex")
+}
+
+/// Try extracting article content via the `readability` crate.
+fn try_readability(html: &str, url_str: &str) -> Option<String> {
+    let parsed_url = url::Url::parse(url_str).ok()?;
+    let mut cursor = Cursor::new(html.as_bytes());
+
+    match readability::extractor::extract(&mut cursor, &parsed_url) {
+        Ok(product) => {
+            let text = product.text.trim().to_string();
+            if text.is_empty() { None } else { Some(text) }
+        }
+        Err(e) => {
+            debug!("readability extraction failed: {e}");
+            None
+        }
+    }
+}
+
+/// Try converting HTML to text via the `html2text` crate.
+fn try_html2text(html: &str) -> Option<String> {
+    let text = html2text::from_read(html.as_bytes(), 120).ok()?;
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() { None } else { Some(trimmed) }
+}
+
+/// Regex-based fallback: strip scripts/styles/nav, remove tags, collapse whitespace.
+fn extract_text_regex(html: &str) -> String {
     let cleaned = remove_tag_blocks(html, "script");
     let cleaned = remove_tag_blocks(&cleaned, "style");
     let cleaned = remove_tag_blocks(&cleaned, "nav");
     let cleaned = remove_tag_blocks(&cleaned, "noscript");
 
-    // 2. Strip remaining HTML tags and decode entities.
     let text = strip_html_tags(&cleaned);
-
-    // 3. Collapse excessive whitespace.
     collapse_whitespace(&text)
 }
 
@@ -203,13 +374,10 @@ fn remove_tag_blocks(html: &str, tag: &str) -> String {
     while cursor < html.len() {
         if let Some(start) = lower[cursor..].find(&open_pattern) {
             let abs_start = cursor + start;
-            // Copy everything before the tag.
             result.push_str(&html[cursor..abs_start]);
-            // Find the closing tag.
             if let Some(end) = lower[abs_start..].find(&close_pattern) {
                 cursor = abs_start + end + close_pattern.len();
             } else {
-                // No closing tag found, skip to end.
                 cursor = html.len();
             }
         } else {
@@ -230,7 +398,6 @@ fn strip_html_tags(input: &str) -> String {
             '<' => inside_tag = true,
             '>' => {
                 inside_tag = false;
-                // Insert a space after closing tags to prevent word merging.
                 result.push(' ');
             }
             _ if !inside_tag => result.push(ch),
@@ -248,8 +415,7 @@ fn strip_html_tags(input: &str) -> String {
         .replace("&nbsp;", " ")
 }
 
-/// Collapse runs of whitespace into single spaces, and multiple newlines
-/// into double newlines (paragraph breaks).
+/// Collapse runs of whitespace into single spaces and limit consecutive newlines.
 fn collapse_whitespace(text: &str) -> String {
     let mut result = String::with_capacity(text.len() / 2);
     let mut prev_newline_count = 0u32;
@@ -283,14 +449,12 @@ fn collapse_whitespace(text: &str) -> String {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Truncate content intelligently at a paragraph or sentence boundary.
-/// Returns `(content, original_length)`.
 fn smart_truncate(content: &str, max_length: usize) -> (String, usize) {
     let original_length = content.len();
     if original_length <= max_length {
         return (content.to_string(), original_length);
     }
 
-    // Try to truncate at the last paragraph break before max_length.
     let search_region = &content[..max_length];
     let truncation_point = search_region
         .rfind("\n\n")
@@ -302,6 +466,10 @@ fn smart_truncate(content: &str, max_length: usize) -> (String, usize) {
     truncated.push_str("\n\n... [content truncated]");
     (truncated, original_length)
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Adapter trait implementation
+// ═══════════════════════════════════════════════════════════════════════
 
 #[async_trait]
 impl Adapter for WebFetchAdapter {
@@ -335,8 +503,11 @@ impl Adapter for WebFetchAdapter {
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![ToolDefinition {
             name: "web_fetch".into(),
-            description:
-                "Fetch a URL and return its content as text (HTML is automatically stripped)".into(),
+            description: "Fetch a URL and return its content as clean text. \
+                          Uses Readability extraction for article content, \
+                          html2text as fallback. Results are cached for 15 minutes. \
+                          Blocks requests to private/internal networks (SSRF protection)."
+                .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -346,7 +517,7 @@ impl Adapter for WebFetchAdapter {
                     },
                     "max_length": {
                         "type": "integer",
-                        "description": "Maximum content length in characters (default: 50000)"
+                        "description": "Maximum content length in characters (default: 80000)"
                     }
                 },
                 "required": ["url"]
@@ -375,9 +546,9 @@ impl Adapter for WebFetchAdapter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════
+//  Tests
+// ═══════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
@@ -395,10 +566,8 @@ mod tests {
     async fn web_fetch_adapter_connect_disconnect() {
         let mut adapter = WebFetchAdapter::new("wf-test");
         assert!(!adapter.connected);
-
         adapter.connect().await.unwrap();
         assert!(adapter.connected);
-
         adapter.disconnect().await.unwrap();
         assert!(!adapter.connected);
     }
@@ -445,6 +614,64 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    //  SSRF tests
+    // ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_private_ip_loopback() {
+        assert!(is_private_ip("127.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn is_private_ip_rfc1918() {
+        assert!(is_private_ip("10.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("172.16.0.1".parse().unwrap()));
+        assert!(is_private_ip("192.168.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn is_private_ip_link_local() {
+        assert!(is_private_ip("169.254.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn is_private_ip_public() {
+        assert!(!is_private_ip("8.8.8.8".parse().unwrap()));
+        assert!(!is_private_ip("1.1.1.1".parse().unwrap()));
+        assert!(!is_private_ip("203.0.113.1".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn ssrf_blocks_localhost() {
+        let url = url::Url::parse("http://127.0.0.1/admin").unwrap();
+        assert!(check_ssrf(&url).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ssrf_blocks_private_ip() {
+        let url = url::Url::parse("http://192.168.1.1/config").unwrap();
+        assert!(check_ssrf(&url).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ssrf_blocks_file_scheme() {
+        let url = url::Url::parse("file:///etc/passwd").unwrap();
+        assert!(check_ssrf(&url).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ssrf_allows_public_url() {
+        let url = url::Url::parse("https://example.com").unwrap();
+        // This should succeed (DNS for example.com resolves to public IP).
+        assert!(check_ssrf(&url).await.is_ok());
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  Content extraction tests
+    // ─────────────────────────────────────────────────────────────────
+
     #[test]
     fn strip_html_tags_removes_tags() {
         assert!(strip_html_tags("<p>Hello</p>").contains("Hello"));
@@ -475,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_text_from_html_full_pipeline() {
+    fn extract_text_regex_full_pipeline() {
         let html = r#"
         <html>
         <head><style>body{}</style><script>var x=1;</script></head>
@@ -485,11 +712,48 @@ mod tests {
         <p>Second paragraph.</p>
         </body>
         </html>"#;
-        let text = extract_text_from_html(html);
+        let text = extract_text_regex(html);
         assert!(text.contains("Main content"));
         assert!(text.contains("Second paragraph"));
         assert!(!text.contains("var x=1"));
         assert!(!text.contains("body{}"));
+    }
+
+    #[test]
+    fn readability_extracts_article() {
+        let html = r#"<!DOCTYPE html>
+        <html><head><title>Test Article</title></head>
+        <body>
+        <nav><a href="/">Home</a><a href="/about">About</a></nav>
+        <article>
+        <h1>Test Article Title</h1>
+        <p>This is the main article content. It contains several sentences
+        to ensure that the readability algorithm identifies it as the primary
+        content block. The article discusses important topics that are
+        relevant to the reader.</p>
+        <p>Here is a second paragraph with additional details. The content
+        continues with more information that helps establish this as the
+        main body of the page rather than navigation or sidebar content.</p>
+        </article>
+        <footer>Copyright 2025</footer>
+        </body></html>"#;
+        let (content, extractor) = extract_content_from_html(html, "https://example.com/article");
+        assert!(
+            content.contains("main article content"),
+            "content should contain article text, got: {content}"
+        );
+        // Should use readability or html2text, not regex.
+        assert!(extractor == "readability" || extractor == "html2text");
+    }
+
+    #[test]
+    fn html2text_works_as_fallback() {
+        let html = "<h1>Title</h1><p>Paragraph one.</p><p>Paragraph two.</p>";
+        let result = try_html2text(html);
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(text.contains("Title"));
+        assert!(text.contains("Paragraph one"));
     }
 
     #[test]
@@ -513,7 +777,15 @@ mod tests {
         let (content, len) = smart_truncate(text, 40);
         assert_eq!(len, text.len());
         assert!(content.contains("[content truncated]"));
-        // Should truncate at paragraph boundary.
         assert!(content.contains("First paragraph."));
+    }
+
+    #[tokio::test]
+    async fn cache_stores_and_retrieves() {
+        let adapter = WebFetchAdapter::new("wf-test");
+        let key = "https://example.com".to_string();
+        let val = json!({"url": "https://example.com", "content": "cached"});
+        adapter.cache.insert(key.clone(), val.clone()).await;
+        assert_eq!(adapter.cache.get(&key).await, Some(val));
     }
 }

@@ -23,6 +23,10 @@ tokio-native-tls = "0.3"
 native-tls = "0.2"
 base64 = { workspace = true }
 futures = { workspace = true }
+moka = { workspace = true }
+readability = { version = "0.3", default-features = false }
+html2text = "0.16"
+regex = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -1,12 +1,20 @@
-//! Web search adapter -- multi-engine web search with automatic fallback.
+//! Web search adapter -- multi-engine web search with caching and fallback.
 //!
 //! Search priority:
-//!   1. Brave Search API (if `BRAVE_API_KEY` is set) -- best quality
-//!   2. DuckDuckGo HTML scraping (no key needed) -- fallback
+//!   1. Brave Search API (if `BRAVE_API_KEY` is set) -- best structured results
+//!   2. Perplexity Sonar (if `PERPLEXITY_API_KEY` is set) -- AI-synthesized
+//!   3. DuckDuckGo HTML scraping (no key needed) -- universal fallback
 //!
-//! Both backends return unified JSON results with title, URL, and snippet.
+//! Features:
+//!   - In-memory LRU cache (15 min TTL, 100 entries) via moka
+//!   - Real browser User-Agent to avoid blocking
+//!   - DDG tracking URL cleaning and percent-decoding
+//!   - Automatic engine fallback on failure
+
+use std::time::Duration;
 
 use async_trait::async_trait;
+use moka::future::Cache;
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 
@@ -17,16 +25,16 @@ use crate::traits::{Adapter, AdapterType, AuthRequirement, HealthStatus, ToolDef
 //  Constants
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Default maximum number of search results to return.
 const DEFAULT_MAX_RESULTS: usize = 10;
-
-/// DuckDuckGo HTML search endpoint.
 const DUCKDUCKGO_HTML_URL: &str = "https://html.duckduckgo.com/html/";
-
-/// Brave Search API endpoint.
 const BRAVE_SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/search";
+const PERPLEXITY_API_URL: &str = "https://api.perplexity.ai/chat/completions";
 
-/// Realistic browser User-Agent to avoid being blocked.
+/// Cache TTL in minutes.
+const CACHE_TTL_MINUTES: u64 = 15;
+/// Maximum cached entries.
+const CACHE_MAX_ENTRIES: u64 = 100;
+
 const BROWSER_USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
      AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -35,13 +43,15 @@ const BROWSER_USER_AGENT: &str =
 //  Adapter
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Web search service adapter with multi-engine support.
+/// Web search service adapter with multi-engine support and caching.
 pub struct WebSearchAdapter {
     id: String,
     connected: bool,
     client: reqwest::Client,
-    /// Brave Search API key (if available).
     brave_api_key: Option<String>,
+    perplexity_api_key: Option<String>,
+    /// In-memory LRU cache for search results.
+    cache: Cache<String, Value>,
 }
 
 impl WebSearchAdapter {
@@ -49,23 +59,30 @@ impl WebSearchAdapter {
     pub fn new(id: impl Into<String>) -> Self {
         let client = reqwest::Client::builder()
             .user_agent(BROWSER_USER_AGENT)
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
 
-        let brave_api_key = std::env::var("BRAVE_API_KEY")
-            .ok()
-            .filter(|k| !k.is_empty());
+        let brave_api_key = env_non_empty("BRAVE_API_KEY");
+        let perplexity_api_key =
+            env_non_empty("PERPLEXITY_API_KEY").or_else(|| env_non_empty("OPENROUTER_API_KEY"));
+
+        let cache = Cache::builder()
+            .max_capacity(CACHE_MAX_ENTRIES)
+            .time_to_live(Duration::from_secs(CACHE_TTL_MINUTES * 60))
+            .build();
 
         Self {
             id: id.into(),
             connected: false,
             client,
             brave_api_key,
+            perplexity_api_key,
+            cache,
         }
     }
 
-    /// Execute a web search, trying Brave first then falling back to DDG.
+    /// Execute a web search with cache-first strategy.
     async fn tool_web_search(&self, params: Value) -> Result<Value> {
         let query = params
             .get("query")
@@ -81,21 +98,50 @@ impl WebSearchAdapter {
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_MAX_RESULTS);
 
+        // Check cache first.
+        let cache_key = format!("{}:{}", query.to_lowercase().trim(), max_results);
+        if let Some(cached) = self.cache.get(&cache_key).await {
+            debug!(query, "returning cached search results");
+            return Ok(cached);
+        }
+
         debug!(query, max_results, "performing web search");
 
-        // Try Brave Search API first (higher quality).
+        // Try engines in priority order.
+        let result = self.search_with_fallback(query, max_results).await?;
+
+        // Store in cache.
+        self.cache.insert(cache_key, result.clone()).await;
+
+        Ok(result)
+    }
+
+    /// Try engines in priority order with automatic fallback.
+    async fn search_with_fallback(&self, query: &str, max_results: usize) -> Result<Value> {
+        // 1. Brave Search API (best structured results).
         if let Some(ref api_key) = self.brave_api_key {
             match self.search_brave(query, max_results, api_key).await {
                 Ok(results) if !results.is_empty() => {
                     debug!(count = results.len(), engine = "brave", "search completed");
                     return Ok(json!({ "engine": "brave", "results": results }));
                 }
-                Ok(_) => debug!("Brave returned no results, falling back to DuckDuckGo"),
-                Err(e) => warn!(error = %e, "Brave Search failed, falling back"),
+                Ok(_) => debug!("Brave returned no results, trying next engine"),
+                Err(e) => warn!(error = %e, "Brave Search failed, trying next engine"),
             }
         }
 
-        // Fallback: DuckDuckGo HTML scraping.
+        // 2. Perplexity Sonar (AI-synthesized answer with citations).
+        if let Some(ref api_key) = self.perplexity_api_key {
+            match self.search_perplexity(query, api_key).await {
+                Ok(result) => {
+                    debug!(engine = "perplexity", "search completed");
+                    return Ok(result);
+                }
+                Err(e) => warn!(error = %e, "Perplexity failed, falling back to DuckDuckGo"),
+            }
+        }
+
+        // 3. DuckDuckGo HTML scraping (universal fallback, no key needed).
         let results = self.search_duckduckgo(query, max_results).await?;
         debug!(count = results.len(), engine = "duckduckgo", "search completed");
 
@@ -162,11 +208,76 @@ impl WebSearchAdapter {
     }
 
     // ───────────────────────────────────────────────────────────────────
+    //  Perplexity Sonar (AI search with citations)
+    // ───────────────────────────────────────────────────────────────────
+
+    async fn search_perplexity(&self, query: &str, api_key: &str) -> Result<Value> {
+        let body = json!({
+            "model": "sonar",
+            "messages": [{"role": "user", "content": query}],
+            "return_citations": true,
+        });
+
+        let response = self
+            .client
+            .post(PERPLEXITY_API_URL)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AdapterError::ExecutionFailed {
+                tool_name: "web_search".into(),
+                reason: format!("Perplexity request failed: {e}"),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(AdapterError::ExecutionFailed {
+                tool_name: "web_search".into(),
+                reason: format!("Perplexity returned status {}", response.status()),
+            });
+        }
+
+        let data: Value = response.json().await.map_err(|e| {
+            AdapterError::ExecutionFailed {
+                tool_name: "web_search".into(),
+                reason: format!("failed to parse Perplexity response: {e}"),
+            }
+        })?;
+
+        // Extract the synthesized answer.
+        let answer = data
+            .pointer("/choices/0/message/content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Extract citations as structured results.
+        let mut results = Vec::new();
+        if let Some(citations) = data.get("citations").and_then(|v| v.as_array()) {
+            for citation in citations {
+                if let Some(url) = citation.as_str() {
+                    results.push(json!({
+                        "title": "",
+                        "url": url,
+                        "snippet": "",
+                    }));
+                }
+            }
+        }
+
+        Ok(json!({
+            "engine": "perplexity",
+            "answer": answer,
+            "results": results,
+        }))
+    }
+
+    // ───────────────────────────────────────────────────────────────────
     //  DuckDuckGo HTML scraping
     // ───────────────────────────────────────────────────────────────────
 
     async fn search_duckduckgo(&self, query: &str, max_results: usize) -> Result<Vec<Value>> {
-        // POST with form data is more reliable than GET for DDG.
         let response = self
             .client
             .post(DUCKDUCKGO_HTML_URL)
@@ -194,6 +305,11 @@ impl WebSearchAdapter {
 
         Ok(parse_duckduckgo_results(&html, max_results))
     }
+}
+
+/// Read a non-empty environment variable.
+fn env_non_empty(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -350,12 +466,16 @@ impl Adapter for WebSearchAdapter {
     }
 
     async fn connect(&mut self) -> Result<()> {
-        let engine = if self.brave_api_key.is_some() {
-            "brave+duckduckgo"
-        } else {
-            "duckduckgo"
-        };
-        info!(id = %self.id, engine, "web search adapter connected");
+        let engines: Vec<&str> = [
+            self.brave_api_key.as_ref().map(|_| "brave"),
+            self.perplexity_api_key.as_ref().map(|_| "perplexity"),
+            Some("duckduckgo"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let engine_str = engines.join("+");
+        info!(id = %self.id, engines = %engine_str, "web search adapter connected");
         self.connected = true;
         Ok(())
     }
@@ -389,8 +509,9 @@ impl Adapter for WebSearchAdapter {
         vec![ToolDefinition {
             name: "web_search".into(),
             description: "Search the web and return titles, URLs, and snippets. \
-                          Uses Brave Search (if BRAVE_API_KEY is set) with \
-                          DuckDuckGo as fallback. Returns up to 10 results by default."
+                          Uses Brave Search, Perplexity Sonar, or DuckDuckGo \
+                          depending on available API keys. Results are cached \
+                          for 15 minutes. Returns up to 10 results by default."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -478,6 +599,16 @@ mod tests {
         adapter.connect().await.unwrap();
         let result = adapter.execute_tool("nonexistent", json!({})).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn web_search_cache_returns_same_result() {
+        let adapter = WebSearchAdapter::new("ws-test");
+        let key = "test:10".to_string();
+        let val = json!({"engine": "test", "results": []});
+        adapter.cache.insert(key.clone(), val.clone()).await;
+        let cached = adapter.cache.get(&key).await;
+        assert_eq!(cached, Some(val));
     }
 
     #[test]
