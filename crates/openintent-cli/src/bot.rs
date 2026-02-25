@@ -476,7 +476,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             // after a restart, load recent history from the database so
             // the agent has context from previous interactions.
             if !chat_histories.contains_key(&chat_id) {
-                if let Ok(msgs) = sessions.get_messages(&session_key, Some(40)).await {
+                if let Ok(msgs) = sessions.get_messages(&session_key, Some(100)).await {
                     let restored: Vec<Message> = msgs
                         .into_iter()
                         .filter(|m| m.role == "user" || m.role == "assistant")
@@ -612,11 +612,11 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             typing_cancel.notify_one();
             let _ = typing_handle.await;
 
-            // Update chat history (keep last 20 exchanges).
+            // Update chat history (keep last 50 exchanges = 100 messages).
             history.push(Message::user(text));
             history.push(Message::assistant(&reply_text));
-            if history.len() > 40 {
-                let drain_count = history.len() - 40;
+            if history.len() > 100 {
+                let drain_count = history.len() - 100;
                 history.drain(..drain_count);
             }
 
