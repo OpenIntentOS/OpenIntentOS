@@ -347,6 +347,35 @@ fn parse_yaml_value(s: &str) -> serde_json::Value {
         return serde_json::Value::String(s[1..s.len() - 1].to_owned());
     }
 
+    // Inline YAML flow sequence: `[item1, item2, ...]`
+    // Supports both JSON-quoted `["a", "b"]` and unquoted YAML `[a, b]`.
+    if s.starts_with('[') && s.ends_with(']') {
+        // Try direct JSON parse first (handles quoted strings).
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+            return v;
+        }
+        // Fall back: parse as comma-separated unquoted items.
+        let inner = s[1..s.len() - 1].trim();
+        if inner.is_empty() {
+            return serde_json::Value::Array(Vec::new());
+        }
+        let items: Vec<serde_json::Value> = inner
+            .split(',')
+            .map(|item| {
+                let item = item.trim().trim_matches('"').trim_matches('\'');
+                serde_json::Value::String(item.to_owned())
+            })
+            .collect();
+        return serde_json::Value::Array(items);
+    }
+
+    // Inline JSON object: `{key: val, ...}`
+    if s.starts_with('{') && s.ends_with('}') {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+            return v;
+        }
+    }
+
     // Boolean.
     match s {
         "true" | "yes" | "on" => return serde_json::Value::Bool(true),
@@ -485,6 +514,35 @@ Just do the thing.
         let items = v["items"].as_array().unwrap();
         assert_eq!(items.len(), 3);
         assert_eq!(items[0], "one");
+    }
+
+    #[test]
+    fn yaml_inline_array_quoted() {
+        let yaml = r#"tags: ["oauth", "email", "auth"]"#;
+        let json = yaml_to_json(yaml).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let tags = v["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 3);
+        assert_eq!(tags[0], "oauth");
+        assert_eq!(tags[2], "auth");
+    }
+
+    #[test]
+    fn yaml_inline_array_unquoted() {
+        let yaml = "tags: [email, automation, productivity]";
+        let json = yaml_to_json(yaml).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let tags = v["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 3);
+        assert_eq!(tags[0], "email");
+    }
+
+    #[test]
+    fn yaml_inline_empty_array() {
+        let yaml = "env: []";
+        let json = yaml_to_json(yaml).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(v["env"].as_array().unwrap().is_empty());
     }
 
     #[test]
