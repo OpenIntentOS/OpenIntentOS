@@ -14,6 +14,7 @@ mod bridge;
 mod cli;
 mod dev_commands;
 mod dev_worker;
+mod failover;
 mod helpers;
 mod intent_classifier;
 mod messages;

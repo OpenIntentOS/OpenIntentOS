@@ -4,10 +4,13 @@
 
 use std::sync::Arc;
 
-use openintent_agent::{ChatRequest, LlmClient, LlmResponse, Message};
+use openintent_agent::{
+    AgentContext, ChatRequest, LlmClient, LlmResponse, Message, react_loop,
+};
 use openintent_store::SessionStore;
 use tracing::info;
 
+use crate::failover::{self, FailoverManager};
 use crate::messages::{self, Messages, keys};
 
 /// Split a message into chunks that fit within Telegram's character limit.
@@ -181,4 +184,157 @@ async fn get_chat_language(
     // notifications. Once the user sends a message, their language
     // is detected and used for subsequent messages.
     "en".to_string()
+}
+
+/// Handle an expired OAuth token: refresh from Keychain, fall back to
+/// DeepSeek, and retry the agent loop.
+///
+/// Returns the reply text from the retry, or a translated error message.
+pub async fn handle_auth_error(
+    ctx: &AgentContext,
+    llm: &Arc<LlmClient>,
+    adapters: &[Arc<dyn openintent_agent::ToolAdapter>],
+    user_lang: &str,
+    msgs: &Messages,
+    model: &str,
+    chat_id: i64,
+) -> String {
+    tracing::warn!("OAuth token expired, attempting refresh from Keychain");
+
+    // Try 1: refresh from Keychain.
+    let refreshed =
+        if let Some(new_token) = crate::helpers::read_claude_code_keychain_token() {
+            llm.update_api_key(new_token);
+            tracing::info!("OAuth token refreshed from Keychain, retrying");
+            true
+        } else {
+            false
+        };
+
+    // Try 2: if Keychain failed, fall back to DeepSeek.
+    if !refreshed {
+        if let Some(ds_key) = crate::helpers::env_non_empty("DEEPSEEK_API_KEY") {
+            tracing::warn!("Keychain refresh failed, falling back to DeepSeek");
+            llm.update_api_key(ds_key);
+            llm.switch_provider(
+                openintent_agent::LlmProvider::OpenAI,
+                "https://api.deepseek.com/v1".to_owned(),
+                "deepseek-chat".to_owned(),
+            );
+        } else {
+            tracing::error!(
+                "no fallback: Keychain refresh failed and DEEPSEEK_API_KEY not set"
+            );
+            return msgs
+                .get_translated(keys::ERROR_GENERAL, &[], user_lang, llm, model)
+                .await;
+        }
+    }
+
+    // Retry with refreshed/fallback credentials.
+    let retry_config = ctx.config.clone();
+    let mut retry_ctx = AgentContext::new(llm.clone(), adapters.to_vec(), retry_config);
+    retry_ctx.messages = ctx.messages.clone();
+
+    match react_loop(&mut retry_ctx).await {
+        Ok(response) => {
+            info!(
+                chat_id,
+                turns = response.turns_used,
+                "agent completed (after token refresh)"
+            );
+            response.text
+        }
+        Err(retry_err) => {
+            tracing::error!(error = %retry_err, "agent error after token refresh");
+            msgs.get_translated(keys::ERROR_GENERAL, &[], user_lang, llm, model)
+                .await
+        }
+    }
+}
+
+/// Result of a cascading failover attempt.
+pub struct CascadeResult {
+    /// The reply text (if a provider succeeded), or None if all exhausted.
+    pub reply: Option<String>,
+    /// The model that ended up being used (may differ from the starting model).
+    pub final_model: String,
+    /// Whether all providers were exhausted (need to restore primary).
+    pub all_exhausted: bool,
+}
+
+/// Cascade through failover providers, retrying the agent loop with each
+/// until one succeeds or all are exhausted.
+///
+/// Sends Telegram notifications to the user for each automatic switch.
+pub async fn handle_cascade_failover(
+    ctx: &AgentContext,
+    llm: &Arc<LlmClient>,
+    adapters: &[Arc<dyn openintent_agent::ToolAdapter>],
+    failover_mgr: &mut FailoverManager,
+    current_model: &str,
+    chat_id: i64,
+    http: &reqwest::Client,
+    telegram_api: &str,
+) -> CascadeResult {
+    let mut model = current_model.to_string();
+
+    while let Some(fo) = failover_mgr.try_failover(&model, llm) {
+        let old_model = model.clone();
+        model = fo.model.clone();
+
+        // Notify user about the automatic switch.
+        let notice = format!(
+            "Rate limit on `{}`. Auto-switched to **{}** (`{}`).",
+            old_model, fo.provider_name, fo.model
+        );
+        let _ = http
+            .post(format!("{telegram_api}/sendMessage"))
+            .json(&serde_json::json!({
+                "chat_id": chat_id,
+                "text": notice,
+                "parse_mode": "Markdown",
+            }))
+            .send()
+            .await;
+
+        // Retry with the new provider.
+        let mut retry_config = ctx.config.clone();
+        retry_config.model = model.clone();
+        let mut retry_ctx =
+            AgentContext::new(llm.clone(), adapters.to_vec(), retry_config);
+        retry_ctx.messages = ctx.messages.clone();
+
+        match react_loop(&mut retry_ctx).await {
+            Ok(response) => {
+                info!(
+                    chat_id,
+                    turns = response.turns_used,
+                    new_model = %model,
+                    "agent completed (after cascading failover)"
+                );
+                return CascadeResult {
+                    reply: Some(response.text),
+                    final_model: model,
+                    all_exhausted: false,
+                };
+            }
+            Err(retry_err) => {
+                let retry_str = retry_err.to_string();
+                tracing::warn!(
+                    error = %retry_str,
+                    provider = fo.provider_name,
+                    "failover provider also failed, trying next"
+                );
+                failover_mgr.mark_rate_limited(&fo.model);
+            }
+        }
+    }
+
+    tracing::error!("all fallback providers exhausted");
+    CascadeResult {
+        reply: None,
+        final_model: model,
+        all_exhausted: true,
+    }
 }

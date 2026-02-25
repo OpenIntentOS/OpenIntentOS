@@ -200,6 +200,18 @@ impl LlmClient {
         }
     }
 
+    /// Reset all runtime overrides back to the original config defaults.
+    /// This is used after a failover cascade exhausts all providers, so the
+    /// client returns to its initial (primary) state.
+    pub fn restore_defaults(&self) {
+        if let Ok(mut o) = self.overrides.write() {
+            o.provider = None;
+            o.base_url = None;
+            o.default_model = None;
+            o.api_key = self.config.api_key.clone();
+        }
+    }
+
     /// Read the current API key (snapshot).
     fn current_api_key(&self) -> String {
         self.overrides

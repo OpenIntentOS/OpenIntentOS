@@ -17,9 +17,10 @@ use openintent_agent::{
 use openintent_store::{BotStateStore, DevTaskStore, SessionStore};
 
 use crate::adapters::init_adapters;
-use crate::bot_helpers::{send_startup_notification, split_telegram_message};
+use crate::bot_helpers::{handle_auth_error, send_startup_notification, split_telegram_message};
 use crate::dev_commands;
 use crate::dev_worker::{DevWorker, ProgressCallback};
+use crate::failover::{self, FailoverManager};
 use crate::helpers::{env_non_empty, init_tracing, load_system_prompt, resolve_llm_config};
 use crate::messages::{self, Messages, keys, safe_prefix};
 
@@ -95,8 +96,13 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
 
     let llm_config = resolve_llm_config();
     let provider_label = format!("{:?}", llm_config.provider);
-    let mut model = llm_config.default_model.clone();
+    let primary_model = llm_config.default_model.clone();
+    let mut model = primary_model.clone();
     let llm = Arc::new(LlmClient::new(llm_config).context("failed to create LLM client")?);
+
+    // Per-chat model alias. Maps chat_id → alias string (e.g. "gemini-flash").
+    // Used to re-apply model switches after failover resets.
+    let mut chat_model_alias: HashMap<i64, String> = HashMap::new();
 
     let sessions = SessionStore::new(db.clone());
 
@@ -233,6 +239,9 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     // Per-chat user language (from Telegram's language_code).
     let mut user_languages: HashMap<i64, String> = HashMap::new();
 
+    // Rate-limit failover manager — tracks cooldowns and switches providers.
+    let mut failover_mgr = FailoverManager::new();
+
     // Polling loop -- restore offset from persistent state.
     let mut offset: i64 = bot_state
         .get_i64("telegram_offset")
@@ -312,6 +321,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                         crate::model_switch::try_switch_model(&synthetic, &llm)
                     {
                         model = switch_result.model.clone();
+                        chat_model_alias.insert(cb_chat_id, synthetic);
                         let reply = format!(
                             "Switched to **{}** (`{}`)",
                             switch_result.provider_name, switch_result.model
@@ -554,6 +564,8 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             // Handle model switching (natural language or /model command).
             if let Some(switch_result) = crate::model_switch::try_switch_model(text, &llm) {
                 model = switch_result.model.clone();
+                // Store the alias so we can re-apply after failover resets.
+                chat_model_alias.insert(chat_id, text.to_string());
                 let reply = format!(
                     "Switched to **{}** (`{}`)",
                     switch_result.provider_name, switch_result.model
@@ -574,6 +586,19 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                     .send()
                     .await;
                 continue;
+            }
+
+            // Re-apply per-chat model override. This ensures the global LLM
+            // client points to the right provider even if a previous failover
+            // cascade reset it to defaults.
+            if let Some(alias_cmd) = chat_model_alias.get(&chat_id) {
+                if let Some(sw) = crate::model_switch::try_switch_model(alias_cmd, &llm) {
+                    model = sw.model.clone();
+                }
+            } else {
+                // No per-chat override: ensure we're on the primary provider.
+                llm.restore_defaults();
+                model = primary_model.clone();
             }
 
             // Check for mid-task message injection (non-blocking).
@@ -775,130 +800,30 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 Err(e) => {
                     let err_str = e.to_string();
 
-                    // Handle expired OAuth token: re-read from Keychain, or fall back to DeepSeek.
-                    if err_str.contains("401 Unauthorized")
-                        || err_str.contains("authentication_error")
-                        || err_str.contains("token has expired")
-                    {
-                        tracing::warn!("OAuth token expired, attempting refresh from Keychain");
+                    // -------------------------------------------------------
+                    // Handle provider-level errors (429 rate limit, 404 model
+                    // not found, 502/503, etc.).  Cascade through all fallback
+                    // providers until one succeeds or all are exhausted.
+                    // -------------------------------------------------------
+                    if failover::is_provider_error(&err_str) {
+                        tracing::warn!(error = %err_str, "provider error, attempting cascading failover");
+                        failover_mgr.mark_rate_limited(&model);
 
-                        // Try 1: refresh from Keychain.
-                        let refreshed = if let Some(new_token) =
-                            crate::helpers::read_claude_code_keychain_token()
-                        {
-                            llm.update_api_key(new_token);
-                            tracing::info!("OAuth token refreshed from Keychain, retrying");
-                            true
+                        let cr = crate::bot_helpers::handle_cascade_failover(
+                            &ctx, &llm, &adapters, &mut failover_mgr,
+                            &model, chat_id, &http, &telegram_api,
+                        )
+                        .await;
+                        model = cr.final_model;
+
+                        if let Some(text) = cr.reply {
+                            text
                         } else {
-                            false
-                        };
-
-                        // Try 2: if Keychain failed, fall back to DeepSeek.
-                        if !refreshed {
-                            if let Some(ds_key) = crate::helpers::env_non_empty("DEEPSEEK_API_KEY")
-                            {
-                                tracing::warn!(
-                                    "Keychain refresh failed, falling back to DeepSeek"
-                                );
-                                llm.update_api_key(ds_key);
-                                llm.switch_provider(
-                                    openintent_agent::LlmProvider::OpenAI,
-                                    "https://api.deepseek.com/v1".to_owned(),
-                                    "deepseek-chat".to_owned(),
-                                );
-                            } else {
-                                tracing::error!(
-                                    "no fallback: Keychain refresh failed and DEEPSEEK_API_KEY not set"
-                                );
-                                msgs.get_translated(
-                                    keys::ERROR_GENERAL,
-                                    &[],
-                                    &user_lang,
-                                    &llm,
-                                    &model,
-                                )
-                                .await;
-                            }
-                        }
-
-                        // Retry with refreshed/fallback credentials.
-                        let retry_config = ctx.config.clone();
-                        let mut retry_ctx =
-                            AgentContext::new(llm.clone(), adapters.clone(), retry_config);
-                        retry_ctx.messages = ctx.messages.clone();
-
-                        match react_loop(&mut retry_ctx).await {
-                            Ok(response) => {
-                                info!(chat_id, turns = response.turns_used, "agent completed (after token refresh)");
-                                response.text
-                            }
-                            Err(retry_err) => {
-                                tracing::error!(error = %retry_err, "agent error after token refresh");
-                                msgs.get_translated(
-                                    keys::ERROR_GENERAL,
-                                    &[],
-                                    &user_lang,
-                                    &llm,
-                                    &model,
-                                )
-                                .await
-                            }
-                        }
-                    } else {
-                    tracing::error!(error = %e, "agent error");
-
-                    // Attempt self-repair for code bugs.
-                    let notifier = crate::self_repair::TelegramNotifier::new(
-                        http.clone(),
-                        telegram_api.clone(),
-                        chat_id,
-                        user_lang.clone(),
-                        msgs.clone(),
-                        llm.clone(),
-                        model.clone(),
-                    );
-                    let repair_outcome = crate::self_repair::attempt_repair(
-                        &e,
-                        text,
-                        &notifier,
-                        &llm,
-                        &adapters,
-                        &model,
-                        &repo_path,
-                    )
-                    .await;
-
-                    match repair_outcome {
-                        crate::self_repair::RepairOutcome::Fixed {
-                            commit_hash,
-                            summary,
-                        } => {
-                            let _ = commit_hash;
-                            let msg = msgs
-                                .get_translated(
-                                    keys::REPAIR_SUCCESS,
-                                    &[("summary", &summary)],
-                                    &user_lang,
-                                    &llm,
-                                    &model,
-                                )
-                                .await;
-                            notifier.send_raw(&msg).await;
-
-                            // Persist history before restart.
-                            let _ = sessions
-                                .append_message(&session_key, "assistant", &msg, None, None)
-                                .await;
-
-                            // Restart the process with the new binary.
-                            crate::self_repair::restart_process();
-                        }
-                        crate::self_repair::RepairOutcome::NotACodeBug => {
-                            tracing::debug!(error = %e, "not a code bug, skipping self-repair");
-                            if let Some(ref evo) = evolution {
-                                let mut evo = evo.lock().await;
-                                let _ = evo.report_error(text, "telegram", &e).await;
-                            }
+                            // All providers exhausted — restore primary so
+                            // subsequent messages don't stay stuck.
+                            llm.restore_defaults();
+                            model = primary_model.clone();
+                            chat_model_alias.remove(&chat_id);
                             msgs.get_translated(
                                 keys::ERROR_GENERAL,
                                 &[],
@@ -908,23 +833,103 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                             )
                             .await
                         }
-                        crate::self_repair::RepairOutcome::Failed { reason } => {
-                            tracing::warn!(reason = %reason, "self-repair failed");
-                            if let Some(ref evo) = evolution {
-                                let mut evo = evo.lock().await;
-                                let _ = evo.report_error(text, "telegram", &e).await;
+
+                    // -------------------------------------------------------
+                    // Handle expired OAuth token: re-read from Keychain, or
+                    // fall back to DeepSeek.
+                    // -------------------------------------------------------
+                    } else if err_str.contains("401 Unauthorized")
+                        || err_str.contains("authentication_error")
+                        || err_str.contains("token has expired")
+                    {
+                        handle_auth_error(
+                            &ctx, &llm, &adapters, &user_lang, &msgs, &model, chat_id,
+                        )
+                        .await
+
+                    // -------------------------------------------------------
+                    // All other errors: attempt self-repair for code bugs.
+                    // -------------------------------------------------------
+                    } else {
+                        tracing::error!(error = %e, "agent error");
+
+                        let notifier = crate::self_repair::TelegramNotifier::new(
+                            http.clone(),
+                            telegram_api.clone(),
+                            chat_id,
+                            user_lang.clone(),
+                            msgs.clone(),
+                            llm.clone(),
+                            model.clone(),
+                        );
+                        let repair_outcome = crate::self_repair::attempt_repair(
+                            &e,
+                            text,
+                            &notifier,
+                            &llm,
+                            &adapters,
+                            &model,
+                            &repo_path,
+                        )
+                        .await;
+
+                        match repair_outcome {
+                            crate::self_repair::RepairOutcome::Fixed {
+                                commit_hash,
+                                summary,
+                            } => {
+                                let _ = commit_hash;
+                                let msg = msgs
+                                    .get_translated(
+                                        keys::REPAIR_SUCCESS,
+                                        &[("summary", &summary)],
+                                        &user_lang,
+                                        &llm,
+                                        &model,
+                                    )
+                                    .await;
+                                notifier.send_raw(&msg).await;
+
+                                // Persist history before restart.
+                                let _ = sessions
+                                    .append_message(&session_key, "assistant", &msg, None, None)
+                                    .await;
+
+                                // Restart the process with the new binary.
+                                crate::self_repair::restart_process();
                             }
-                            msgs.get_translated(
-                                keys::ERROR_REPAIR_FAILED,
-                                &[],
-                                &user_lang,
-                                &llm,
-                                &model,
-                            )
-                            .await
+                            crate::self_repair::RepairOutcome::NotACodeBug => {
+                                tracing::debug!(error = %e, "not a code bug, skipping self-repair");
+                                if let Some(ref evo) = evolution {
+                                    let mut evo = evo.lock().await;
+                                    let _ = evo.report_error(text, "telegram", &e).await;
+                                }
+                                msgs.get_translated(
+                                    keys::ERROR_GENERAL,
+                                    &[],
+                                    &user_lang,
+                                    &llm,
+                                    &model,
+                                )
+                                .await
+                            }
+                            crate::self_repair::RepairOutcome::Failed { reason } => {
+                                tracing::warn!(reason = %reason, "self-repair failed");
+                                if let Some(ref evo) = evolution {
+                                    let mut evo = evo.lock().await;
+                                    let _ = evo.report_error(text, "telegram", &e).await;
+                                }
+                                msgs.get_translated(
+                                    keys::ERROR_REPAIR_FAILED,
+                                    &[],
+                                    &user_lang,
+                                    &llm,
+                                    &model,
+                                )
+                                .await
+                            }
                         }
                     }
-                    } // end else (non-auth errors)
                 }
             };
 
