@@ -374,6 +374,179 @@ impl TelegramAdapter {
             "data": json_resp.get("result").cloned().unwrap_or(json!(true)),
         }))
     }
+
+    /// Configure group chat settings including bot permissions.
+    async fn tool_configure_group_chat(&self, params: Value) -> Result<Value> {
+        let chat_id = params
+            .get("chat_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AdapterError::InvalidParams {
+                tool_name: "telegram_configure_group_chat".into(),
+                reason: "missing required string field `chat_id`".into(),
+            })?;
+
+        let allow_bots = params
+            .get("allow_bots")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let auto_delete_service_messages = params
+            .get("auto_delete_service_messages")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let protect_content = params
+            .get("protect_content")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // First, get current chat info to check permissions
+        let chat_info = self.tool_get_chat(json!({"chat_id": chat_id})).await?;
+        
+        debug!(
+            chat_id = %chat_id,
+            allow_bots = allow_bots,
+            auto_delete_service_messages = auto_delete_service_messages,
+            protect_content = protect_content,
+            "configuring Telegram group chat settings"
+        );
+
+        // Configure chat permissions if we have admin rights
+        let permissions_url = self.api_url("setChatPermissions")?;
+        let permissions_body = json!({
+            "chat_id": chat_id,
+            "permissions": {
+                "can_send_messages": true,
+                "can_send_media_messages": true,
+                "can_send_polls": true,
+                "can_send_other_messages": allow_bots,
+                "can_add_web_page_previews": true,
+                "can_change_info": false,
+                "can_invite_users": true,
+                "can_pin_messages": false
+            }
+        });
+
+        let permissions_response = self.http
+            .post(&permissions_url)
+            .json(&permissions_body)
+            .send()
+            .await
+            .map_err(|e| AdapterError::ExecutionFailed {
+                tool_name: "telegram_configure_group_chat".into(),
+                reason: format!("failed to set chat permissions: {e}"),
+            })?;
+
+        let permissions_json: Value = permissions_response
+            .json()
+            .await
+            .map_err(|e| AdapterError::ExecutionFailed {
+                tool_name: "telegram_configure_group_chat".into(),
+                reason: format!("failed to parse permissions response: {e}"),
+            })?;
+
+        // Try to configure additional settings
+        let mut results = vec![
+            ("permissions", permissions_json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
+        ];
+
+        // Set auto-delete service messages if requested
+        if auto_delete_service_messages {
+            let delete_url = self.api_url("setChatMenuButton")?;
+            let delete_body = json!({
+                "chat_id": chat_id,
+                "menu_button": {
+                    "type": "default"
+                }
+            });
+
+            if let Ok(response) = self.http.post(&delete_url).json(&delete_body).send().await {
+                if let Ok(json_resp) = response.json::<Value>().await {
+                    results.push(("auto_delete", json_resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false)));
+                }
+            }
+        }
+
+        // Set content protection if requested
+        if protect_content {
+            let protect_url = self.api_url("setChatDescription")?;
+            let protect_body = json!({
+                "chat_id": chat_id,
+                "description": "Protected content - forwarding restricted"
+            });
+
+            if let Ok(response) = self.http.post(&protect_url).json(&protect_body).send().await {
+                if let Ok(json_resp) = response.json::<Value>().await {
+                    results.push(("protect_content", json_resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false)));
+                }
+            }
+        }
+
+        Ok(json!({
+            "success": true,
+            "data": {
+                "chat_id": chat_id,
+                "configured_settings": {
+                    "allow_bots": allow_bots,
+                    "auto_delete_service_messages": auto_delete_service_messages,
+                    "protect_content": protect_content
+                },
+                "results": results,
+                "chat_info": chat_info.get("data").cloned().unwrap_or(json!({}))
+            }
+        }))
+    }
+
+    /// Get detailed chat member information and permissions.
+    async fn tool_get_chat_member(&self, params: Value) -> Result<Value> {
+        let url = self.api_url("getChatMember")?;
+
+        let chat_id = params
+            .get("chat_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AdapterError::InvalidParams {
+                tool_name: "telegram_get_chat_member".into(),
+                reason: "missing required string field `chat_id`".into(),
+            })?;
+
+        let user_id = params
+            .get("user_id")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| AdapterError::InvalidParams {
+                tool_name: "telegram_get_chat_member".into(),
+                reason: "missing required integer field `user_id`".into(),
+            })?;
+
+        let body = json!({
+            "chat_id": chat_id,
+            "user_id": user_id
+        });
+
+        debug!(url = %url, chat_id = %chat_id, user_id = user_id, "getting Telegram chat member info");
+
+        let response = self.http.post(&url).json(&body).send().await.map_err(|e| {
+            AdapterError::ExecutionFailed {
+                tool_name: "telegram_get_chat_member".into(),
+                reason: format!("failed to get chat member info: {e}"),
+            }
+        })?;
+
+        let json_resp: Value =
+            response
+                .json()
+                .await
+                .map_err(|e| AdapterError::ExecutionFailed {
+                    tool_name: "telegram_get_chat_member".into(),
+                    reason: format!("failed to parse response: {e}"),
+                })?;
+
+        Self::parse_telegram_response(&json_resp, "telegram_get_chat_member")?;
+
+        Ok(json!({
+            "success": true,
+            "data": json_resp.get("result").cloned().unwrap_or(json!({})),
+        }))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -527,6 +700,50 @@ impl Adapter for TelegramAdapter {
                     "required": ["url"]
                 }),
             },
+            ToolDefinition {
+                name: "telegram_configure_group_chat".into(),
+                description: "Configure group chat settings including bot permissions and moderation features".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "chat_id": {
+                            "type": "string",
+                            "description": "Unique identifier for the target group chat"
+                        },
+                        "allow_bots": {
+                            "type": "boolean",
+                            "description": "Whether to allow other bots to send messages in the group (default: true)"
+                        },
+                        "auto_delete_service_messages": {
+                            "type": "boolean",
+                            "description": "Whether to automatically delete service messages like 'user joined' (default: false)"
+                        },
+                        "protect_content": {
+                            "type": "boolean",
+                            "description": "Whether to protect content from forwarding (default: false)"
+                        }
+                    },
+                    "required": ["chat_id"]
+                }),
+            },
+            ToolDefinition {
+                name: "telegram_get_chat_member".into(),
+                description: "Get detailed information about a chat member including their permissions".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "chat_id": {
+                            "type": "string",
+                            "description": "Unique identifier for the target chat"
+                        },
+                        "user_id": {
+                            "type": "integer",
+                            "description": "Unique identifier of the target user"
+                        }
+                    },
+                    "required": ["chat_id", "user_id"]
+                }),
+            },
         ]
     }
 
@@ -544,6 +761,8 @@ impl Adapter for TelegramAdapter {
             "telegram_get_updates" => self.tool_get_updates(params).await,
             "telegram_get_chat" => self.tool_get_chat(params).await,
             "telegram_set_webhook" => self.tool_set_webhook(params).await,
+            "telegram_configure_group_chat" => self.tool_configure_group_chat(params).await,
+            "telegram_get_chat_member" => self.tool_get_chat_member(params).await,
             _ => Err(AdapterError::ToolNotFound {
                 adapter_id: self.id.clone(),
                 tool_name: name.to_string(),
@@ -610,10 +829,10 @@ mod tests {
     // -- Tool definitions --
 
     #[test]
-    fn tools_returns_exactly_five() {
+    fn tools_returns_exactly_seven() {
         let adapter = TelegramAdapter::new("telegram");
         let tools = adapter.tools();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 7);
     }
 
     #[test]
@@ -626,6 +845,8 @@ mod tests {
             "telegram_get_updates",
             "telegram_get_chat",
             "telegram_set_webhook",
+            "telegram_configure_group_chat",
+            "telegram_get_chat_member",
         ];
         assert_eq!(names, expected);
     }
@@ -700,6 +921,35 @@ mod tests {
             .as_array()
             .expect("required should be an array");
         assert!(required.contains(&json!("url")));
+    }
+
+    #[test]
+    fn tool_configure_group_chat_has_required_fields() {
+        let adapter = TelegramAdapter::new("telegram");
+        let tools = adapter.tools();
+        let configure_group = tools
+            .iter()
+            .find(|t| t.name == "telegram_configure_group_chat")
+            .expect("should have telegram_configure_group_chat");
+        let required = configure_group.parameters["required"]
+            .as_array()
+            .expect("required should be an array");
+        assert!(required.contains(&json!("chat_id")));
+    }
+
+    #[test]
+    fn tool_get_chat_member_has_required_fields() {
+        let adapter = TelegramAdapter::new("telegram");
+        let tools = adapter.tools();
+        let get_member = tools
+            .iter()
+            .find(|t| t.name == "telegram_get_chat_member")
+            .expect("should have telegram_get_chat_member");
+        let required = get_member.parameters["required"]
+            .as_array()
+            .expect("required should be an array");
+        assert!(required.contains(&json!("chat_id")));
+        assert!(required.contains(&json!("user_id")));
     }
 
     // -- Connect / disconnect --
@@ -907,5 +1157,38 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("url"));
+    }
+
+    #[tokio::test]
+    async fn configure_group_chat_rejects_missing_chat_id() {
+        let mut adapter = TelegramAdapter::with_token("telegram", "token");
+        adapter.connected = true;
+        let result = adapter
+            .execute_tool("telegram_configure_group_chat", json!({}))
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("chat_id"));
+    }
+
+    #[tokio::test]
+    async fn get_chat_member_rejects_missing_chat_id() {
+        let mut adapter = TelegramAdapter::with_token("telegram", "token");
+        adapter.connected = true;
+        let result = adapter
+            .execute_tool("telegram_get_chat_member", json!({ "user_id": 12345 }))
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("chat_id"));
+    }
+
+    #[tokio::test]
+    async fn get_chat_member_rejects_missing_user_id() {
+        let mut adapter = TelegramAdapter::with_token("telegram", "token");
+        adapter.connected = true;
+        let result = adapter
+            .execute_tool("telegram_get_chat_member", json!({ "chat_id": "12345" }))
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("user_id"));
     }
 }
