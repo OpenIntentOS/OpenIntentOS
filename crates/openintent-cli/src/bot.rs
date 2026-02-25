@@ -201,6 +201,9 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     println!("  Press Ctrl+C to stop.");
     println!();
 
+    // Send startup notification with latest changes to all recent active chats.
+    send_startup_notification(&http, &telegram_api, &sessions).await;
+
     // Per-chat conversation history (in-memory, keyed by chat_id).
     let mut chat_histories: HashMap<i64, Vec<Message>> = HashMap::new();
 
@@ -674,4 +677,66 @@ fn split_telegram_message(text: &str, max_len: usize) -> Vec<String> {
     }
 
     chunks
+}
+
+/// Send a startup notification to all recently active Telegram chats,
+/// informing users about the latest changes after a restart.
+async fn send_startup_notification(
+    http: &reqwest::Client,
+    telegram_api: &str,
+    sessions: &SessionStore,
+) {
+    // Get the latest commit message for the notification.
+    let commit_info = match std::process::Command::new("git")
+        .args(["log", "--oneline", "-5"])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            String::from_utf8(output.stdout)
+                .ok()
+                .map(|s| s.trim().to_string())
+        }
+        _ => None,
+    };
+
+    let message = if let Some(ref commits) = commit_info {
+        format!(
+            "🔄 *Bot restarted with updates*\n\nRecent changes:\n```\n{commits}\n```"
+        )
+    } else {
+        "🔄 *Bot restarted*".to_string()
+    };
+
+    // Find all recently active Telegram sessions and notify them.
+    let chat_ids = match sessions.list(100, 0).await {
+        Ok(all_sessions) => {
+            all_sessions
+                .iter()
+                .filter_map(|s| {
+                    if s.name.starts_with("telegram-") {
+                        s.name.strip_prefix("telegram-")?.parse::<i64>().ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        }
+        Err(_) => Vec::new(),
+    };
+
+    for chat_id in chat_ids {
+        let _ = http
+            .post(format!("{telegram_api}/sendMessage"))
+            .json(&serde_json::json!({
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "Markdown",
+            }))
+            .send()
+            .await;
+    }
+
+    if !commit_info.is_none() {
+        info!("sent startup notification to active chats");
+    }
 }
