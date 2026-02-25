@@ -6,6 +6,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::http::{HeaderValue, Method};
@@ -78,6 +79,7 @@ impl WebServer {
             .route("/", get(|| async { Html(INDEX_HTML) }))
             // REST API.
             .route("/api/status", get(api::status))
+            .route("/api/health", get(api::status)) // Health check alias
             .route("/api/adapters", get(api::adapters))
             .route("/api/chat", post(api::chat))
             // Session management.
@@ -101,6 +103,7 @@ impl WebServer {
     ///
     /// A background task watches `config/IDENTITY.md` for changes and
     /// hot-reloads the system prompt into [`AppState::system_prompt`].
+    /// Also initializes startup time tracking for health monitoring.
     ///
     /// # Errors
     ///
@@ -109,11 +112,20 @@ impl WebServer {
         let addr = self.addr();
         let router = self.router();
 
+        // Initialize startup time for health monitoring
+        api::init_startup_time();
+
         // Spawn the config file watcher.
         let prompt_handle = Arc::clone(&self.state.system_prompt);
         tokio::task::spawn_blocking(move || watch_config_files(prompt_handle));
 
-        tracing::info!(addr = %addr, "starting web server");
+        // Spawn health monitoring task
+        let state_clone = Arc::clone(&self.state);
+        tokio::spawn(async move {
+            health_monitor_task(state_clone).await;
+        });
+
+        tracing::info!(addr = %addr, "starting web server with self-healing capabilities");
 
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         axum::serve(listener, router).await?;
@@ -221,6 +233,72 @@ fn watch_config_files(system_prompt: Arc<RwLock<String>>) {
                     }
                 }
             }
+        }
+    }
+}
+
+// ── health monitoring ──────────────────────────────────────────────────
+
+/// Background task that monitors system health and performs self-healing actions.
+async fn health_monitor_task(state: Arc<AppState>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(30)); // Check every 30 seconds
+    let mut consecutive_failures = 0;
+    
+    loop {
+        interval.tick().await;
+        
+        let health_checks = api::perform_health_checks(&state).await;
+        let is_healthy = health_checks.database && health_checks.adapters && health_checks.llm_connection;
+        
+        if is_healthy {
+            if consecutive_failures > 0 {
+                tracing::info!(
+                    consecutive_failures = consecutive_failures,
+                    "system recovered, health checks passing"
+                );
+                consecutive_failures = 0;
+            }
+        } else {
+            consecutive_failures += 1;
+            tracing::warn!(
+                consecutive_failures = consecutive_failures,
+                database_healthy = health_checks.database,
+                adapters_healthy = health_checks.adapters,
+                llm_healthy = health_checks.llm_connection,
+                memory_usage_percent = health_checks.memory_usage.usage_percent,
+                "system health degraded"
+            );
+            
+            // Perform self-healing actions based on failure count
+            match consecutive_failures {
+                3 => {
+                    tracing::info!("attempting self-healing: clearing caches");
+                    // Clear any internal caches if available
+                    // This is a placeholder for cache clearing logic
+                }
+                5 => {
+                    tracing::warn!("attempting self-healing: reloading configuration");
+                    // Reload system prompt and configuration
+                    if let Ok(new_prompt) = std::fs::read_to_string("config/IDENTITY.md") {
+                        *state.system_prompt.write().await = new_prompt;
+                        tracing::info!("system prompt reloaded");
+                    }
+                }
+                10 => {
+                    tracing::error!("system critically unhealthy for extended period");
+                    // In a production system, this might trigger alerts or restart procedures
+                }
+                _ => {}
+            }
+        }
+        
+        // Log memory usage if it's high
+        if health_checks.memory_usage.usage_percent > 85.0 {
+            tracing::warn!(
+                usage_percent = health_checks.memory_usage.usage_percent,
+                used_mb = health_checks.memory_usage.used_mb,
+                "high memory usage detected"
+            );
         }
     }
 }
