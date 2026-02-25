@@ -4,7 +4,7 @@
 //! API** (including OpenAI-compatible endpoints such as Ollama, Together, and
 //! vLLM) with both streaming SSE and non-streaming modes.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use futures::StreamExt;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -114,10 +114,13 @@ impl LlmClientConfig {
 /// the OpenAI Chat Completions API.
 ///
 /// Supports both streaming and non-streaming modes, tool use, and system
-/// prompts.
+/// prompts.  The API key can be hot-swapped at runtime (e.g. after an OAuth
+/// token refresh) via [`update_api_key`].
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     config: Arc<LlmClientConfig>,
+    /// Swappable API key — allows token refresh without re-creating the client.
+    api_key: Arc<RwLock<String>>,
     http: reqwest::Client,
 }
 
@@ -141,8 +144,11 @@ impl LlmClient {
                 reason: format!("failed to build HTTP client: {e}"),
             })?;
 
+        let api_key = Arc::new(RwLock::new(config.api_key.clone()));
+
         Ok(Self {
             config: Arc::new(config),
+            api_key,
             http,
         })
     }
@@ -150,6 +156,21 @@ impl LlmClient {
     /// Returns a reference to the provider type for this client.
     pub fn provider(&self) -> &LlmProvider {
         &self.config.provider
+    }
+
+    /// Hot-swap the API key at runtime (e.g. after an OAuth token refresh).
+    pub fn update_api_key(&self, new_key: String) {
+        if let Ok(mut key) = self.api_key.write() {
+            *key = new_key;
+        }
+    }
+
+    /// Read the current API key (snapshot).
+    fn current_api_key(&self) -> String {
+        self.api_key
+            .read()
+            .map(|k| k.clone())
+            .unwrap_or_else(|_| self.config.api_key.clone())
     }
 
     // -----------------------------------------------------------------------
@@ -302,13 +323,16 @@ impl LlmClient {
 
         let mut headers = HeaderMap::new();
 
+        // Snapshot the current API key (may have been refreshed at runtime).
+        let api_key = self.current_api_key();
+
         // OAuth tokens (from Claude Code) use Bearer auth + the oauth beta
         // header; regular API keys use the x-api-key header.
-        let is_oauth = self.config.api_key.starts_with("sk-ant-oat");
+        let is_oauth = api_key.starts_with("sk-ant-oat");
         if is_oauth {
             headers.insert(
                 AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {}", self.config.api_key)).map_err(|e| {
+                HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|e| {
                     AgentError::LlmRequestFailed {
                         reason: format!("invalid authorization header: {e}"),
                     }
@@ -321,7 +345,7 @@ impl LlmClient {
         } else {
             headers.insert(
                 "x-api-key",
-                HeaderValue::from_str(&self.config.api_key).map_err(|e| {
+                HeaderValue::from_str(&api_key).map_err(|e| {
                     AgentError::LlmRequestFailed {
                         reason: format!("invalid API key header: {e}"),
                     }
@@ -482,7 +506,7 @@ impl LlmClient {
         let url = format!("{}/chat/completions", self.config.base_url);
 
         let mut headers = HeaderMap::new();
-        let auth_value = format!("Bearer {}", self.config.api_key);
+        let auth_value = format!("Bearer {}", self.current_api_key());
         headers.insert(
             AUTHORIZATION,
             HeaderValue::from_str(&auth_value).map_err(|e| AgentError::LlmRequestFailed {
