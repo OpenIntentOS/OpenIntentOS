@@ -9,6 +9,7 @@
 
 mod adapters;
 mod bot;
+mod bot_helpers;
 mod bridge;
 mod cli;
 mod dev_commands;
@@ -16,6 +17,7 @@ mod dev_worker;
 mod helpers;
 mod intent_classifier;
 mod messages;
+mod model_switch;
 mod repl;
 mod self_repair;
 

@@ -12,12 +12,12 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 use openintent_agent::{
-    AgentConfig, AgentContext, ChatRequest, EvolutionEngine, LlmClient, LlmResponse, Message,
-    react_loop,
+    AgentConfig, AgentContext, EvolutionEngine, LlmClient, Message, react_loop,
 };
 use openintent_store::{BotStateStore, DevTaskStore, SessionStore};
 
 use crate::adapters::init_adapters;
+use crate::bot_helpers::{send_startup_notification, split_telegram_message};
 use crate::dev_commands;
 use crate::dev_worker::{DevWorker, ProgressCallback};
 use crate::helpers::{env_non_empty, init_tracing, load_system_prompt, resolve_llm_config};
@@ -95,7 +95,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
 
     let llm_config = resolve_llm_config();
     let provider_label = format!("{:?}", llm_config.provider);
-    let model = llm_config.default_model.clone();
+    let mut model = llm_config.default_model.clone();
     let llm = Arc::new(LlmClient::new(llm_config).context("failed to create LLM client")?);
 
     let sessions = SessionStore::new(db.clone());
@@ -473,6 +473,31 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                         .send()
                         .await;
                 }
+                continue;
+            }
+
+            // Handle model switching (natural language or /model command).
+            if let Some(switch_result) = crate::model_switch::try_switch_model(text, &llm) {
+                model = switch_result.model.clone();
+                let reply = format!(
+                    "Switched to **{}** (`{}`)",
+                    switch_result.provider_name, switch_result.model
+                );
+                info!(
+                    chat_id,
+                    provider = %switch_result.provider_name,
+                    model = %switch_result.model,
+                    "user switched model"
+                );
+                let _ = http
+                    .post(format!("{telegram_api}/sendMessage"))
+                    .json(&serde_json::json!({
+                        "chat_id": chat_id,
+                        "text": reply,
+                        "parse_mode": "Markdown",
+                    }))
+                    .send()
+                    .await;
                 continue;
             }
 
@@ -865,175 +890,4 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     }
 }
 
-/// Split a message into chunks that fit within Telegram's character limit.
-///
-/// Respects UTF-8 char boundaries to avoid panics on multi-byte characters.
-fn split_telegram_message(text: &str, max_len: usize) -> Vec<String> {
-    if text.len() <= max_len {
-        return vec![text.to_owned()];
-    }
 
-    let mut chunks = Vec::new();
-    let mut remaining = text;
-
-    while !remaining.is_empty() {
-        if remaining.len() <= max_len {
-            chunks.push(remaining.to_owned());
-            break;
-        }
-
-        // Find the last char boundary at or before max_len.
-        let mut boundary = max_len;
-        while boundary > 0 && !remaining.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
-
-        let mut split_at = remaining[..boundary]
-            .rfind('\n')
-            .unwrap_or_else(|| remaining[..boundary].rfind(' ').unwrap_or(boundary));
-
-        // Guard against infinite loop: if split_at is 0, force it to boundary.
-        if split_at == 0 {
-            split_at = boundary;
-        }
-
-        chunks.push(remaining[..split_at].to_owned());
-        remaining = remaining[split_at..].trim_start();
-    }
-
-    chunks
-}
-
-/// Send a startup notification to all recently active Telegram chats,
-/// informing users about the latest changes after a restart.
-async fn send_startup_notification(
-    http: &reqwest::Client,
-    telegram_api: &str,
-    sessions: &SessionStore,
-    llm: &Arc<LlmClient>,
-    model: &str,
-    msgs: &Messages,
-) {
-    // Get the latest commit messages for context.
-    let commit_info = match std::process::Command::new("git")
-        .args(["log", "--oneline", "-5"])
-        .output()
-    {
-        Ok(output) if output.status.success() => {
-            String::from_utf8(output.stdout)
-                .ok()
-                .map(|s| s.trim().to_string())
-        }
-        _ => None,
-    };
-
-    // Find all recently active Telegram sessions.
-    let chat_ids = match sessions.list(100, 0).await {
-        Ok(all_sessions) => {
-            all_sessions
-                .iter()
-                .filter_map(|s| {
-                    if s.name.starts_with("telegram-") {
-                        s.name.strip_prefix("telegram-")?.parse::<i64>().ok()
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-        }
-        Err(_) => Vec::new(),
-    };
-
-    for chat_id in chat_ids {
-        // Try to get the user's language from their most recent message.
-        // Default to "en" if unknown.
-        let user_lang = get_chat_language(http, telegram_api, chat_id).await;
-
-        // Generate a human-readable summary using the LLM in the user's language.
-        let message = if let Some(ref commits) = commit_info {
-            match summarize_commits_for_user(llm, model, commits, &user_lang).await {
-                Some(summary) => {
-                    msgs.get_translated(
-                        keys::STARTUP_WITH_UPDATES,
-                        &[("summary", &summary)],
-                        &user_lang,
-                        llm,
-                        model,
-                    )
-                    .await
-                }
-                None => {
-                    msgs.get_translated(keys::STARTUP_SIMPLE, &[], &user_lang, llm, model)
-                        .await
-                }
-            }
-        } else {
-            msgs.get_translated(keys::STARTUP_SIMPLE, &[], &user_lang, llm, model)
-                .await
-        };
-
-        let _ = http
-            .post(format!("{telegram_api}/sendMessage"))
-            .json(&serde_json::json!({
-                "chat_id": chat_id,
-                "text": message,
-            }))
-            .send()
-            .await;
-    }
-
-    if commit_info.is_some() {
-        info!("sent startup notification to active chats");
-    }
-}
-
-/// Use the LLM to translate raw git commit messages into a short,
-/// human-readable summary in the user's language.
-async fn summarize_commits_for_user(
-    llm: &Arc<LlmClient>,
-    model: &str,
-    commits: &str,
-    user_lang: &str,
-) -> Option<String> {
-    let lang_name = messages::lang_display_name(user_lang);
-
-    let system = format!(
-        "You are an AI assistant. Translate the git commit log below into a short, \
-         friendly summary in {lang_name} that a non-technical user can understand. \
-         Describe what features were added or bugs were fixed. \
-         Do NOT mention commit hashes, branch names, or file names. \
-         Use 2-4 bullet points, each one sentence, starting with an emoji."
-    );
-
-    let request = ChatRequest {
-        model: model.to_owned(),
-        messages: vec![
-            Message::system(&system),
-            Message::user(format!(
-                "Summarize these updates in {lang_name}:\n{commits}"
-            )),
-        ],
-        tools: vec![],
-        temperature: Some(0.3),
-        max_tokens: Some(512),
-        stream: false,
-    };
-
-    match llm.chat(&request).await {
-        Ok(LlmResponse::Text(text)) => Some(text),
-        _ => None,
-    }
-}
-
-/// Try to determine a chat's language. Returns "en" as default.
-async fn get_chat_language(
-    _http: &reqwest::Client,
-    _telegram_api: &str,
-    _chat_id: i64,
-) -> String {
-    // Telegram doesn't provide language_code for chats directly,
-    // only in message updates. We default to "en" for startup
-    // notifications. Once the user sends a message, their language
-    // is detected and used for subsequent messages.
-    "en".to_string()
-}
