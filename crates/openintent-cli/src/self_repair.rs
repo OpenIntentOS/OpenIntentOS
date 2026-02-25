@@ -4,7 +4,7 @@
 //! 1. Analyzes the error and reads recent logs
 //! 2. Spawns a repair agent that reads source, fixes the bug
 //! 3. Runs `cargo check` → `cargo test` → `cargo build --release`
-//! 4. Commits the fix to git
+//! 4. Commits the fix to git and pushes to remote
 //! 5. Restarts the process with the new binary
 //! 6. Notifies the user that the fix is deployed
 
@@ -229,6 +229,18 @@ pub async fn attempt_repair(
             "unknown".to_string()
         }
     };
+
+    // Step 5: Push to remote.
+    notifier.send("🚀 正在推送修复到远程仓库...").await;
+
+    if let Err(e) = run_shell(repo_path, "git push", 60).await {
+        warn!(error = %e, "git push failed after self-repair commit");
+        notifier
+            .send("⚠️ 修复已保存到本地，但推送到远程仓库失败，稍后会重试。")
+            .await;
+    } else {
+        info!("self-repair fix pushed to remote");
+    }
 
     info!(
         commit = %commit_hash,
