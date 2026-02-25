@@ -305,7 +305,9 @@ fn is_private_ip(ip: IpAddr) -> bool {
 
 /// Extract readable content from HTML using a multi-stage pipeline.
 /// Returns `(content, extractor_name)`.
-fn extract_content_from_html(html: &str, url_str: &str) -> (String, &'static str) {
+///
+/// Pipeline: Readability -> html2text -> regex fallback.
+pub fn extract_content_from_html(html: &str, url_str: &str) -> (String, &'static str) {
     // Guard: skip Readability for very large HTML.
     if html.len() <= READABILITY_MAX_HTML_BYTES {
         // Stage 1: Try Readability (highest quality -- like Mozilla Readability).
@@ -449,7 +451,7 @@ fn collapse_whitespace(text: &str) -> String {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Truncate content intelligently at a paragraph or sentence boundary.
-fn smart_truncate(content: &str, max_length: usize) -> (String, usize) {
+pub fn smart_truncate(content: &str, max_length: usize) -> (String, usize) {
     let original_length = content.len();
     if original_length <= max_length {
         return (content.to_string(), original_length);

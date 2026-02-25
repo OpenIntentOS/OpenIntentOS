@@ -1,5 +1,9 @@
 //! Web search adapter -- multi-engine web search with caching and fallback.
 //!
+//! Tools:
+//!   - `web_search` -- search only, returns titles/URLs/snippets
+//!   - `web_research` -- search + auto-fetch top results with content extraction
+//!
 //! Search priority:
 //!   1. Brave Search API (if `BRAVE_API_KEY` is set) -- best structured results
 //!   2. Perplexity Sonar (if `PERPLEXITY_API_KEY` is set) -- AI-synthesized
@@ -7,6 +11,7 @@
 //!
 //! Features:
 //!   - In-memory LRU cache (15 min TTL, 100 entries) via moka
+//!   - `web_research` automatically fetches and extracts content from top URLs
 //!   - Real browser User-Agent to avoid blocking
 //!   - DDG tracking URL cleaning and percent-decoding
 //!   - Automatic engine fallback on failure
@@ -17,6 +22,8 @@ use async_trait::async_trait;
 use moka::future::Cache;
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
+
+use crate::web_fetch;
 
 use crate::error::{AdapterError, Result};
 use crate::traits::{Adapter, AdapterType, AuthRequirement, HealthStatus, ToolDefinition};
@@ -305,6 +312,151 @@ impl WebSearchAdapter {
 
         Ok(parse_duckduckgo_results(&html, max_results))
     }
+
+    // ───────────────────────────────────────────────────────────────────
+    //  web_research: compound search + fetch + extract
+    // ───────────────────────────────────────────────────────────────────
+
+    /// Deep research: search, then automatically fetch and extract content
+    /// from the top result pages. Returns both search results and page content.
+    async fn tool_web_research(&self, params: Value) -> Result<Value> {
+        let query = params
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AdapterError::InvalidParams {
+                tool_name: "web_research".into(),
+                reason: "missing required string field `query`".into(),
+            })?;
+
+        let max_pages = params
+            .get("max_pages")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(5)
+            .min(8);
+
+        let max_content_per_page = params
+            .get("max_content_per_page")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(15_000);
+
+        debug!(query, max_pages, "starting deep research");
+
+        // Check cache.
+        let cache_key = format!("research:{}:{}", query.to_lowercase().trim(), max_pages);
+        if let Some(cached) = self.cache.get(&cache_key).await {
+            debug!(query, "returning cached research results");
+            return Ok(cached);
+        }
+
+        // Step 1: Search for results.
+        let search_result = self.search_with_fallback(query, 10).await?;
+        let search_results = search_result
+            .get("results")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        // Step 2: Fetch top N URLs and extract content.
+        let mut fetched_pages = Vec::new();
+        for result in search_results.iter().take(max_pages) {
+            let url = match result.get("url").and_then(|v| v.as_str()) {
+                Some(u) if !u.is_empty() => u,
+                _ => continue,
+            };
+            let title = result
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            match self.fetch_and_extract(url, max_content_per_page).await {
+                Ok(content) => {
+                    fetched_pages.push(json!({
+                        "url": url,
+                        "title": title,
+                        "content": content,
+                    }));
+                }
+                Err(e) => {
+                    debug!(url, error = %e, "failed to fetch page during research");
+                }
+            }
+        }
+
+        info!(
+            query,
+            search_count = search_results.len(),
+            fetched_count = fetched_pages.len(),
+            "deep research completed"
+        );
+
+        let result = json!({
+            "query": query,
+            "search_results": search_results,
+            "fetched_pages": fetched_pages,
+            "pages_fetched": fetched_pages.len(),
+        });
+
+        // Cache the research result.
+        self.cache.insert(cache_key, result.clone()).await;
+
+        Ok(result)
+    }
+
+    /// Fetch a single URL and extract its content for research.
+    async fn fetch_and_extract(
+        &self,
+        url_str: &str,
+        max_content: usize,
+    ) -> Result<String> {
+        let response = self
+            .client
+            .get(url_str)
+            .header(
+                "Accept",
+                "text/markdown, text/html;q=0.9, */*;q=0.1",
+            )
+            .header("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7")
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| AdapterError::ExecutionFailed {
+                tool_name: "web_research".into(),
+                reason: format!("fetch failed: {e}"),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(AdapterError::ExecutionFailed {
+                tool_name: "web_research".into(),
+                reason: format!("status {}", response.status()),
+            });
+        }
+
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("text/plain")
+            .to_string();
+
+        let body = response.text().await.map_err(|e| {
+            AdapterError::ExecutionFailed {
+                tool_name: "web_research".into(),
+                reason: format!("body read failed: {e}"),
+            }
+        })?;
+
+        let content = if content_type.contains("text/html") {
+            let (text, _extractor) = web_fetch::extract_content_from_html(&body, url_str);
+            text
+        } else {
+            body
+        };
+
+        let (truncated, _) = web_fetch::smart_truncate(&content, max_content);
+        Ok(truncated)
+    }
 }
 
 /// Read a non-empty environment variable.
@@ -506,28 +658,58 @@ impl Adapter for WebSearchAdapter {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "web_search".into(),
-            description: "Search the web and return titles, URLs, and snippets. \
-                          Uses Brave Search, Perplexity Sonar, or DuckDuckGo \
-                          depending on available API keys. Results are cached \
-                          for 15 minutes. Returns up to 10 results by default."
-                .into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query"
+        vec![
+            ToolDefinition {
+                name: "web_search".into(),
+                description: "Search the web and return titles, URLs, and snippets. \
+                              Uses Brave Search, Perplexity Sonar, or DuckDuckGo \
+                              depending on available API keys. Results are cached \
+                              for 15 minutes. Returns up to 10 results by default."
+                    .into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query"
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Maximum number of results (default: 10)"
+                        }
                     },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of results (default: 10)"
-                    }
-                },
-                "required": ["query"]
-            }),
-        }]
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "web_research".into(),
+                description: "Deep web research: searches the web, then automatically \
+                              fetches and reads the top result pages to extract their \
+                              full content. Use this instead of web_search when you need \
+                              comprehensive information, detailed analysis, or when search \
+                              snippets alone are insufficient. Returns both search results \
+                              and extracted page content."
+                    .into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The research query"
+                        },
+                        "max_pages": {
+                            "type": "integer",
+                            "description": "Maximum pages to fetch and read (default: 5, max: 8)"
+                        },
+                        "max_content_per_page": {
+                            "type": "integer",
+                            "description": "Maximum characters per page (default: 15000)"
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            },
+        ]
     }
 
     async fn execute_tool(&self, name: &str, params: Value) -> Result<Value> {
@@ -539,6 +721,7 @@ impl Adapter for WebSearchAdapter {
         }
         match name {
             "web_search" => self.tool_web_search(params).await,
+            "web_research" => self.tool_web_research(params).await,
             _ => Err(AdapterError::ToolNotFound {
                 adapter_id: self.id.clone(),
                 tool_name: name.to_string(),
@@ -563,8 +746,9 @@ mod tests {
     fn web_search_adapter_tools_list() {
         let adapter = WebSearchAdapter::new("ws-test");
         let tools = adapter.tools();
-        assert_eq!(tools.len(), 1);
+        assert_eq!(tools.len(), 2);
         assert_eq!(tools[0].name, "web_search");
+        assert_eq!(tools[1].name, "web_research");
     }
 
     #[tokio::test]
