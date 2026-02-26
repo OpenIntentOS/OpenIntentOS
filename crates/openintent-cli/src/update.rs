@@ -6,6 +6,7 @@
 
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 use anyhow::{Context, Result, bail};
