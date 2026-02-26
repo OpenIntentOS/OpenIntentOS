@@ -23,6 +23,7 @@ mod model_switch;
 mod onboarding;
 mod repl;
 mod self_repair;
+mod self_update_adapter;
 mod update;
 
 use std::path::Path;

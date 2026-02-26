@@ -19,7 +19,7 @@ use openintent_store::{BotStateStore, DevTaskStore, SessionStore};
 use crate::adapters::init_adapters;
 use crate::bot_config::{load_bot_config, select_model_for_query};
 use crate::bot_helpers::{
-    handle_bot_upgrade, is_upgrade_intent, notify_recovered_tasks, send_pending_update_notification,
+    check_restart_signal, notify_recovered_tasks, send_pending_update_notification,
     send_start_message, send_startup_notification, send_token_stats, split_telegram_message,
 };
 use crate::dev_commands;
@@ -123,8 +123,11 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     // Initialize adapters.
     let cwd = std::env::current_dir().context("failed to get current directory")?;
     let initialized = init_adapters(cwd.clone(), db, true).await?;
-    let adapters = initialized.tool_adapters;
+    let mut adapters = initialized.tool_adapters;
     let skill_prompt_ext = initialized.skill_prompt_ext;
+
+    let restart_signal = crate::self_update_adapter::RestartSignal::default();
+    adapters.push(std::sync::Arc::new(crate::self_update_adapter::SelfUpdateAdapter::new(restart_signal.clone())));
 
     // Initialize the self-evolution engine.
     let evolution = EvolutionEngine::from_env();
@@ -552,12 +555,6 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                     }))
                     .send()
                     .await;
-                continue;
-            }
-
-            // Handle upgrade intent ("upgrade", "升级", "/upgrade", ...).
-            if is_upgrade_intent(text) {
-                handle_bot_upgrade(&http, &telegram_api, chat_id, &bot_state).await;
                 continue;
             }
 
@@ -995,6 +992,9 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                     send_token_stats(&http, &telegram_api, chat_id, input, output, &msgs).await;
                 }
             }
+
+            // Restart if the self-update tool replaced the binary this cycle.
+            check_restart_signal(&restart_signal, &bot_state, chat_id).await;
         }
     }
 }

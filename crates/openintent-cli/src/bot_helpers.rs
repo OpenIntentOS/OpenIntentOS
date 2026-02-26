@@ -22,8 +22,7 @@ pub async fn send_start_message(http: &reqwest::Client, telegram_api: &str, chat
                 \n/tasks - List your dev tasks\
                 \n/taskstatus <id> - Check task status\
                 \n/merge <id> - Merge a completed task\
-                \n/cancel <id> - Cancel a task\
-                \n\nType \"upgrade\" or \"升级\" to self-update to the latest release.";
+                \n/cancel <id> - Cancel a task";
     let _ = http
         .post(format!("{telegram_api}/sendMessage"))
         .json(&serde_json::json!({ "chat_id": chat_id, "text": text }))
@@ -410,96 +409,40 @@ pub async fn notify_recovered_tasks(
 }
 
 // ---------------------------------------------------------------------------
-// Self-upgrade via Telegram command
+// Post-update restart handling
 // ---------------------------------------------------------------------------
 
-/// Returns `true` when the message looks like an upgrade request.
-pub fn is_upgrade_intent(text: &str) -> bool {
-    let t = text.trim().to_lowercase();
-    matches!(
-        t.as_str(),
-        "upgrade"
-            | "update"
-            | "/upgrade"
-            | "/update"
-            | "升级"
-            | "更新"
-            | "self-update"
-            | "selfupdate"
-    )
+/// If the `system_self_update` tool set the restart signal during this
+/// message cycle, persist the notification state and exit so the process
+/// manager (systemd / launchd) restarts with the new binary.
+pub async fn check_restart_signal(
+    restart_signal: &crate::self_update_adapter::RestartSignal,
+    bot_state: &BotStateStore,
+    chat_id: i64,
+) {
+    let Some(new_version) = restart_signal.lock().unwrap().take() else {
+        return;
+    };
+    let _ = bot_state
+        .set("update_from_version", env!("CARGO_PKG_VERSION"))
+        .await;
+    let _ = bot_state.set("update_to_version", &new_version).await;
+    let _ = bot_state
+        .set("update_notify_chat_ids", &chat_id.to_string())
+        .await;
+    tracing::info!(
+        from = env!("CARGO_PKG_VERSION"),
+        to = %new_version,
+        "restarting after self-update"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    std::process::exit(0);
 }
 
-/// Keys used in BotStateStore for pending update notifications.
+// Keys used in BotStateStore for the post-restart update notification.
 const KEY_UPDATE_FROM: &str = "update_from_version";
 const KEY_UPDATE_TO: &str = "update_to_version";
 const KEY_UPDATE_CHATS: &str = "update_notify_chat_ids";
-
-/// Handle a user-initiated upgrade request from Telegram.
-///
-/// Sends progress messages, applies the update, persists a restart
-/// notification, then calls `process::exit(0)` so systemd / launchd
-/// restarts the bot with the new binary.
-pub async fn handle_bot_upgrade(
-    http: &reqwest::Client,
-    telegram_api: &str,
-    chat_id: i64,
-    bot_state: &BotStateStore,
-) {
-    let send = |text: &str| {
-        let http = http.clone();
-        let api = telegram_api.to_string();
-        let text = text.to_string();
-        async move {
-            let _ = http
-                .post(format!("{api}/sendMessage"))
-                .json(&serde_json::json!({
-                    "chat_id": chat_id,
-                    "text": text,
-                }))
-                .send()
-                .await;
-        }
-    };
-
-    send("Checking for updates...").await;
-
-    match crate::update::check_and_apply_update().await {
-        Ok(outcome) if !outcome.updated => {
-            send(&format!(
-                "Already running the latest version (v{}).",
-                outcome.current_version
-            ))
-            .await;
-        }
-        Ok(outcome) => {
-            // Persist notification so the bot can confirm after restart.
-            let _ = bot_state.set(KEY_UPDATE_FROM, &outcome.current_version).await;
-            let _ = bot_state.set(KEY_UPDATE_TO, &outcome.latest_version).await;
-            let _ = bot_state.set(KEY_UPDATE_CHATS, &chat_id.to_string()).await;
-
-            send(&format!(
-                "Downloaded {}. Restarting...",
-                outcome.latest_version
-            ))
-            .await;
-
-            info!(
-                from = %outcome.current_version,
-                to = %outcome.latest_version,
-                chat_id,
-                "self-update complete, restarting"
-            );
-
-            // Give Telegram a moment to deliver the message before exit.
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            std::process::exit(0);
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "self-update failed");
-            send(&format!("Update failed: {e}")).await;
-        }
-    }
-}
 
 /// On startup, check if a pending update notification was stored before the
 /// last restart and, if so, send the confirmation to the affected chat(s).
