@@ -69,6 +69,13 @@ pub fn is_configured() -> bool {
         .any(|var| std::env::var(var).map(|v| !v.trim().is_empty()).unwrap_or(false))
 }
 
+/// Returns `true` if the onboarding wizard has been completed.
+pub fn is_onboarding_done() -> bool {
+    std::env::var("ONBOARDING_COMPLETE")
+        .map(|v| v.trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 // ── API: GET /api/setup/status ───────────────────────────────────────────────
 
 /// Return the current setup status: whether the system is configured and
@@ -108,7 +115,7 @@ fn provider_env_key(provider: &str) -> Option<&'static str> {
 }
 
 /// Build the content of the `.env` file from the setup payload.
-fn build_env_content(payload: &SetupPayload) -> String {
+pub fn build_env_content(payload: &SetupPayload) -> String {
     let mut lines = vec![
         "# OpenIntentOS Configuration".to_owned(),
         "# Edit this file to update your keys, then run restart.sh".to_owned(),
@@ -132,11 +139,18 @@ fn build_env_content(payload: &SetupPayload) -> String {
     lines.join("\n") + "\n"
 }
 
+/// Write the setup configuration to a `.env` file at the given path.
+///
+/// Extracted for testability — callers can pass any path, including a temp
+/// file during tests.
+pub fn write_setup_env(path: &Path, payload: &SetupPayload) -> std::io::Result<()> {
+    let content = build_env_content(payload);
+    std::fs::write(path, content)
+}
+
 /// Save configuration to `.env` and schedule a process restart.
 pub async fn post_save(Json(payload): Json<SetupPayload>) -> Json<SetupResult> {
-    let content = build_env_content(&payload);
-
-    match std::fs::write(Path::new(".env"), &content) {
+    match write_setup_env(Path::new(".env"), &payload) {
         Ok(()) => {
             info!(
                 provider = %payload.provider,
@@ -144,6 +158,7 @@ pub async fn post_save(Json(payload): Json<SetupPayload>) -> Json<SetupResult> {
             );
 
             // Give the HTTP response time to reach the browser before exiting.
+            #[cfg(not(test))]
             tokio::spawn(async {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 std::process::exit(0);
@@ -164,6 +179,111 @@ pub async fn post_save(Json(payload): Json<SetupPayload>) -> Json<SetupResult> {
     }
 }
 
+// ── onboarding types ─────────────────────────────────────────────────────────
+
+/// Request body for `/api/onboarding/save`.
+#[derive(serde::Deserialize)]
+pub struct OnboardingPayload {
+    /// Selected use case: "developer", "business", "personal", or "research".
+    pub use_case: String,
+    /// Whether to enable the morning briefing (07:00 daily).
+    pub briefing_enabled: bool,
+    /// Telegram bot token, may be empty.
+    pub telegram_token: String,
+}
+
+/// Response for `/api/onboarding/save`.
+#[derive(serde::Serialize)]
+pub struct OnboardingResult {
+    /// Whether the save succeeded.
+    pub ok: bool,
+    /// Human-readable error message, present only on failure.
+    pub error: Option<String>,
+}
+
+// ── API: GET /onboarding ──────────────────────────────────────────────────────
+
+/// Serve the onboarding HTML wizard.
+pub async fn get_onboarding() -> Html<&'static str> {
+    Html(ONBOARDING_HTML)
+}
+
+// ── API: POST /api/onboarding/save ───────────────────────────────────────────
+
+/// Build the onboarding additions string that is appended to the existing `.env`.
+///
+/// Extracted as a pure function for testability.
+pub fn build_onboarding_additions(payload: &OnboardingPayload) -> String {
+    let mut additions = String::new();
+    additions.push_str("\n# Onboarding\n");
+    additions.push_str("ONBOARDING_COMPLETE=true\n");
+    additions.push_str(&format!("ONBOARDING_USE_CASE={}\n", payload.use_case.trim()));
+
+    additions.push_str("\n# Daily Briefing\n");
+    additions.push_str(&format!(
+        "BRIEFING_ENABLED={}\n",
+        if payload.briefing_enabled { "true" } else { "false" }
+    ));
+    if payload.briefing_enabled {
+        additions.push_str("BRIEFING_TIME=07:00\n");
+    }
+
+    if !payload.telegram_token.trim().is_empty() {
+        additions.push_str("\n# Telegram (from onboarding)\n");
+        additions.push_str(&format!(
+            "TELEGRAM_BOT_TOKEN={}\n",
+            payload.telegram_token.trim()
+        ));
+    }
+
+    additions
+}
+
+/// Write onboarding additions to the `.env` file at the given path.
+pub fn write_onboarding_env(path: &Path, payload: &OnboardingPayload) -> std::io::Result<()> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let new_content = existing + &build_onboarding_additions(payload);
+    std::fs::write(path, new_content)
+}
+
+/// Save onboarding choices to `.env` and mark onboarding as complete.
+pub async fn post_onboarding_save(
+    Json(payload): Json<OnboardingPayload>,
+) -> Json<OnboardingResult> {
+    match write_onboarding_env(Path::new(".env"), &payload) {
+        Ok(()) => {
+            info!(use_case = %payload.use_case, "onboarding saved to .env, scheduling restart");
+
+            #[cfg(not(test))]
+            tokio::spawn(async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                std::process::exit(0);
+            });
+
+            Json(OnboardingResult { ok: true, error: None })
+        }
+        Err(e) => {
+            warn!(error = %e, "onboarding failed to write .env");
+            Json(OnboardingResult {
+                ok: false,
+                error: Some(format!("Failed to write .env: {e}")),
+            })
+        }
+    }
+}
+
+// ── root handler ─────────────────────────────────────────────────────────────
+
+/// Redirect `/` to either `/onboarding` (when configured but not onboarded)
+/// or `/setup` (when not yet configured).
+async fn root_handler() -> Redirect {
+    if is_configured() && !is_onboarding_done() {
+        Redirect::to("/onboarding")
+    } else {
+        Redirect::to("/setup")
+    }
+}
+
 // ── standalone setup server ──────────────────────────────────────────────────
 
 /// Start a minimal HTTP server that only serves the setup wizard.
@@ -173,6 +293,9 @@ pub async fn post_save(Json(payload): Json<SetupPayload>) -> Json<SetupResult> {
 /// server will exit after a short delay so the process manager can restart it
 /// with the newly written `.env` file.
 ///
+/// When setup is done but onboarding has not been completed, the root `/`
+/// redirects to `/onboarding` instead.
+///
 /// # Errors
 ///
 /// Returns an error if the TCP listener cannot be bound.
@@ -181,10 +304,12 @@ pub async fn serve_setup(
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = Router::new()
-        .route("/", get(|| async { Redirect::to("/setup") }))
+        .route("/", get(root_handler))
         .route("/setup", get(|| async { Html(SETUP_HTML) }))
+        .route("/onboarding", get(get_onboarding))
         .route("/api/setup/status", get(get_status))
-        .route("/api/setup/save", post(post_save));
+        .route("/api/setup/save", post(post_save))
+        .route("/api/onboarding/save", post(post_onboarding_save));
 
     let addr = format!("{bind}:{port}");
 
@@ -278,9 +403,9 @@ input:focus{border-color:var(--accent)}
     <div class="dot" id="d3"></div>
   </div>
 
-  <!-- step 1: choose AI provider -->
+  <!-- step 1: choose LLM provider -->
   <div class="step active" id="step1">
-    <h2>Choose your AI</h2>
+    <h2>Choose an LLM provider</h2>
     <p class="subtitle">Pick one to get started. You can add more later.</p>
     <div id="ollama-badge" style="display:none" class="ollama-detect">&#10003; Ollama detected &mdash; no API key needed</div>
     <div class="grid" id="provider-grid">
@@ -488,6 +613,285 @@ input:focus{border-color:var(--accent)}
       if (secs <= 0) {
         clearInterval(iv);
         window.location.href = '/';
+      } else {
+        el.textContent = 'Redirecting in ' + secs + '\u2026';
+      }
+    }, 1000);
+  }
+})();
+</script>
+</body>
+</html>
+"##;
+
+// ── embedded onboarding wizard HTML ──────────────────────────────────────────
+
+/// The 4-step onboarding wizard served at `/onboarding`.
+pub const ONBOARDING_HTML: &str = r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenIntentOS — Onboarding</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#1a1a2e;
+  --bg2:#16213e;
+  --bg3:#12192e;
+  --accent:#e94560;
+  --green:#4ecca3;
+  --text:#e4e4e4;
+  --muted:#8a8a9a;
+  --border:#2a2a4a;
+}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:2rem;width:100%;max-width:500px;box-shadow:0 8px 40px rgba(0,0,0,.4)}
+.dots{display:flex;justify-content:center;gap:.6rem;margin-bottom:2rem}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--border);transition:background .25s}
+.dot.active{background:var(--accent)}
+.dot.done{background:var(--green)}
+h2{font-size:1.4rem;font-weight:700;margin-bottom:.4rem}
+.subtitle{color:var(--muted);font-size:.9rem;margin-bottom:1.5rem}
+.use-case-grid{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:1.5rem}
+.uc-btn{background:var(--bg3);border:2px solid var(--border);border-radius:8px;padding:.9rem .75rem;cursor:pointer;text-align:left;color:var(--text);transition:border-color .2s,background .2s}
+.uc-btn:hover{border-color:var(--accent);background:var(--bg)}
+.uc-btn.selected{border-color:var(--accent);background:rgba(233,69,96,.1)}
+.uc-icon{font-size:1.4rem;margin-bottom:.3rem}
+.uc-name{font-weight:600;font-size:.9rem}
+.uc-desc{font-size:.78rem;color:var(--muted);margin-top:.2rem}
+.plugin-list{list-style:none;margin-bottom:1.5rem}
+.plugin-list li{display:flex;align-items:center;gap:.75rem;padding:.55rem 0;border-bottom:1px solid var(--border);font-size:.9rem}
+.plugin-list li:last-child{border-bottom:none}
+.plugin-icon{font-size:1.1rem;min-width:1.5rem;text-align:center}
+.toggle{position:relative;display:inline-block;width:44px;height:24px;margin-left:auto;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.slider{position:absolute;cursor:pointer;inset:0;background:var(--border);border-radius:12px;transition:.3s}
+.slider::before{content:'';position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:var(--muted);border-radius:50%;transition:.3s}
+input:checked+.slider{background:var(--accent)}
+input:checked+.slider::before{transform:translateX(20px);background:#fff}
+.briefing-box{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1.5rem;display:flex;align-items:center;gap:1rem}
+.briefing-text{flex:1}
+.briefing-title{font-weight:600;font-size:.95rem}
+.briefing-sub{font-size:.8rem;color:var(--muted);margin-top:.2rem}
+.field{margin-bottom:1.25rem}
+label{display:block;font-size:.85rem;color:var(--muted);margin-bottom:.4rem}
+input[type=password],input[type=text]{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.65rem .75rem;color:var(--text);font-size:.95rem;outline:none}
+input:focus{border-color:var(--accent)}
+.hint{font-size:.78rem;color:var(--muted);margin-top:.35rem}
+.actions{display:flex;gap:.75rem;justify-content:flex-end;margin-top:.25rem}
+.btn{padding:.6rem 1.2rem;border-radius:6px;border:none;cursor:pointer;font-size:.9rem;font-weight:600;transition:opacity .2s}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:disabled{opacity:.4;cursor:not-allowed}
+.btn-secondary{background:transparent;color:var(--muted);border:1px solid var(--border)}
+.btn-secondary:hover{color:var(--text);border-color:var(--text)}
+.done-icon{font-size:3.5rem;text-align:center;margin-bottom:.75rem}
+.done-title{color:var(--green);font-size:1.5rem;font-weight:700;text-align:center;margin-bottom:.4rem}
+.done-sub{color:var(--muted);text-align:center;font-size:.9rem;margin-bottom:.5rem}
+.done-count{color:var(--muted);text-align:center;font-size:.85rem}
+.step{display:none}
+.step.active{display:block}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="dots">
+    <div class="dot active" id="d1"></div>
+    <div class="dot" id="d2"></div>
+    <div class="dot" id="d3"></div>
+    <div class="dot" id="d4"></div>
+  </div>
+
+  <!-- Step 1: Use case -->
+  <div class="step active" id="step1">
+    <h2>Welcome to OpenIntentOS</h2>
+    <p class="subtitle">Let&rsquo;s personalise your workspace. What&rsquo;s your primary use case?</p>
+    <div class="use-case-grid">
+      <button class="uc-btn" onclick="pickUseCase('developer',this)">
+        <div class="uc-icon">&#128187;</div>
+        <div class="uc-name">Developer workflow</div>
+        <div class="uc-desc">Code, git, CI/CD, PRs</div>
+      </button>
+      <button class="uc-btn" onclick="pickUseCase('business',this)">
+        <div class="uc-icon">&#128188;</div>
+        <div class="uc-name">Business productivity</div>
+        <div class="uc-desc">Email, calendar, docs</div>
+      </button>
+      <button class="uc-btn" onclick="pickUseCase('personal',this)">
+        <div class="uc-icon">&#127968;</div>
+        <div class="uc-name">Personal automation</div>
+        <div class="uc-desc">Tasks, reminders, habits</div>
+      </button>
+      <button class="uc-btn" onclick="pickUseCase('research',this)">
+        <div class="uc-icon">&#128270;</div>
+        <div class="uc-name">Research &amp; analysis</div>
+        <div class="uc-desc">Web search, summarise, report</div>
+      </button>
+    </div>
+    <div class="actions">
+      <button class="btn btn-primary" id="btn-uc-next" disabled onclick="goStep(2)">Next &rarr;</button>
+    </div>
+  </div>
+
+  <!-- Step 2: Plugins -->
+  <div class="step" id="step2">
+    <h2>Recommended plugins</h2>
+    <p class="subtitle">Toggle the plugins you want enabled. You can change these later.</p>
+    <ul class="plugin-list" id="plugin-list"></ul>
+    <div class="actions">
+      <button class="btn btn-secondary" onclick="goStep(1)">&larr; Back</button>
+      <button class="btn btn-primary" onclick="goStep(3)">Next &rarr;</button>
+    </div>
+  </div>
+
+  <!-- Step 3: Morning briefing + Telegram -->
+  <div class="step" id="step3">
+    <h2>Daily briefing &amp; notifications</h2>
+    <p class="subtitle">Configure how OpenIntentOS keeps you informed.</p>
+    <div class="briefing-box">
+      <div class="briefing-text">
+        <div class="briefing-title">Morning briefing at 7 am</div>
+        <div class="briefing-sub">Summarises tasks, emails, calendar and news every morning.</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="briefing-toggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="field">
+      <label>Telegram bot token <span style="color:var(--muted)">(optional)</span></label>
+      <input type="password" id="tg-token" placeholder="123456789:ABC...">
+      <div class="hint">Control OpenIntentOS via Telegram. Leave blank to skip.</div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-secondary" onclick="goStep(2)">&larr; Back</button>
+      <button class="btn btn-primary" onclick="finish()">Finish setup &#10003;</button>
+    </div>
+  </div>
+
+  <!-- Step 4: Done -->
+  <div class="step" id="step4">
+    <div class="done-icon">&#10003;</div>
+    <div class="done-title">You&rsquo;re all set!</div>
+    <p class="done-sub">Your workspace is ready. Starting up&hellip;</p>
+    <p class="done-count" id="countdown">Redirecting in 4&hellip;</p>
+  </div>
+</div>
+
+<script>
+(function () {
+  var selectedUseCase = '';
+  var pluginStates = {};
+
+  var pluginsByUseCase = {
+    developer: [
+      { id: 'git-helper',     icon: '&#128187;', name: 'Git Helper',      desc: 'Commit, PR, and branch assistance' },
+      { id: 'code-review',    icon: '&#128269;', name: 'Code Review',     desc: 'AI-powered code review' },
+      { id: 'daily-briefing', icon: '&#9728;',   name: 'Daily Briefing',  desc: 'Morning summary of tasks and PRs' },
+    ],
+    business: [
+      { id: 'email-manager',  icon: '&#128140;', name: 'Email Manager',   desc: 'Smart email triage and drafts' },
+      { id: 'calendar-sync',  icon: '&#128197;', name: 'Calendar Sync',   desc: 'Manage your schedule with AI' },
+      { id: 'daily-briefing', icon: '&#9728;',   name: 'Daily Briefing',  desc: 'Morning summary of your day' },
+    ],
+    personal: [
+      { id: 'daily-briefing', icon: '&#9728;',   name: 'Daily Briefing',  desc: 'Morning summary and reminders' },
+      { id: 'task-tracker',   icon: '&#9989;',   name: 'Task Tracker',    desc: 'Manage personal to-dos' },
+    ],
+    research: [
+      { id: 'web-research',   icon: '&#127760;', name: 'Web Research',    desc: 'Deep web search and synthesis' },
+      { id: 'summarizer',     icon: '&#128221;', name: 'Summarizer',      desc: 'Condense long documents' },
+      { id: 'daily-briefing', icon: '&#9728;',   name: 'Daily Briefing',  desc: 'Morning news and topic digest' },
+    ],
+  };
+
+  window.pickUseCase = function (uc, btn) {
+    selectedUseCase = uc;
+    document.querySelectorAll('.uc-btn').forEach(function (b) { b.classList.remove('selected'); });
+    btn.classList.add('selected');
+    document.getElementById('btn-uc-next').disabled = false;
+  };
+
+  window.goStep = function (n) {
+    [1, 2, 3, 4].forEach(function (i) {
+      document.getElementById('step' + i).classList.remove('active');
+    });
+    ['d1','d2','d3','d4'].forEach(function (id, idx) {
+      var dot = document.getElementById(id);
+      dot.classList.remove('active','done');
+      if (idx + 1 < n) dot.classList.add('done');
+      else if (idx + 1 === n) dot.classList.add('active');
+    });
+
+    if (n === 2) buildPluginList();
+    document.getElementById('step' + n).classList.add('active');
+  };
+
+  function buildPluginList() {
+    var plugins = pluginsByUseCase[selectedUseCase] || [];
+    var list = document.getElementById('plugin-list');
+    list.innerHTML = '';
+    plugins.forEach(function (p) {
+      if (!(p.id in pluginStates)) pluginStates[p.id] = true;
+      var li = document.createElement('li');
+      li.innerHTML =
+        '<span class="plugin-icon">' + p.icon + '</span>' +
+        '<span><strong>' + p.name + '</strong><br><span style="color:var(--muted);font-size:.8rem">' + p.desc + '</span></span>' +
+        '<label class="toggle">' +
+        '<input type="checkbox" id="plug-' + p.id + '"' + (pluginStates[p.id] ? ' checked' : '') + '>' +
+        '<span class="slider"></span>' +
+        '</label>';
+      li.querySelector('input').addEventListener('change', function (e) {
+        pluginStates[p.id] = e.target.checked;
+      });
+      list.appendChild(li);
+    });
+  }
+
+  window.finish = function () {
+    var briefingEnabled = document.getElementById('briefing-toggle').checked;
+    var tgToken = document.getElementById('tg-token').value || '';
+
+    fetch('/api/onboarding/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        use_case: selectedUseCase,
+        briefing_enabled: briefingEnabled,
+        telegram_token: tgToken,
+      }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (res.ok) {
+          showDone();
+        } else {
+          alert('Error saving configuration: ' + (res.error || 'unknown error'));
+        }
+      })
+      .catch(function (e) {
+        alert('Network error: ' + e);
+      });
+  };
+
+  function showDone() {
+    [1,2,3,4].forEach(function (i) {
+      document.getElementById('step' + i).classList.remove('active');
+    });
+    document.getElementById('step4').classList.add('active');
+    ['d1','d2','d3','d4'].forEach(function (id) {
+      var dot = document.getElementById(id);
+      dot.classList.remove('active');
+      dot.classList.add('done');
+    });
+
+    var secs = 4;
+    var el = document.getElementById('countdown');
+    var iv = setInterval(function () {
+      secs -= 1;
+      if (secs <= 0) {
+        clearInterval(iv);
+        window.location.href = 'http://localhost:23517';
       } else {
         el.textContent = 'Redirecting in ' + secs + '\u2026';
       }

@@ -36,19 +36,24 @@ pub mod evolution;
 pub mod executor;
 pub mod llm;
 pub mod memory;
+pub mod orchestrator;
 pub mod planner;
 pub mod runtime;
 
 // Re-export the most commonly used types at the crate root.
 pub use compaction::{CompactionConfig, compact_messages, needs_compaction};
 pub use error::{AgentError, Result};
-pub use evolution::{EvolutionConfig, EvolutionEngine, UnhandledIntent};
+pub use evolution::{EvolutionConfig, EvolutionEngine, PatternMemory, UnhandledIntent};
 pub use executor::{Executor, ExecutorConfig, StepResult};
 pub use llm::{
     ChatRequest, LlmClient, LlmClientConfig, LlmProvider, LlmResponse, Message, ModelConfig,
     ModelRouter, Role, ToolCall, ToolDefinition, ToolResult,
 };
 pub use memory::{AutoMemoryConfig, AutoMemoryManager, MemoryEntry, MemoryStore, MemoryType};
+pub use orchestrator::{
+    OrchestratedTask, Orchestrator, OrchestratorStatus, TaskResult, WorkerSpecialization,
+    WorkerStatus,
+};
 pub use planner::{Plan, Planner, PlannerConfig, Step, StepStatus};
 pub use runtime::{
     AgentConfig, AgentContext, AgentResponse, PolicyCheckerFn, TextDeltaCallback, ToolAdapter,

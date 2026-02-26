@@ -449,6 +449,228 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Pattern Memory
+// ---------------------------------------------------------------------------
+
+/// Tracks user behavior patterns to enable proactive suggestions.
+///
+/// Records every intent the agent handles, builds frequency and time-of-day
+/// maps, and surfaces improvement suggestions when patterns emerge.
+pub struct PatternMemory {
+    /// Frequency map: normalised intent text → count.
+    intent_counts: std::collections::HashMap<String, u32>,
+    /// Time-of-day map: hour (0–23) → list of intent strings seen at that hour.
+    time_patterns: std::collections::HashMap<u8, Vec<String>>,
+    /// Intent suggestions already offered (to avoid repeating them).
+    suggested: std::collections::HashSet<String>,
+}
+
+impl PatternMemory {
+    /// Create an empty `PatternMemory`.
+    pub fn new() -> Self {
+        Self {
+            intent_counts: std::collections::HashMap::new(),
+            time_patterns: std::collections::HashMap::new(),
+            suggested: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Record an intent observed at a given hour of the day.
+    ///
+    /// Call this every time the agent handles a user message.  The intent
+    /// string is normalised (lowercased, trimmed) before storage.
+    pub fn record(&mut self, intent: &str, hour: u8) {
+        let normalised = intent.trim().to_lowercase();
+        if normalised.is_empty() {
+            return;
+        }
+        *self.intent_counts.entry(normalised.clone()).or_insert(0) += 1;
+        self.time_patterns
+            .entry(hour)
+            .or_default()
+            .push(normalised);
+    }
+
+    /// Return the top `n` most-frequent intents as `(intent, count)` pairs,
+    /// sorted descending by count.
+    pub fn top_intents(&self, n: usize) -> Vec<(String, u32)> {
+        let mut pairs: Vec<(String, u32)> = self
+            .intent_counts
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        pairs.sort_by(|a, b| b.1.cmp(&a.1));
+        pairs.truncate(n);
+        pairs
+    }
+
+    /// Suggest a workflow improvement based on accumulated patterns.
+    ///
+    /// Returns `Some(suggestion)` when a pattern threshold is crossed and the
+    /// same suggestion has not already been offered.  Returns `None` otherwise.
+    pub fn suggest_improvement(&mut self) -> Option<String> {
+        // If the user has asked for a morning briefing manually more than 5
+        // times, suggest enabling the automatic cron-based briefing.
+        let briefing_count = self.count_matching("morning briefing")
+            + self.count_matching("daily summary")
+            + self.count_matching("brief me")
+            + self.count_matching("what's on today");
+
+        let key = "enable-auto-briefing".to_owned();
+        if briefing_count >= 5 && !self.suggested.contains(&key) {
+            self.suggested.insert(key);
+            return Some(
+                "You have asked for a morning briefing several times. \
+                 Would you like me to send it automatically at 7 am every day? \
+                 Just say \"enable daily briefing\" to turn it on."
+                    .to_owned(),
+            );
+        }
+
+        // If any single intent appears more than 10 times, suggest a shortcut.
+        if let Some((intent, count)) = self.top_intents(1).into_iter().next() {
+            let key = format!("shortcut:{intent}");
+            if count >= 10 && !self.suggested.contains(&key) {
+                self.suggested.insert(key.clone());
+                return Some(format!(
+                    "I notice you frequently ask me to \"{intent}\" ({count} times). \
+                     Would you like me to create a quick-access shortcut for this?"
+                ));
+            }
+        }
+
+        None
+    }
+
+    /// Suggest an action based on the current time of day.
+    ///
+    /// Returns `Some(suggestion)` if there is a high-frequency intent at
+    /// `current_hour` that the user might want right now.
+    pub fn suggest_by_time(&self, current_hour: u8) -> Option<String> {
+        let intents = self.time_patterns.get(&current_hour)?;
+
+        // Count frequencies for this specific hour.
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for intent in intents {
+            *counts.entry(intent.as_str()).or_insert(0) += 1;
+        }
+
+        // Find the most frequent intent at this hour.
+        let top = counts.into_iter().max_by_key(|(_, c)| *c)?;
+        let (intent, count) = top;
+
+        // Only suggest if it has been seen at least 3 times at this hour.
+        if count < 3 {
+            return None;
+        }
+
+        // Special-case the morning briefing.
+        if current_hour == 7
+            && (intent.contains("briefing")
+                || intent.contains("summary")
+                || intent.contains("what's on"))
+        {
+            return Some("Good morning! Want your daily briefing?".to_owned());
+        }
+
+        Some(format!(
+            "You usually \"{intent}\" around this time. Want me to do that now?"
+        ))
+    }
+
+    // ── private helpers ─────────────────────────────────────────────────────
+
+    /// Sum all intent counts whose normalised text contains `keyword`.
+    fn count_matching(&self, keyword: &str) -> u32 {
+        self.intent_counts
+            .iter()
+            .filter(|(k, _)| k.contains(keyword))
+            .map(|(_, v)| v)
+            .sum()
+    }
+}
+
+impl Default for PatternMemory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PatternMemory tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod pattern_tests {
+    use super::PatternMemory;
+
+    #[test]
+    fn record_and_top_intents() {
+        let mut pm = PatternMemory::new();
+        pm.record("search the web", 10);
+        pm.record("search the web", 10);
+        pm.record("write email", 11);
+
+        let top = pm.top_intents(2);
+        assert_eq!(top[0].0, "search the web");
+        assert_eq!(top[0].1, 2);
+        assert_eq!(top[1].0, "write email");
+    }
+
+    #[test]
+    fn record_normalises_intent() {
+        let mut pm = PatternMemory::new();
+        pm.record("  Morning Briefing  ", 7);
+        pm.record("morning briefing", 7);
+        assert_eq!(pm.intent_counts.get("morning briefing"), Some(&2));
+    }
+
+    #[test]
+    fn suggest_improvement_briefing_threshold() {
+        let mut pm = PatternMemory::new();
+        for _ in 0..5 {
+            pm.record("morning briefing", 8);
+        }
+        let suggestion = pm.suggest_improvement();
+        assert!(suggestion.is_some());
+        assert!(suggestion.unwrap().contains("7 am"));
+    }
+
+    #[test]
+    fn suggest_improvement_not_repeated() {
+        let mut pm = PatternMemory::new();
+        for _ in 0..6 {
+            pm.record("morning briefing", 8);
+        }
+        let first = pm.suggest_improvement();
+        let second = pm.suggest_improvement();
+        assert!(first.is_some());
+        assert!(second.is_none()); // same suggestion not offered twice
+    }
+
+    #[test]
+    fn suggest_by_time_returns_none_below_threshold() {
+        let pm = PatternMemory::new();
+        assert!(pm.suggest_by_time(9).is_none());
+    }
+
+    #[test]
+    fn suggest_by_time_morning_briefing() {
+        let mut pm = PatternMemory::new();
+        for _ in 0..3 {
+            pm.record("morning briefing", 7);
+        }
+        let suggestion = pm.suggest_by_time(7);
+        assert!(suggestion.is_some());
+        assert!(suggestion.unwrap().contains("Good morning"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// git helpers
+// ---------------------------------------------------------------------------
+
 /// Detect the GitHub owner/repo from the git remote origin URL.
 fn detect_github_repo() -> Option<(String, String)> {
     let output = std::process::Command::new("git")

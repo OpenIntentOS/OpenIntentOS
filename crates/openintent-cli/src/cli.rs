@@ -85,6 +85,13 @@ pub enum Commands {
         #[arg(long)]
         allowed_users: Option<String>,
     },
+
+    /// Check for updates or update the binary to the latest release.
+    Update {
+        /// Only check whether an update is available; do not download.
+        #[arg(long, short)]
+        check: bool,
+    },
 }
 
 /// Actions for managing conversation sessions.

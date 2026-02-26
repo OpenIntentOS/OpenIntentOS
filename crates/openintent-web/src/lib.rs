@@ -18,7 +18,10 @@ pub mod ws;
 
 pub use mcp::McpServer;
 pub use server::WebServer;
-pub use setup::{SETUP_HTML, is_configured, serve_setup};
+pub use setup::{
+    ONBOARDING_HTML, SETUP_HTML, build_env_content, build_onboarding_additions, is_configured,
+    is_onboarding_done, serve_setup, write_onboarding_env, write_setup_env,
+};
 pub use state::AppState;
 
 /// Web server configuration.

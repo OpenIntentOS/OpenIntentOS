@@ -232,7 +232,7 @@ pre code{background:none;padding:0;font-size:13px;line-height:1.5}
   <div class="messages" id="messages">
     <div class="welcome" id="welcome">
       <h2>Welcome to OpenIntentOS</h2>
-      <p>Your AI-powered operating system. Ask me anything or use tools to manage files, run commands, search the web, and more.</p>
+      <p>Open Source Intent Operating System. Give me a task — manage files, run commands, search the web, automate workflows, and more.</p>
       <div class="caps">
         <div class="cap">File Management</div>
         <div class="cap">Shell Commands</div>
@@ -246,7 +246,7 @@ pre code{background:none;padding:0;font-size:13px;line-height:1.5}
 
   <div class="input-area">
     <div class="input-wrapper">
-      <textarea id="input" placeholder="Type your message..." rows="1"></textarea>
+      <textarea id="input" placeholder="Give OpenIntentOS a task..." rows="1"></textarea>
       <button class="send-btn" id="sendBtn" disabled>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">

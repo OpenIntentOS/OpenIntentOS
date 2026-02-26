@@ -42,6 +42,17 @@ echo "   ╚══════════════════════�
 echo -e "${NC}"
 hr
 
+# ── Detect reinstall vs fresh install ─────────────────────────────────────────
+IS_UPDATE=false
+OLD_VERSION=""
+if [ -x "$BIN" ]; then
+  IS_UPDATE=true
+  OLD_VERSION=$("$BIN" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")
+  echo -e "\n${BOLD}${CYAN}  Updating existing OpenIntentOS installation${NC}"
+  echo -e "  ${DIM}Installed version : ${OLD_VERSION}${NC}"
+  echo -e "  ${DIM}Data, .env, and skills will be preserved.${NC}\n"
+fi
+
 # ── Step 1: OS / Arch detection ───────────────────────────────────────────────
 echo -e "\n${BOLD}Step 1/5 · Detecting your system${NC}\n"
 
@@ -115,13 +126,22 @@ $IS_TERMUX && info "Termux detected — using Linux ARM64 binary"
 $BUILD_FROM_SOURCE && warn "No prebuilt binary for $ARCH — will compile from source"
 
 # ── Step 2: Download binary ───────────────────────────────────────────────────
-echo -e "\n${BOLD}Step 2/5 · Downloading OpenIntentOS${NC}\n"
+if $IS_UPDATE; then
+  echo -e "\n${BOLD}Step 2/5 · Downloading latest binary${NC}\n"
+else
+  echo -e "\n${BOLD}Step 2/5 · Downloading OpenIntentOS${NC}\n"
+fi
 
 # Get latest release tag
 LATEST_TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
   2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\(.*\)".*/\1/' || true)
 
-mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$DATA_DIR" "$SKILLS_DIR"
+# Always ensure install dir and subdirectories exist; data/ and skills/ are
+# preserved on updates (they already exist).
+mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$SKILLS_DIR"
+if ! $IS_UPDATE; then
+  mkdir -p "$DATA_DIR"
+fi
 
 if [ -n "$LATEST_TAG" ]; then
   # Download prebuilt binary
@@ -177,38 +197,49 @@ if [ -z "$LATEST_TAG" ] || [ ! -f "$BIN" ]; then
   ok "Build complete"
 fi
 
-# ── Download config and skills from repo ──────────────────────────────────────
-info "Downloading default configuration..."
-CONFIG_RAW="https://raw.githubusercontent.com/$REPO/main/config/default.toml"
-curl -fsSL "$CONFIG_RAW" -o "$CONFIG_FILE" 2>/dev/null \
-  && ok "Configuration ready" \
-  || warn "Could not download config — will use built-in defaults"
+# Download updated config (overwrite on fresh install; preserve on update).
+if ! $IS_UPDATE; then
+  info "Downloading default configuration..."
+  CONFIG_RAW="https://raw.githubusercontent.com/$REPO/main/config/default.toml"
+  curl -fsSL "$CONFIG_RAW" -o "$CONFIG_FILE" 2>/dev/null \
+    && ok "Configuration ready" \
+    || warn "Could not download config — will use built-in defaults"
+else
+  ok "Configuration preserved (not overwritten)"
+fi
 
-# Download built-in skills from repo
-SKILLS_BASE="https://raw.githubusercontent.com/$REPO/main/skills"
-for skill in weather-check email-automation web-search-plus ip-lookup; do
-  mkdir -p "$SKILLS_DIR/$skill"
-  curl -fsSL "$SKILLS_BASE/$skill/SKILL.md" \
-    -o "$SKILLS_DIR/$skill/SKILL.md" 2>/dev/null || true
-done
+# Download built-in skills from repo (only on fresh install).
+if ! $IS_UPDATE; then
+  SKILLS_BASE="https://raw.githubusercontent.com/$REPO/main/skills"
+  for skill in weather-check email-automation web-search-plus ip-lookup; do
+    mkdir -p "$SKILLS_DIR/$skill"
+    curl -fsSL "$SKILLS_BASE/$skill/SKILL.md" \
+      -o "$SKILLS_DIR/$skill/SKILL.md" 2>/dev/null || true
+  done
+fi
 
-# ── Step 3: Write initial configuration ───────────────────────────────────────
-echo -e "\n${BOLD}Step 3/5 · Configuration${NC}\n"
+# ── Step 3: Write initial configuration (skipped on update) ───────────────────
+if $IS_UPDATE; then
+  echo -e "\n${BOLD}Step 3/5 · Configuration${NC}\n"
+  ok ".env preserved — existing credentials kept"
+  ok "data/ directory preserved — database untouched"
+else
+  echo -e "\n${BOLD}Step 3/5 · Configuration${NC}\n"
 
-# If keys are pre-set via environment variables, write them immediately.
-# This is the fully silent/automated path:
-#   TELEGRAM_BOT_TOKEN=xxx OPENAI_API_KEY=sk-xxx curl -fsSL .../install.sh | bash
-SILENT_INSTALL=false
-HAS_AI_KEY=false
-for k in "${OPENAI_API_KEY:-}" "${NVIDIA_API_KEY:-}" "${GOOGLE_API_KEY:-}" \
-          "${DEEPSEEK_API_KEY:-}" "${GROQ_API_KEY:-}" "${ANTHROPIC_API_KEY:-}"; do
-  [ -n "$k" ] && HAS_AI_KEY=true
-done
-[ -n "${TELEGRAM_BOT_TOKEN:-}" ] && $HAS_AI_KEY && SILENT_INSTALL=true
+  # If keys are pre-set via environment variables, write them immediately.
+  # This is the fully silent/automated path:
+  #   TELEGRAM_BOT_TOKEN=xxx OPENAI_API_KEY=sk-xxx curl -fsSL .../install.sh | bash
+  SILENT_INSTALL=false
+  HAS_AI_KEY=false
+  for k in "${OPENAI_API_KEY:-}" "${NVIDIA_API_KEY:-}" "${GOOGLE_API_KEY:-}" \
+            "${DEEPSEEK_API_KEY:-}" "${GROQ_API_KEY:-}" "${ANTHROPIC_API_KEY:-}"; do
+    [ -n "$k" ] && HAS_AI_KEY=true
+  done
+  [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && $HAS_AI_KEY && SILENT_INSTALL=true
 
-if $SILENT_INSTALL; then
-  ok "Credentials detected from environment — silent install"
-  cat > "$ENV_FILE" <<EOF
+  if $SILENT_INSTALL; then
+    ok "Credentials detected from environment — silent install"
+    cat > "$ENV_FILE" <<EOF
 # OpenIntentOS Configuration — auto-generated
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"
@@ -220,9 +251,9 @@ GROQ_API_KEY="${GROQ_API_KEY:-}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 DISCORD_BOT_TOKEN="${DISCORD_BOT_TOKEN:-}"
 EOF
-else
-  # Write an empty placeholder .env — the setup wizard will fill it in.
-  cat > "$ENV_FILE" <<'EOF'
+  else
+    # Write an empty placeholder .env — the setup wizard will fill it in.
+    cat > "$ENV_FILE" <<'EOF'
 # OpenIntentOS Configuration
 # This file is managed by the setup wizard at http://localhost:23517
 # You can also edit it manually and run restart.sh
@@ -237,14 +268,14 @@ GROQ_API_KEY=
 GITHUB_TOKEN=
 DISCORD_BOT_TOKEN=
 EOF
-  ok "Configuration file created — wizard will complete setup"
+    ok "Configuration file created — wizard will complete setup"
+  fi
+
+  chmod 600 "$ENV_FILE"
 fi
 
-chmod 600 "$ENV_FILE"
-
-# ── Step 4: System service setup ──────────────────────────────────────────────
-echo -e "\n${BOLD}Step 4/5 · Installing system service${NC}\n"
-info "Setting up auto-start service (starts on login, restarts on crash)..."
+# ── Step 4: System service setup / restart ────────────────────────────────────
+echo -e "\n${BOLD}Step 4/5 · Service${NC}\n"
 
 WEB_PORT=23517
 
@@ -313,10 +344,41 @@ write_helper_scripts
 LOG_FILE="$INSTALL_DIR/openintent.log"
 PID_FILE="$INSTALL_DIR/openintent.pid"
 
-if [ "$PLATFORM" = "macos" ]; then
-  PLIST="$HOME/Library/LaunchAgents/io.openintentos.plist"
-  mkdir -p "$HOME/Library/LaunchAgents"
-  cat > "$PLIST" <<PLIST
+if $IS_UPDATE; then
+  # On update: restart the existing service so the new binary is picked up.
+  info "Restarting service to apply new binary..."
+  if [ "$PLATFORM" = "macos" ]; then
+    PLIST="$HOME/Library/LaunchAgents/io.openintentos.plist"
+    if [ -f "$PLIST" ]; then
+      launchctl unload "$PLIST" 2>/dev/null || true
+      launchctl load "$PLIST"
+      ok "macOS LaunchAgent restarted"
+    else
+      warn "LaunchAgent plist not found — restart manually: $INSTALL_DIR/restart.sh"
+    fi
+  elif [ "$PLATFORM" = "linux" ]; then
+    if command -v systemctl &>/dev/null && systemctl --user is-enabled openintentos &>/dev/null; then
+      systemctl --user restart openintentos
+      ok "systemd service restarted"
+    elif [ -f "$PID_FILE" ]; then
+      kill "$(cat "$PID_FILE")" 2>/dev/null || true
+      sleep 1
+      cd "$INSTALL_DIR"
+      nohup ./openintent serve --port $WEB_PORT >> "$LOG_FILE" 2>&1 &
+      echo $! > "$PID_FILE"
+      ok "Service restarted (PID $(cat "$PID_FILE"))"
+    else
+      warn "Could not detect running service — start manually: $INSTALL_DIR/restart.sh"
+    fi
+  fi
+else
+  # Fresh install: install and start the service.
+  info "Setting up auto-start service (starts on login, restarts on crash)..."
+
+  if [ "$PLATFORM" = "macos" ]; then
+    PLIST="$HOME/Library/LaunchAgents/io.openintentos.plist"
+    mkdir -p "$HOME/Library/LaunchAgents"
+    cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -347,15 +409,15 @@ if [ "$PLATFORM" = "macos" ]; then
 </plist>
 PLIST
 
-  launchctl unload "$PLIST" 2>/dev/null || true
-  launchctl load "$PLIST"
-  ok "macOS LaunchAgent installed (auto-starts on login)"
+    launchctl unload "$PLIST" 2>/dev/null || true
+    launchctl load "$PLIST"
+    ok "macOS LaunchAgent installed (auto-starts on login)"
 
-elif [ "$PLATFORM" = "linux" ]; then
-  if command -v systemctl &>/dev/null; then
-    SERVICE_DIR="$HOME/.config/systemd/user"
-    mkdir -p "$SERVICE_DIR"
-    cat > "$SERVICE_DIR/openintentos.service" <<SERVICE
+  elif [ "$PLATFORM" = "linux" ]; then
+    if command -v systemctl &>/dev/null; then
+      SERVICE_DIR="$HOME/.config/systemd/user"
+      mkdir -p "$SERVICE_DIR"
+      cat > "$SERVICE_DIR/openintentos.service" <<SERVICE
 [Unit]
 Description=OpenIntentOS AI Assistant
 After=network-online.target
@@ -375,24 +437,25 @@ EnvironmentFile=$ENV_FILE
 WantedBy=default.target
 SERVICE
 
-    systemctl --user daemon-reload
-    systemctl --user enable openintentos
-    systemctl --user start openintentos
-    ok "systemd user service installed (auto-starts on login)"
-  else
-    # Fallback: cron @reboot
-    (crontab -l 2>/dev/null | grep -v openintentos; \
-     echo "@reboot cd $INSTALL_DIR && nohup ./openintent serve --port $WEB_PORT >> $LOG_FILE 2>&1 &") \
-     | crontab -
-    ok "Cron @reboot entry installed"
-    # Start now
-    cd "$INSTALL_DIR"
-    nohup ./openintent serve --port $WEB_PORT >> "$LOG_FILE" 2>&1 &
-    echo $! > "$PID_FILE"
+      systemctl --user daemon-reload
+      systemctl --user enable openintentos
+      systemctl --user start openintentos
+      ok "systemd user service installed (auto-starts on login)"
+    else
+      # Fallback: cron @reboot
+      (crontab -l 2>/dev/null | grep -v openintentos; \
+       echo "@reboot cd $INSTALL_DIR && nohup ./openintent serve --port $WEB_PORT >> $LOG_FILE 2>&1 &") \
+       | crontab -
+      ok "Cron @reboot entry installed"
+      # Start now
+      cd "$INSTALL_DIR"
+      nohup ./openintent serve --port $WEB_PORT >> "$LOG_FILE" 2>&1 &
+      echo $! > "$PID_FILE"
+    fi
   fi
 fi
 
-# ── Add binary to PATH ────────────────────────────────────────────────────────
+# ── Add binary to PATH (idempotent) ───────────────────────────────────────────
 PATH_LINE="export PATH=\"\$HOME/.openintentos:\$PATH\""
 for rc_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
   if [ -f "$rc_file" ] && ! grep -q ".openintentos" "$rc_file" 2>/dev/null; then
@@ -403,11 +466,51 @@ for rc_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
 done
 export PATH="$HOME/.openintentos:$PATH"
 
-# ── Step 5: Verify & open browser ─────────────────────────────────────────────
+# ── Step 5: Verify & (on fresh install) open browser ──────────────────────────
 echo -e "\n${BOLD}Step 5/5 · Starting up${NC}\n"
-info "Waiting for web server to start..."
 
 SETUP_URL="http://localhost:$WEB_PORT"
+
+if $IS_UPDATE; then
+  # Brief check that the restarted service comes back up.
+  info "Waiting for service to restart..."
+  SERVER_UP=false
+  for i in $(seq 1 15); do
+    if curl -s --max-time 1 "$SETUP_URL/api/status" >/dev/null 2>&1 || \
+       curl -s --max-time 1 "$SETUP_URL/api/setup/status" >/dev/null 2>&1; then
+      SERVER_UP=true
+      break
+    fi
+    sleep 1
+  done
+
+  echo ""
+  hr
+  echo ""
+  if $SERVER_UP; then
+    ok "Service is running at $SETUP_URL"
+  else
+    warn "Service may still be starting — check with: $INSTALL_DIR/status.sh"
+  fi
+
+  NEW_VERSION=$("$BIN" --version 2>/dev/null | awk '{print $NF}' || echo "${LATEST_TAG:-unknown}")
+  echo ""
+  echo -e "${BOLD}${GREEN}  ✓  Update complete!${NC}"
+  echo ""
+  echo -e "  Updated OpenIntentOS from ${DIM}v${OLD_VERSION}${NC} to ${BOLD}v${NEW_VERSION}${NC}"
+  echo ""
+  echo -e "  ${DIM}── Useful commands ──────────────────────────────────────────${NC}"
+  echo -e "  ${CYAN}  $INSTALL_DIR/status.sh${NC}    — is the service running?"
+  echo -e "  ${CYAN}  $INSTALL_DIR/restart.sh${NC}   — restart after config changes"
+  echo ""
+  hr
+  echo ""
+  exit 0
+fi
+
+# Fresh install: wait for server and open browser.
+info "Waiting for web server to start..."
+
 SERVER_UP=false
 for i in $(seq 1 20); do
   if curl -s --max-time 1 "$SETUP_URL/api/setup/status" >/dev/null 2>&1; then
@@ -423,7 +526,7 @@ else
   warn "Server may still be starting — open $SETUP_URL manually"
 fi
 
-# Auto-open browser
+# Auto-open browser (fresh install only; updates don't interrupt the browser)
 if ! $SILENT_INSTALL; then
   if [ "$PLATFORM" = "macos" ]; then
     open "$SETUP_URL" 2>/dev/null || true

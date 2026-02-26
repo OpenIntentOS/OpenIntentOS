@@ -20,8 +20,10 @@ mod helpers;
 mod intent_classifier;
 mod messages;
 mod model_switch;
+mod onboarding;
 mod repl;
 mod self_repair;
+mod update;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -36,6 +38,7 @@ use openintent_store::SessionStore;
 
 use crate::adapters::init_adapters;
 use crate::cli::{Cli, Commands, SessionAction, SkillAction, UserAction};
+use crate::update::cmd_update;
 use crate::helpers::{
     env_non_empty, init_tracing, load_system_prompt, read_claude_code_keychain_token,
     resolve_llm_config,
@@ -66,6 +69,7 @@ async fn main() -> Result<()> {
             poll_timeout,
             allowed_users,
         } => bot::cmd_bot(poll_timeout, allowed_users).await,
+        Commands::Update { check } => cmd_update(check).await,
     }
 }
 

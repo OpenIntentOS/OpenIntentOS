@@ -5,6 +5,7 @@
 
 pub mod browser;
 pub mod calendar;
+pub mod daily_briefing;
 pub mod cron;
 pub mod discord;
 pub mod email;
@@ -25,6 +26,7 @@ pub mod web_fetch;
 pub mod web_search;
 
 pub use browser::BrowserAdapter;
+pub use daily_briefing::{BriefingConfig, DailyBriefingAdapter};
 pub use calendar::CalendarAdapter;
 pub use cron::{CronAdapter, CronJob};
 pub use discord::DiscordAdapter;
