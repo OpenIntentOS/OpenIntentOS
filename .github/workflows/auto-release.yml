@@ -1,0 +1,94 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  bump-and-tag:
+    # Skip our own release commits to prevent infinite loops.
+    if: "!startsWith(github.event.head_commit.message, 'chore: release')"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # PAT is required so the tag push triggers release.yml.
+          # Create a fine-grained PAT with "Contents: write" and store it
+          # as a repository secret named RELEASE_PAT.
+          token: ${{ secrets.RELEASE_PAT }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump patch version
+        id: bump
+        run: |
+          # Read version from [workspace.package] in the root Cargo.toml.
+          CURRENT=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+
+          echo "current=${CURRENT}" >> $GITHUB_OUTPUT
+          echo "new=${NEW_VERSION}"  >> $GITHUB_OUTPUT
+
+          # Update the single source-of-truth version in root Cargo.toml.
+          sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+
+          # Update Cargo.lock entries for all workspace members.
+          python3 - "${CURRENT}" "${NEW_VERSION}" <<'PYEOF'
+import sys, re
+
+old_ver, new_ver = sys.argv[1], sys.argv[2]
+
+workspace_crates = [
+    "openintent-agent",
+    "openintent-adapters",
+    "openintent-auth-engine",
+    "openintent-cli",
+    "openintent-intent",
+    "openintent-kernel",
+    "openintent-sandbox",
+    "openintent-skills",
+    "openintent-store",
+    "openintent-tui",
+    "openintent-ui",
+    "openintent-vault",
+    "openintent-web",
+]
+
+with open("Cargo.lock", "r") as f:
+    content = f.read()
+
+for crate in workspace_crates:
+    pattern = (
+        r'(\[\[package\]\]\nname = "'
+        + re.escape(crate)
+        + r'"\nversion = ")'
+        + re.escape(old_ver)
+        + r'"'
+    )
+    content = re.sub(pattern, r'\g<1>' + new_ver + '"', content)
+
+with open("Cargo.lock", "w") as f:
+    f.write(content)
+
+print(f"Cargo.lock: updated {len(workspace_crates)} workspace crate versions")
+PYEOF
+
+      - name: Commit and tag
+        run: |
+          NEW_VERSION="${{ steps.bump.outputs.new }}"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: release v${NEW_VERSION}"
+          git tag "v${NEW_VERSION}"
+          # Push commit first, then tag — tag push triggers release.yml.
+          git push origin main
+          git push origin "v${NEW_VERSION}"

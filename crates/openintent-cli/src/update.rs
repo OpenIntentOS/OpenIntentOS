@@ -193,6 +193,75 @@ fn replace_binary(new_bin: &std::path::Path) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Structured result for programmatic callers (e.g. bot upgrade handler)
+// ---------------------------------------------------------------------------
+
+/// Outcome of a check-and-apply update operation.
+pub struct UpdateOutcome {
+    pub current_version: String,
+    pub latest_version: String,
+    /// `true` when the binary was successfully replaced.
+    pub updated: bool,
+}
+
+/// Check for a newer release and, if one exists, download and replace the
+/// running binary.  Returns structured info so callers can send custom
+/// messages (e.g. the Telegram bot) instead of printing to stdout.
+pub async fn check_and_apply_update() -> Result<UpdateOutcome> {
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+
+    let client = reqwest::Client::builder()
+        .user_agent(format!("openintent/{current_version}"))
+        .build()
+        .context("failed to build HTTP client")?;
+
+    let release: GithubRelease = client
+        .get("https://api.github.com/repos/OpenIntentOS/OpenIntentOS/releases/latest")
+        .send()
+        .await
+        .context("failed to reach GitHub API")?
+        .error_for_status()
+        .context("GitHub API returned an error")?
+        .json()
+        .await
+        .context("failed to parse GitHub API response")?;
+
+    let latest_version = release.tag_name.clone();
+
+    if !is_newer(&latest_version, &current_version) {
+        return Ok(UpdateOutcome {
+            current_version,
+            latest_version,
+            updated: false,
+        });
+    }
+
+    // Build download URL for this platform.
+    let triple = target_triple().context("could not determine platform target triple")?;
+    let ext = archive_ext();
+    let asset_name = format!("openintent-{triple}.{ext}");
+    let download_url = format!(
+        "https://github.com/OpenIntentOS/OpenIntentOS/releases/download/{latest_version}/{asset_name}"
+    );
+
+    let archive_tmp = download_to_temp(&client, &download_url).await?;
+
+    let bin_tmp =
+        tempfile::NamedTempFile::new().context("failed to create temp file for extracted binary")?;
+
+    extract_binary_from_targz(archive_tmp.path(), bin_tmp.path())
+        .context("failed to extract binary from archive")?;
+
+    replace_binary(bin_tmp.path()).context("failed to replace binary")?;
+
+    Ok(UpdateOutcome {
+        current_version,
+        latest_version,
+        updated: true,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Public command entry point
 // ---------------------------------------------------------------------------
 

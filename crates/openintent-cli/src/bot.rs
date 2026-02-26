@@ -19,7 +19,8 @@ use openintent_store::{BotStateStore, DevTaskStore, SessionStore};
 use crate::adapters::init_adapters;
 use crate::bot_config::{load_bot_config, select_model_for_query};
 use crate::bot_helpers::{
-    notify_recovered_tasks, send_startup_notification, send_token_stats, split_telegram_message,
+    handle_bot_upgrade, is_upgrade_intent, notify_recovered_tasks, send_pending_update_notification,
+    send_start_message, send_startup_notification, send_token_stats, split_telegram_message,
 };
 use crate::dev_commands;
 use crate::dev_worker::{DevWorker, ProgressCallback};
@@ -200,6 +201,9 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     println!("  Bot is running. Send messages to @{bot_name} on Telegram.");
     println!("  Press Ctrl+C to stop.");
     println!();
+
+    // Confirm upgrade to the user who triggered it (if bot restarted after update).
+    send_pending_update_notification(&http, &telegram_api, &bot_state).await;
 
     // Send startup notification with latest changes to all recent active chats.
     send_startup_notification(&http, &telegram_api, &sessions, &llm, &model, &msgs).await;
@@ -405,14 +409,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
 
             // Handle /start command.
             if text == "/start" {
-                let _ = http
-                    .post(format!("{telegram_api}/sendMessage"))
-                    .json(&serde_json::json!({
-                        "chat_id": chat_id,
-                        "text": "Hello! I'm OpenIntentOS. Send me any message and I'll help you. I have access to filesystem, shell, web search, email, GitHub, and more.\n\nDev commands:\n/dev <instruction> - Create a self-development task\n/tasks - List your dev tasks\n/taskstatus <id> - Check task status\n/merge <id> - Merge a completed task\n/cancel <id> - Cancel a task",
-                    }))
-                    .send()
-                    .await;
+                send_start_message(&http, &telegram_api, chat_id).await;
                 continue;
             }
 
@@ -555,6 +552,12 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                     }))
                     .send()
                     .await;
+                continue;
+            }
+
+            // Handle upgrade intent ("upgrade", "升级", "/upgrade", ...).
+            if is_upgrade_intent(text) {
+                handle_bot_upgrade(&http, &telegram_api, chat_id, &bot_state).await;
                 continue;
             }
 
