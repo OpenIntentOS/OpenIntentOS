@@ -38,50 +38,18 @@ jobs:
 
           echo "current=${CURRENT}" >> $GITHUB_OUTPUT
           echo "new=${NEW_VERSION}"  >> $GITHUB_OUTPUT
+          echo "Bumping: ${CURRENT} → ${NEW_VERSION}"
 
           # Update the single source-of-truth version in root Cargo.toml.
           sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
 
-          # Update Cargo.lock entries for all workspace members.
-          python3 - "${CURRENT}" "${NEW_VERSION}" <<'PYEOF'
-import sys, re
+          # Update Cargo.lock entries for all openintent-* workspace members.
+          # perl -0pe slurps the file and matches across lines.
+          perl -i -0pe \
+            "s/(\[\[package\]\]\nname = \"openintent-[^\"\n]+\"\nversion = \")${CURRENT}\"/$1${NEW_VERSION}\"/g" \
+            Cargo.lock
 
-old_ver, new_ver = sys.argv[1], sys.argv[2]
-
-workspace_crates = [
-    "openintent-agent",
-    "openintent-adapters",
-    "openintent-auth-engine",
-    "openintent-cli",
-    "openintent-intent",
-    "openintent-kernel",
-    "openintent-sandbox",
-    "openintent-skills",
-    "openintent-store",
-    "openintent-tui",
-    "openintent-ui",
-    "openintent-vault",
-    "openintent-web",
-]
-
-with open("Cargo.lock", "r") as f:
-    content = f.read()
-
-for crate in workspace_crates:
-    pattern = (
-        r'(\[\[package\]\]\nname = "'
-        + re.escape(crate)
-        + r'"\nversion = ")'
-        + re.escape(old_ver)
-        + r'"'
-    )
-    content = re.sub(pattern, r'\g<1>' + new_ver + '"', content)
-
-with open("Cargo.lock", "w") as f:
-    f.write(content)
-
-print(f"Cargo.lock: updated {len(workspace_crates)} workspace crate versions")
-PYEOF
+          echo "Updated Cargo.toml and Cargo.lock"
 
       - name: Commit and tag
         run: |
