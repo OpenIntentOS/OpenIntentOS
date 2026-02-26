@@ -29,22 +29,31 @@
 
 ---
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OpenIntentOS/OpenIntentOS/main/install.sh | bash
+```
+
+That's it. The script will:
+- Download the prebuilt binary for your OS (macOS / Linux, Intel / ARM)
+- Walk you through entering your API keys — with links to where to get each one
+- Install a system service so the bot starts automatically on every reboot
+- Start the bot immediately
+
+No Rust, no Docker, no terminal experience required.
+
+**Supported platforms:** macOS (Apple Silicon · Intel) · Linux (x86\_64 · ARM64 / Raspberry Pi)
+
+---
+
 ## What is OpenIntentOS?
 
 OpenIntentOS is an **Intent-Driven AI Operating System** — not a chatbot, not a Python wrapper around an LLM, not a "multi-agent framework."
 
 Users express **what they want** in natural language. The system understands the intent, plans execution across tools, manages credentials securely, and delivers results — autonomously, with no babysitting required.
 
-The entire system compiles to a **single ~10MB binary**. No Node.js runtime, no Docker pull, no pip install.
-
-```bash
-git clone https://github.com/OpenIntentOS/OpenIntentOS
-cd OpenIntentOS
-export OPENAI_API_KEY=sk-...
-export TELEGRAM_BOT_TOKEN=...
-cargo run --release --bin openintent-cli -- bot
-# Bot live at @OpenIntentbot
-```
+The entire system ships as a **single ~10MB binary**. No Node.js runtime, no Docker pull, no pip install.
 
 ---
 
@@ -284,61 +293,69 @@ openintent-cli          (binary — single executable)
 
 ## Quick Start
 
-### Prerequisites
+### One-line install (recommended)
 
-- Rust 1.80+ — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- At least one LLM API key
-- Telegram bot token from [@BotFather](https://t.me/BotFather)
+```bash
+curl -fsSL https://raw.githubusercontent.com/OpenIntentOS/OpenIntentOS/main/install.sh | bash
+```
 
-### Build
+The installer will guide you through everything step by step.
+
+### What the installer does
+
+```
+Step 1/5 · Detecting your system
+  ✓  macOS (Apple Silicon)
+
+Step 2/5 · Downloading OpenIntentOS
+  ✓  Downloaded 9.8 MB binary (v0.1.0)
+
+Step 3/5 · Connect your AI providers
+  📱 Telegram Bot Token
+     Don't have one? Open Telegram → @BotFather → /newbot
+  Enter: ████████████████████████
+
+  🧠 OpenAI API Key  (https://platform.openai.com/api-keys)
+  Enter: ████████████████████████
+
+  🧠 NVIDIA NIM Key  (free tier — https://build.nvidia.com)
+  Enter: (skipped)
+
+Step 4/5 · Installing system service
+  ✓  macOS LaunchAgent installed (auto-starts on login)
+
+Step 5/5 · Verifying bot is running
+  ✓  Bot is running
+
+  ✓  OpenIntentOS is installed and running!
+     Open Telegram and message your bot to get started.
+```
+
+### After install — useful commands
+
+```bash
+~/.openintentos/status.sh     # check if bot is running + last 20 log lines
+~/.openintentos/restart.sh    # apply config changes without reinstalling
+~/.openintentos/uninstall.sh  # remove everything cleanly
+tail -f ~/.openintentos/bot.log  # live log stream
+```
+
+### Update
+
+```bash
+# Run the installer again — existing API keys and data are preserved
+curl -fsSL https://raw.githubusercontent.com/OpenIntentOS/OpenIntentOS/main/install.sh | bash
+```
+
+### Build from source (developers)
 
 ```bash
 git clone https://github.com/OpenIntentOS/OpenIntentOS
 cd OpenIntentOS
 cargo build --release
 # Binary: ./target/release/openintent-cli
-```
-
-### Configure
-
-```bash
-# Minimum required
-export TELEGRAM_BOT_TOKEN="7123456789:AAFxxxx"
-export OPENAI_API_KEY="sk-proj-xxxx"
-
-# Optional — additional failover providers
-export NVIDIA_API_KEY="nvapi-xxxx"
-export GOOGLE_API_KEY="AIzaSyxxxx"
-export DEEPSEEK_API_KEY="sk-xxxx"
-export GROQ_API_KEY="gsk_xxxx"
-
-# Optional — additional adapters
-export GITHUB_TOKEN="ghp_xxxx"         # enables self-repair evolution
-export DISCORD_BOT_TOKEN="..."
-```
-
-### Run
-
-```bash
-# Telegram bot (foreground)
-cargo run --release --bin openintent-cli -- bot
-
-# Background with log file
-cargo run --release --bin openintent-cli -- bot > /tmp/bot.log 2>&1 &
-
-# Check logs
-tail -f /tmp/bot.log
-```
-
-### Expected startup output
-
-```
-INFO  starting Telegram bot gateway
-INFO  database pragmas applied (WAL, mmap 256MiB, cache 62MiB)
-INFO  adapters online: filesystem shell web_search browser feishu calendar email github
-INFO  skills loaded count=5
-INFO  Bot: @OpenIntentbot · Provider: OpenAI · Model: chatgpt-pro
-INFO  Bot is running. Send messages to @OpenIntentbot on Telegram.
+export TELEGRAM_BOT_TOKEN="..." OPENAI_API_KEY="..."
+./target/release/openintent-cli bot
 ```
 
 ---
