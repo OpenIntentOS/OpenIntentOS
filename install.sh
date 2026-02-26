@@ -192,227 +192,96 @@ for skill in weather-check email-automation web-search-plus ip-lookup; do
     -o "$SKILLS_DIR/$skill/SKILL.md" 2>/dev/null || true
 done
 
-# ── Step 3: API key setup ─────────────────────────────────────────────────────
-# Check if all required values are already set via environment variables.
-# This enables fully silent/automated installation:
+# ── Step 3: Write initial configuration ───────────────────────────────────────
+echo -e "\n${BOLD}Step 3/5 · Configuration${NC}\n"
+
+# If keys are pre-set via environment variables, write them immediately.
+# This is the fully silent/automated path:
 #   TELEGRAM_BOT_TOKEN=xxx OPENAI_API_KEY=sk-xxx curl -fsSL .../install.sh | bash
 SILENT_INSTALL=false
-if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
-  # At least the Telegram token is pre-set — check if an AI key is also present
-  if [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${NVIDIA_API_KEY:-}" ] || \
-     [ -n "${GOOGLE_API_KEY:-}" ] || [ -n "${DEEPSEEK_API_KEY:-}" ] || \
-     [ -n "${GROQ_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-    SILENT_INSTALL=true
-    echo -e "\n${BOLD}Step 3/5 · Credentials${NC}\n"
-    ok "All credentials detected from environment — skipping prompts"
-    ok "Telegram token: set"
-    for provider in OPENAI NVIDIA GOOGLE DEEPSEEK GROQ ANTHROPIC; do
-      key_var="${provider}_API_KEY"
-      [ -n "${!key_var:-}" ] && ok "${provider} API key: set"
-    done
-  fi
-fi
-
-if ! $SILENT_INSTALL; then
-  echo -e "\n${BOLD}Step 3/5 · Connect your AI providers${NC}\n"
-  echo -e "${DIM}  All values are saved locally in $ENV_FILE"
-  echo -e "  Never sent anywhere except the AI APIs you choose.${NC}\n"
-
-  # Read from terminal even when piped (fallback to stdin if /dev/tty unavailable)
-  if [ -e /dev/tty ] && exec 3</dev/tty 2>/dev/null; then
-    : # /dev/tty opened on fd 3
-  else
-    exec 3<&0  # fall back to stdin (keys will be visible but at least won't crash)
-    warn "/dev/tty not available — input will be visible. You can edit $ENV_FILE after install."
-  fi
-fi
-
-prompt_secret() {
-  local var_name="$1"
-  local label="$2"
-  local url="$3"
-  local required="${4:-optional}"
-
-  echo -e "  ${BOLD}${label}${NC}"
-  if [ -n "$url" ]; then
-    echo -e "  ${DIM}Get it at: ${url}${NC}"
-  fi
-  if [ "$required" = "required" ]; then
-    echo -e "  ${YELLOW}(required)${NC}"
-  else
-    echo -e "  ${DIM}(optional — press Enter to skip)${NC}"
-  fi
-  printf "  Enter: "
-  # -s hides input so API keys are not visible on screen
-  read -rs value <&3
-  echo ""  # newline after hidden input
-
-  if [ -n "$value" ]; then
-    printf -v "$var_name" '%s' "$value"
-    ok "$label saved"
-  elif [ "$required" = "required" ]; then
-    warn "Skipped — you can add this later by editing $ENV_FILE"
-    printf -v "$var_name" '%s' ""
-  else
-    printf -v "$var_name" '%s' ""
-  fi
-}
-
-# ── Telegram (required) ────────────────────────────────────────────────────────
-OPENAI_API_KEY="${OPENAI_API_KEY:-}"; NVIDIA_API_KEY="${NVIDIA_API_KEY:-}"
-GOOGLE_API_KEY="${GOOGLE_API_KEY:-}"; DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
-GROQ_API_KEY="${GROQ_API_KEY:-}"; ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
-TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
-
-if ! $SILENT_INSTALL; then
-  echo -e "  ${CYAN}📱 Telegram Bot${NC}\n"
-  echo -e "  ${DIM}Don't have a bot yet? Here's how:"
-  echo -e "    1. Open Telegram, search for @BotFather"
-  echo -e "    2. Send: /newbot"
-  echo -e "    3. Choose a name and username"
-  echo -e "    4. Copy the token it gives you${NC}\n"
-  prompt_secret TELEGRAM_BOT_TOKEN "Telegram Bot Token" "https://t.me/BotFather" "required"
-fi
-
-# ── Primary LLM provider — smart menu (interactive only) ──────────────────────
-
-# Check if Ollama is running locally (zero-config AI option)
-OLLAMA_AVAILABLE=false
-if curl -s --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
-  OLLAMA_AVAILABLE=true
-fi
-
-if ! $SILENT_INSTALL; then
-  echo -e "  ${CYAN}🧠 AI Provider${NC}\n"
-
-  if $OLLAMA_AVAILABLE; then
-    ok "Ollama detected on this machine — no API key needed!"
-    echo -e "  ${DIM}  The bot will use your local Ollama models by default."
-    echo -e "  You can still add a cloud API key for more powerful models.${NC}\n"
-  fi
-
-  echo -e "  ${DIM}Which AI provider do you have? (Enter a number)${NC}\n"
-  echo -e "  ${BOLD}  1)${NC} OpenAI          ${DIM}(ChatGPT — paid, most popular)${NC}"
-  echo -e "  ${BOLD}  2)${NC} Google Gemini   ${DIM}(free tier available at aistudio.google.com)${NC}"
-  echo -e "  ${BOLD}  3)${NC} Groq            ${DIM}(free tier, very fast — console.groq.com)${NC}"
-  echo -e "  ${BOLD}  4)${NC} NVIDIA NIM      ${DIM}(free \$100 credit for new accounts — build.nvidia.com)${NC}"
-  echo -e "  ${BOLD}  5)${NC} DeepSeek        ${DIM}(very affordable — platform.deepseek.com)${NC}"
-  if $OLLAMA_AVAILABLE; then
-    echo -e "  ${BOLD}  0)${NC} Use local Ollama only ${DIM}(already detected — free, no internet)${NC}"
-  fi
-  echo -e "  ${BOLD}  s)${NC} Skip for now   ${DIM}(add key later by editing $ENV_FILE)${NC}"
-  echo ""
-  printf "  Your choice: "
-  read -r ai_choice <&3
-  echo ""
-
-  case "$ai_choice" in
-    1)
-      echo -e "  ${DIM}Get your key at: https://platform.openai.com/api-keys${NC}"
-      prompt_secret OPENAI_API_KEY "OpenAI API Key" "" "required"
-      ;;
-    2)
-      echo -e "  ${DIM}Get your free key at: https://aistudio.google.com/apikey${NC}"
-      prompt_secret GOOGLE_API_KEY "Google Gemini API Key" "" "required"
-      ;;
-    3)
-      echo -e "  ${DIM}Get your free key at: https://console.groq.com/keys${NC}"
-      prompt_secret GROQ_API_KEY "Groq API Key" "" "required"
-      ;;
-    4)
-      echo -e "  ${DIM}Get your free key at: https://build.nvidia.com${NC}"
-      prompt_secret NVIDIA_API_KEY "NVIDIA NIM API Key" "" "required"
-      ;;
-    5)
-      echo -e "  ${DIM}Get your key at: https://platform.deepseek.com${NC}"
-      prompt_secret DEEPSEEK_API_KEY "DeepSeek API Key" "" "required"
-      ;;
-    0)
-      ok "Using local Ollama — no key needed"
-      ;;
-    s|S|"")
-      warn "Skipped — add a key later by editing: $ENV_FILE"
-      ;;
-    *)
-      warn "Unrecognized choice — skipping. Add a key later by editing: $ENV_FILE"
-      ;;
-  esac
-
-  exec 3<&-
-fi
-
-# Validate at least one option available
-ALL_KEYS_EMPTY=true
-for k in "$OPENAI_API_KEY" "$NVIDIA_API_KEY" "$GOOGLE_API_KEY" "$DEEPSEEK_API_KEY" "$GROQ_API_KEY"; do
-  [ -n "$k" ] && ALL_KEYS_EMPTY=false
+HAS_AI_KEY=false
+for k in "${OPENAI_API_KEY:-}" "${NVIDIA_API_KEY:-}" "${GOOGLE_API_KEY:-}" \
+          "${DEEPSEEK_API_KEY:-}" "${GROQ_API_KEY:-}" "${ANTHROPIC_API_KEY:-}"; do
+  [ -n "$k" ] && HAS_AI_KEY=true
 done
-if $ALL_KEYS_EMPTY && ! $OLLAMA_AVAILABLE; then
-  echo ""
-  warn "No AI key provided and Ollama is not running."
-  warn "The bot will start but won't be able to answer until you add a key."
-  warn "Edit $ENV_FILE and run $INSTALL_DIR/restart.sh"
-  echo ""
-fi
+[ -n "${TELEGRAM_BOT_TOKEN:-}" ] && $HAS_AI_KEY && SILENT_INSTALL=true
 
-# Write .env file
-cat > "$ENV_FILE" <<EOF
-# OpenIntentOS Configuration
-# Edit this file to update your API keys, then restart the bot.
-# Run: $INSTALL_DIR/restart.sh
-
-# ── Telegram ──────────────────────────────────────────────────────────────────
+if $SILENT_INSTALL; then
+  ok "Credentials detected from environment — silent install"
+  cat > "$ENV_FILE" <<EOF
+# OpenIntentOS Configuration — auto-generated
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
-
-# ── AI Providers (cascade failover — first available key wins) ─────────────────
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 NVIDIA_API_KEY="${NVIDIA_API_KEY:-}"
 GOOGLE_API_KEY="${GOOGLE_API_KEY:-}"
 DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
 GROQ_API_KEY="${GROQ_API_KEY:-}"
-
-# ── Optional Integrations ──────────────────────────────────────────────────────
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 DISCORD_BOT_TOKEN="${DISCORD_BOT_TOKEN:-}"
 EOF
+else
+  # Write an empty placeholder .env — the setup wizard will fill it in.
+  cat > "$ENV_FILE" <<'EOF'
+# OpenIntentOS Configuration
+# This file is managed by the setup wizard at http://localhost:23517
+# You can also edit it manually and run restart.sh
+
+TELEGRAM_BOT_TOKEN=
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+NVIDIA_API_KEY=
+GOOGLE_API_KEY=
+DEEPSEEK_API_KEY=
+GROQ_API_KEY=
+GITHUB_TOKEN=
+DISCORD_BOT_TOKEN=
+EOF
+  ok "Configuration file created — wizard will complete setup"
+fi
 
 chmod 600 "$ENV_FILE"
-ok "Credentials saved to $ENV_FILE"
 
 # ── Step 4: System service setup ──────────────────────────────────────────────
 echo -e "\n${BOLD}Step 4/5 · Installing system service${NC}\n"
 info "Setting up auto-start service (starts on login, restarts on crash)..."
 
+WEB_PORT=23517
+
 write_helper_scripts() {
   # status.sh
-  cat > "$INSTALL_DIR/status.sh" <<'SCRIPT'
+  cat > "$INSTALL_DIR/status.sh" <<SCRIPT
 #!/usr/bin/env bash
-PID_FILE="$HOME/.openintentos/bot.pid"
-LOG_FILE="$HOME/.openintentos/bot.log"
-if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-  echo "✓ OpenIntentOS is running (PID $(cat "$PID_FILE"))"
+LOG_FILE="\$HOME/.openintentos/openintent.log"
+PORT=$WEB_PORT
+if curl -s --max-time 2 http://localhost:\$PORT/api/status >/dev/null 2>&1; then
+  echo "✓ OpenIntentOS is running  →  http://localhost:\$PORT"
 else
   echo "✗ OpenIntentOS is not running"
 fi
 echo "--- last 20 log lines ---"
-tail -20 "$LOG_FILE" 2>/dev/null || echo "(no log yet)"
+tail -20 "\$LOG_FILE" 2>/dev/null || echo "(no log yet)"
 SCRIPT
 
   # restart.sh
   cat > "$INSTALL_DIR/restart.sh" <<SCRIPT
 #!/usr/bin/env bash
 echo "Restarting OpenIntentOS..."
-PID_FILE="\$HOME/.openintentos/bot.pid"
-if [ -f "\$PID_FILE" ]; then
-  kill "\$(cat "\$PID_FILE")" 2>/dev/null || true
+OS="\$(uname -s)"
+if [ "\$OS" = "Darwin" ]; then
+  launchctl unload ~/Library/LaunchAgents/io.openintentos.plist 2>/dev/null || true
+  launchctl load ~/Library/LaunchAgents/io.openintentos.plist
+elif [ "\$OS" = "Linux" ] && command -v systemctl &>/dev/null; then
+  systemctl --user restart openintentos
+else
+  PID_FILE="\$HOME/.openintentos/openintent.pid"
+  [ -f "\$PID_FILE" ] && kill "\$(cat "\$PID_FILE")" 2>/dev/null || true
   sleep 1
+  cd "\$HOME/.openintentos"
+  nohup ./openintent serve --port $WEB_PORT >> openintent.log 2>&1 &
+  echo \$! > "\$PID_FILE"
+  echo "✓ Restarted (PID \$(cat "\$PID_FILE"))"
 fi
-source "\$HOME/.openintentos/.env"
-export TELEGRAM_BOT_TOKEN OPENAI_API_KEY NVIDIA_API_KEY GOOGLE_API_KEY
-export DEEPSEEK_API_KEY GROQ_API_KEY GITHUB_TOKEN DISCORD_BOT_TOKEN
-cd "\$HOME/.openintentos"
-nohup ./openintent bot >> bot.log 2>&1 &
-echo \$! > "\$PID_FILE"
-echo "✓ Restarted (PID \$(cat "\$PID_FILE"))"
 SCRIPT
 
   # uninstall.sh
@@ -441,8 +310,11 @@ SCRIPT
 
 write_helper_scripts
 
+LOG_FILE="$INSTALL_DIR/openintent.log"
+PID_FILE="$INSTALL_DIR/openintent.pid"
+
 if [ "$PLATFORM" = "macos" ]; then
-  PLIST="$HOME/Library/LaunchAgents/io.openintentos.bot.plist"
+  PLIST="$HOME/Library/LaunchAgents/io.openintentos.plist"
   mkdir -p "$HOME/Library/LaunchAgents"
   cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -451,25 +323,16 @@ if [ "$PLATFORM" = "macos" ]; then
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>io.openintentos.bot</string>
+  <string>io.openintentos</string>
   <key>ProgramArguments</key>
   <array>
     <string>$BIN</string>
-    <string>bot</string>
+    <string>serve</string>
+    <string>--port</string>
+    <string>$WEB_PORT</string>
   </array>
   <key>WorkingDirectory</key>
   <string>$INSTALL_DIR</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>TELEGRAM_BOT_TOKEN</key><string>${TELEGRAM_BOT_TOKEN:-}</string>
-    <key>OPENAI_API_KEY</key><string>${OPENAI_API_KEY:-}</string>
-    <key>NVIDIA_API_KEY</key><string>${NVIDIA_API_KEY:-}</string>
-    <key>GOOGLE_API_KEY</key><string>${GOOGLE_API_KEY:-}</string>
-    <key>DEEPSEEK_API_KEY</key><string>${DEEPSEEK_API_KEY:-}</string>
-    <key>GROQ_API_KEY</key><string>${GROQ_API_KEY:-}</string>
-    <key>GITHUB_TOKEN</key><string>${GITHUB_TOKEN:-}</string>
-    <key>DISCORD_BOT_TOKEN</key><string>${DISCORD_BOT_TOKEN:-}</string>
-  </dict>
   <key>StandardOutPath</key>
   <string>$LOG_FILE</string>
   <key>StandardErrorPath</key>
@@ -479,7 +342,7 @@ if [ "$PLATFORM" = "macos" ]; then
   <key>KeepAlive</key>
   <true/>
   <key>ThrottleInterval</key>
-  <integer>10</integer>
+  <integer>5</integer>
 </dict>
 </plist>
 PLIST
@@ -494,16 +357,16 @@ elif [ "$PLATFORM" = "linux" ]; then
     mkdir -p "$SERVICE_DIR"
     cat > "$SERVICE_DIR/openintentos.service" <<SERVICE
 [Unit]
-Description=OpenIntentOS AI Bot
+Description=OpenIntentOS AI Assistant
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$BIN bot
+ExecStart=$BIN serve --port $WEB_PORT
 Restart=always
-RestartSec=10
+RestartSec=5
 StandardOutput=append:$LOG_FILE
 StandardError=append:$LOG_FILE
 EnvironmentFile=$ENV_FILE
@@ -519,14 +382,12 @@ SERVICE
   else
     # Fallback: cron @reboot
     (crontab -l 2>/dev/null | grep -v openintentos; \
-     echo "@reboot source $ENV_FILE && cd $INSTALL_DIR && nohup ./openintent bot >> $LOG_FILE 2>&1 &") \
+     echo "@reboot cd $INSTALL_DIR && nohup ./openintent serve --port $WEB_PORT >> $LOG_FILE 2>&1 &") \
      | crontab -
     ok "Cron @reboot entry installed"
-
     # Start now
-    source "$ENV_FILE"
     cd "$INSTALL_DIR"
-    nohup ./openintent bot >> "$LOG_FILE" 2>&1 &
+    nohup ./openintent serve --port $WEB_PORT >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
   fi
 fi
@@ -542,59 +403,68 @@ for rc_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
 done
 export PATH="$HOME/.openintentos:$PATH"
 
-# ── Step 5: Verify ────────────────────────────────────────────────────────────
-echo -e "\n${BOLD}Step 5/5 · Verifying bot is running${NC}\n"
-info "Waiting for bot to connect to Telegram..."
-sleep 10
+# ── Step 5: Verify & open browser ─────────────────────────────────────────────
+echo -e "\n${BOLD}Step 5/5 · Starting up${NC}\n"
+info "Waiting for web server to start..."
 
-BOT_RUNNING=false
-if [ "$PLATFORM" = "macos" ]; then
-  launchctl list | grep -q "io.openintentos.bot" && BOT_RUNNING=true
-elif [ "$PLATFORM" = "linux" ] && command -v systemctl &>/dev/null; then
-  systemctl --user is-active --quiet openintentos && BOT_RUNNING=true
-fi
+SETUP_URL="http://localhost:$WEB_PORT"
+SERVER_UP=false
+for i in $(seq 1 20); do
+  if curl -s --max-time 1 "$SETUP_URL/api/setup/status" >/dev/null 2>&1; then
+    SERVER_UP=true
+    break
+  fi
+  sleep 1
+done
 
-if [ -f "$LOG_FILE" ] && grep -q "Bot is running" "$LOG_FILE" 2>/dev/null; then
-  BOT_RUNNING=true
-fi
-
-if $BOT_RUNNING; then
-  ok "Bot is running"
+if $SERVER_UP; then
+  ok "Server is running at $SETUP_URL"
 else
-  warn "Bot may still be starting — check logs if issues arise"
+  warn "Server may still be starting — open $SETUP_URL manually"
+fi
+
+# Auto-open browser
+if ! $SILENT_INSTALL; then
+  if [ "$PLATFORM" = "macos" ]; then
+    open "$SETUP_URL" 2>/dev/null || true
+    ok "Browser opened"
+  elif command -v xdg-open &>/dev/null; then
+    xdg-open "$SETUP_URL" 2>/dev/null || true
+    ok "Browser opened"
+  elif command -v sensible-browser &>/dev/null; then
+    sensible-browser "$SETUP_URL" 2>/dev/null || true
+    ok "Browser opened"
+  fi
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 hr
 echo ""
-echo -e "${BOLD}${GREEN}  ✓  OpenIntentOS installed!${NC}"
+echo -e "${BOLD}${GREEN}  ✓  OpenIntentOS is installed!${NC}"
 echo ""
 
-if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
-  echo -e "  ${BOLD}Next step: open Telegram and send a message to your bot.${NC}"
-  echo -e "  ${DIM}  It will respond immediately. Try saying: \"hello\" or \"what can you do?\"${NC}"
+if $SILENT_INSTALL; then
+  echo -e "  ${BOLD}Silent install complete. Service is running.${NC}"
+  echo -e "  ${DIM}  Web UI: $SETUP_URL${NC}"
+  echo -e "  ${DIM}  Open Telegram and message your bot to get started.${NC}"
 else
-  echo -e "  ${YELLOW}  You didn't enter a Telegram token.${NC}"
-  echo -e "  ${YELLOW}  Edit this file and add your token, then restart:${NC}"
-  echo -e "  ${CYAN}    $ENV_FILE${NC}"
-  echo -e "  ${CYAN}    $INSTALL_DIR/restart.sh${NC}"
+  echo -e "  ${BOLD}Your browser should open automatically.${NC}"
+  echo -e "  ${DIM}  If it didn't, open this URL in your browser:${NC}"
+  echo ""
+  echo -e "  ${CYAN}  $SETUP_URL${NC}"
+  echo ""
+  echo -e "  ${DIM}The setup wizard will guide you through connecting"
+  echo -e "  your AI provider and Telegram bot. Takes 2 minutes.${NC}"
 fi
 
 echo ""
 echo -e "  ${DIM}── Useful commands ──────────────────────────────────────────${NC}"
-echo -e "  ${CYAN}  openintent status${NC}              — check everything is OK"
-echo -e "  ${CYAN}  $INSTALL_DIR/status.sh${NC}   — is the bot running?"
-echo -e "  ${CYAN}  $INSTALL_DIR/restart.sh${NC}  — restart after config changes"
+echo -e "  ${CYAN}  $INSTALL_DIR/status.sh${NC}    — is the service running?"
+echo -e "  ${CYAN}  $INSTALL_DIR/restart.sh${NC}   — restart after config changes"
 echo -e "  ${CYAN}  $INSTALL_DIR/uninstall.sh${NC} — remove OpenIntentOS"
 echo ""
-echo -e "  ${DIM}── Add more integrations later (edit $ENV_FILE) ─────────────${NC}"
-echo -e "  ${DIM}  GITHUB_TOKEN        — lets the bot read/write your GitHub repos${NC}"
-echo -e "  ${DIM}  DISCORD_BOT_TOKEN   — connect to a Discord server too${NC}"
-echo -e "  ${DIM}  (restart the bot after editing the file)${NC}"
-echo ""
-echo -e "  ${DIM}To update to a newer version: run the install command again.${NC}"
-echo -e "  ${DIM}Your data and settings are never deleted on update.${NC}"
+echo -e "  ${DIM}To update: run the install command again. Your data is safe.${NC}"
 echo ""
 hr
 echo ""
