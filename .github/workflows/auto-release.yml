@@ -33,8 +33,9 @@ jobs:
           echo "new=${NEW_VERSION}" >> $GITHUB_OUTPUT
           echo "Bumping: ${CURRENT} → ${NEW_VERSION}"
           sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+          ESCAPED=$(echo "$CURRENT" | sed 's/\./\\./g')
           perl -i -0pe \
-            "s/(\[\[package\]\]\nname = \"openintent-[^\"\n]+\"\nversion = \")${CURRENT}\"/$1${NEW_VERSION}\"/g" \
+            "s/(\[\[package\]\]\nname = \"openintent-[^\"\n]+\"\nversion = \")${ESCAPED}\"/$1${NEW_VERSION}\"/g" \
             Cargo.lock
 
       - name: Commit
