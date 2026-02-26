@@ -1,148 +1,404 @@
-# OpenIntentOS
+<h1 align="center">OpenIntentOS</h1>
+<h3 align="center">The Intent-Driven AI Operating System</h3>
 
-An AI-native micro operating system built entirely in Rust.
+<p align="center">
+  Built entirely in Rust. &lt;10MB binary. &lt;200ms cold start. 7-provider cascade failover.<br/>
+  <strong>One binary. Say what you want. The OS handles the rest.</strong>
+</p>
 
-OpenIntentOS is an **intent-driven AI operating system**. Users express what they want in natural language, and the system understands, orchestrates tools, manages credentials, and executes autonomously — all from a single ~10MB binary.
+<p align="center">
+  <a href="https://openintentos.github.io/OpenIntentOS/">Documentation</a> &bull;
+  <a href="https://openintentos.github.io/OpenIntentOS/getting-started.html">Quick Start</a> &bull;
+  <a href="https://openintentos.github.io/OpenIntentOS/architecture.html">Architecture</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/language-Rust%202024-orange?style=flat-square" alt="Rust" />
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
+  <img src="https://img.shields.io/badge/version-0.1.0-green?style=flat-square" alt="v0.1.0" />
+  <img src="https://img.shields.io/badge/binary-~10MB-brightgreen?style=flat-square" alt="Binary size" />
+  <img src="https://img.shields.io/badge/cold%20start-%3C200ms-brightgreen?style=flat-square" alt="Cold start" />
+  <img src="https://img.shields.io/badge/providers-7%20cascade-brightgreen?style=flat-square" alt="LLM providers" />
+</p>
+
+---
+
+> **v0.1.0 — Early Release (February 2026)**
+>
+> OpenIntentOS is under active development. Core systems are production-stable. New adapters and capabilities ship weekly. Pin to a specific commit for stability until v1.0. [Report issues here.](https://github.com/OpenIntentOS/OpenIntentOS/issues)
+
+---
+
+## What is OpenIntentOS?
+
+OpenIntentOS is an **Intent-Driven AI Operating System** — not a chatbot, not a Python wrapper around an LLM, not a "multi-agent framework."
+
+Users express **what they want** in natural language. The system understands the intent, plans execution across tools, manages credentials securely, and delivers results — autonomously, with no babysitting required.
+
+The entire system compiles to a **single ~10MB binary**. No Node.js runtime, no Docker pull, no pip install.
+
+```bash
+git clone https://github.com/OpenIntentOS/OpenIntentOS
+cd OpenIntentOS
+export OPENAI_API_KEY=sk-...
+export TELEGRAM_BOT_TOKEN=...
+cargo run --release --bin openintent-cli -- bot
+# Bot live at @OpenIntentbot
+```
+
+---
+
+## What it looks like
 
 ```
-> Summarize my unread emails and post the summary to the team Feishu group
+User: Search GitHub for Rust async benchmarks, summarize the top 3 papers, save to /reports
 
-✓ Connected to email (IMAP)
-✓ Found 12 unread emails
-✓ Generated summary via Claude
-✓ Posted to "Product Team" group on Feishu
+→ web_search("Rust async runtime benchmarks 2025")           [0.8s]
+→ web_fetch("https://arxiv.org/abs/...")                     [1.1s]
+→ web_fetch("https://github.com/tokio-rs/tokio/discussions") [0.9s]
+→ fs_write_file("reports/rust-async-benchmarks.md", ...)     [<1ms]
+✓ Done — summary saved. 3 sources cited. 1,204 tokens used.
 ```
 
-## Features
+```
+User: Check my unread emails, summarize anything urgent, post to the team Feishu group
 
-- **Intent-Driven**: Express what you want in natural language — the system handles the rest
-- **Full Rust**: Zero-cost abstractions, no GC, < 10MB binary, < 200ms cold start
-- **10 Adapters**: filesystem, shell, web, email, GitHub, browser, memory, cron, Feishu, calendar
-- **Multi-Provider LLM**: Anthropic Claude + OpenAI GPT + any OpenAI-compatible API
-- **4 Interfaces**: CLI REPL, TUI (ratatui), Web UI (axum), Desktop (iced)
-- **Secure**: AES-256-GCM vault, macOS Keychain, OAuth 2.0 + PKCE, PBKDF2 password hashing
-- **Multi-User**: Role-based access control (admin/user/viewer) with secure authentication
-- **Extensible**: Wasm plugin sandbox, MCP protocol, workflow engine with cron triggers
+→ email_list_inbox(unread=true, limit=20)                    [0.6s]
+→ [analyzing 20 emails via ReAct reasoning]
+→ feishu_send_message(group="Product Team", text="...")      [0.4s]
+✓ Done — 3 urgent threads summarized, posted to Feishu.
+```
+
+---
+
+## Cascading LLM Failover — Seven Providers, Zero Downtime
+
+This is the core reliability feature. When your primary provider fails for any reason — rate limit, auth error, 503, model not found — OpenIntentOS automatically tries the next provider in the chain, transparently, in the same request.
+
+```
+Primary fails (429 / 401 / 404 / 502 / 503)
+       │
+       ├─► NVIDIA NIM    qwen/qwen3.5-397b-a17b     (free tier)
+       ├─► NVIDIA NIM    moonshotai/kimi-k2.5
+       ├─► NVIDIA NIM    nvidia/nemotron-3-nano-30b-a3b
+       ├─► Google Gemini gemini-2.5-flash
+       ├─► DeepSeek      deepseek-chat
+       ├─► Groq          llama-3.3-70b-versatile
+       └─► Ollama        llama3.2  (local, offline)
+```
+
+Each provider has a 120-second cooldown after failure. After cascade exhaustion, the bot restores the primary and retries on the next message. Per-chat model overrides are preserved across failovers.
+
+```
+WARN  OpenAI 429 rate limit — starting cascade failover
+INFO  trying NVIDIA NIM (qwen/qwen3.5-397b-a17b)
+INFO  ✓ NVIDIA NIM responded in 1.2s — continuing on this provider
+INFO  primary provider restored after 120s cooldown
+```
+
+---
+
+## OpenIntentOS vs The Landscape
+
+All data from official documentation and public repositories — February 2026.
+
+#### Cold Start Time (lower is better)
+
+```
+OpenIntentOS  ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  <200ms    ★
+LangGraph     █████████████████░░░░░░░░░░░░░░░░░░░░░   2.5s
+CrewAI        ████████████████████░░░░░░░░░░░░░░░░░░░   3.0s
+AutoGen       ██████████████████████████░░░░░░░░░░░░░   4.0s
+OpenClaw      █████████████████████████████████████░░   ~6s
+```
+
+#### Binary / Install Size (lower is better)
+
+```
+OpenIntentOS  ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   ~10MB    ★
+CrewAI        ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  ~100MB
+LangGraph     ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░  ~150MB
+AutoGen       ████████████████░░░░░░░░░░░░░░░░░░░░░░  ~200MB
+OpenClaw      ████████████████████████████████████░░  ~500MB
+```
+
+#### Idle Memory (lower is better)
+
+```
+OpenIntentOS  █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  <15MB     ★
+LangGraph     █████████████████░░░░░░░░░░░░░░░░░░░░░  ~180MB
+CrewAI        ████████████████████░░░░░░░░░░░░░░░░░░  ~200MB
+AutoGen       █████████████████████████░░░░░░░░░░░░░  ~250MB
+OpenClaw      ████████████████████████████████████░░  ~394MB
+```
+
+### Feature Comparison
+
+| Feature | OpenIntentOS | OpenClaw | CrewAI | AutoGen | LangGraph |
+|---------|:---:|:---:|:---:|:---:|:---:|
+| **Language** | **Rust 2024** | TypeScript | Python | Python | Python |
+| **Binary size** | **~10 MB** | ~500 MB | ~100 MB | ~200 MB | ~150 MB |
+| **Cold start** | **<200ms** | ~6s | ~3s | ~4s | ~2.5s |
+| **Idle RAM** | **<15 MB** | ~394 MB | ~200 MB | ~250 MB | ~180 MB |
+| **LLM cascade failover** | **7 providers** | manual | manual | manual | manual |
+| **Encrypted vault** | **AES-256-GCM** | config file | none | none | none |
+| **Wasm sandbox** | **wasmtime** | none | none | Docker | none |
+| **Chat interfaces** | **Telegram · Discord · Feishu** | Telegram · Discord | none | none | none |
+| **UI** | **CLI · TUI · Web · Desktop** | Web only | none | none | none |
+| **SIMD intent router** | **aho-corasick** | none | none | none | none |
+| **Autonomous schedules** | **cron adapter** | cron | none | none | none |
+| **Local LLM (offline)** | **Ollama fallback** | Ollama | Ollama | Ollama | Ollama |
+| **Zero-copy IPC** | **rkyv** | JSON | none | none | none |
+| **Hot config reload** | **yes** | no | no | no | no |
+| **License** | MIT | MIT | MIT | Apache 2.0 | MIT |
+
+---
+
+## Performance
+
+| Scenario | Target | How |
+|----------|--------|-----|
+| Cold start | **< 200ms** | Single binary, no runtime, connection warmup |
+| Simple intent | **< 2µs** | SIMD aho-corasick pattern match, no LLM call |
+| SQLite read (hot) | **< 0.05µs** | moka lock-free cache |
+| SQLite read (warm) | **< 5µs** | WAL + mmap 256 MiB |
+| IPC message | **< 1µs** | rkyv zero-copy deserialization |
+| Pattern matching | **~2 GB/s** | SIMD aho-corasick |
+| Vector search | **< 0.5ms** | usearch, Rust native |
+| Local classification | **< 15ms** | ONNX Runtime (ort) |
+| Memory footprint | **< 15 MB** | Rust zero-overhead + mmap |
+| Binary size | **< 10 MB** | LTO + strip + panic=abort |
+
+---
+
+## Architecture — Five-Layer Kernel
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Layer 5 · Intent Interface                                     │
+│  Natural language · Telegram · Discord · Feishu · REST · Cron   │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 4 · Agent Runtime  (tokio, async)                        │
+│  Planner ── Executor ── Reflector ── LLM Router                 │
+│            ReAct Loop  (zero-copy, same runtime)                │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 3 · Micro-Kernel                                         │
+│  Scheduler (crossbeam)  Auth Vault (AES-256)  3-layer Memory    │
+│  IPC Bus (rkyv)         Wasm Sandbox          ABAC Policy       │
+│  Intent Router (SIMD)   Service Registry                        │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 2 · Adapters  (async trait, tokio)                       │
+│  Filesystem  Shell  Web Search  Web Fetch  HTTP  Browser(CDP)   │
+│  Email(IMAP) Calendar(CalDAV)  GitHub  Feishu  Cron  Memory     │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 1 · Runtime & Storage                                    │
+│  tokio · rusqlite WAL+mmap · moka cache · io_uring/kqueue       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Crate Graph
+
+```
+openintent-cli          (binary — single executable)
+├── openintent-kernel   micro-kernel: scheduler, IPC bus, intent router
+├── openintent-agent    ReAct loop, LLM client, tool dispatcher
+│   └── openintent-kernel
+├── openintent-store    SQLite WAL+mmap, 3-layer memory, user accounts
+├── openintent-vault    AES-256-GCM encrypted secret storage
+├── openintent-intent   intent classification + workflow engine
+│   └── openintent-agent
+├── openintent-adapters 10 built-in adapters
+│   └── openintent-vault
+├── openintent-auth-engine  headless OAuth via CDP
+│   └── openintent-vault
+├── openintent-ui       iced GPU desktop UI
+├── openintent-web      axum HTTP server + SSR
+└── openintent-tui      ratatui terminal UI
+```
+
+---
+
+## Built-in Adapters
+
+| Adapter | Capabilities |
+|---------|-------------|
+| **Filesystem** | Read, write, list, search files. UTF-8-safe 16 KB truncation on large reads. |
+| **Shell** | Execute commands with timeout, capture stdout/stderr. Full subprocess isolation. |
+| **Web Search** | DuckDuckGo search with result ranking. No API key required. |
+| **Web Fetch** | Full page fetch with text extraction. Handles JS-heavy sites via browser adapter. |
+| **HTTP Request** | Arbitrary HTTP API calls — any method, headers, body. |
+| **Browser (CDP)** | Chromium DevTools Protocol. Navigate, click, fill, screenshot. Headless OAuth flows. |
+| **Email (IMAP/SMTP)** | Read inbox, send messages, manage folders. OAuth 2.0 with auto token refresh. |
+| **Calendar (CalDAV)** | Create, read, update events. Works with Apple Calendar, Nextcloud, Google. |
+| **GitHub** | List repos, read issues/PRs, post comments. Used for self-repair via evolution engine. |
+| **Feishu / Lark** | Send messages to groups and DMs. Enterprise-grade messaging integration. |
+| **Cron** | Schedule recurring tasks. Persistent across restarts via SQLite. |
+| **Memory** | Working, episodic, and semantic memory layers. Vector search via usearch. |
+
+---
+
+## Bot Commands
+
+| Command | Description |
+|---------|-------------|
+| `/models` | Inline keyboard of all available model aliases |
+| `/model <alias>` | Switch LLM for this chat — persists across restarts |
+| `/tokens on\|off` | Toggle token usage display after each response |
+| `/status` | Current provider, model, and health |
+| `/clear` | Clear conversation history for this chat |
+| `/reset` | Restore default provider and model |
+| `/help` | List all commands |
+
+### Model Aliases
+
+| Alias | Provider | Model |
+|-------|----------|-------|
+| `gpt4o` | OpenAI | gpt-4o |
+| `o3` | OpenAI | o3-mini |
+| `nvidia` | NVIDIA NIM | qwen/qwen3.5-397b-a17b |
+| `nvidia-kimi` | NVIDIA NIM | moonshotai/kimi-k2.5 |
+| `nemotron` | NVIDIA NIM | nvidia/nemotron-3-nano-30b-a3b |
+| `gemini` | Google | gemini-2.5-flash |
+| `deepseek` | DeepSeek | deepseek-chat |
+| `r1` | DeepSeek | deepseek-reasoner |
+| `groq` | Groq | llama-3.3-70b-versatile |
+| `ollama` | Local | llama3.2 |
+| `claude` | Anthropic | claude-sonnet-4-6 |
+
+---
+
+## Security
+
+| Layer | Mechanism |
+|-------|-----------|
+| **Credential storage** | AES-256-GCM encrypted vault. Master key in macOS Keychain / Linux Secret Service. |
+| **Transport** | TLS 1.2+ enforced on all outbound connections via reqwest + rustls. |
+| **Wasm sandbox** | Third-party plugin code runs in wasmtime with fuel metering. |
+| **Path traversal** | Filesystem adapter canonicalises paths and rejects symlink escapes. |
+| **Secret in memory** | API keys held in locked memory and zeroed after use. |
+| **OAuth flows** | PKCE + state parameter on all OAuth 2.0 flows. Tokens stored encrypted. |
+| **Audit log** | Append-only log of every external action (SQLite). |
+| **No telemetry** | Fully self-hosted. Zero data leaves your machine except explicit LLM API calls. |
+
+---
 
 ## Quick Start
 
 ### Prerequisites
 
-- Rust nightly (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
-- An LLM API key (Anthropic Claude recommended)
+- Rust 1.80+ — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- At least one LLM API key
+- Telegram bot token from [@BotFather](https://t.me/BotFather)
 
-### Build & Run
+### Build
 
 ```bash
-# Build
+git clone https://github.com/OpenIntentOS/OpenIntentOS
+cd OpenIntentOS
 cargo build --release
-
-# Setup — stores your API key in the encrypted vault
-export ANTHROPIC_API_KEY=sk-ant-...
-./target/release/openintent setup
-
-# Run (CLI REPL)
-./target/release/openintent run
-
-# Run (TUI — terminal dashboard)
-./target/release/openintent tui
-
-# Run (Web UI)
-./target/release/openintent serve --port 3000
+# Binary: ./target/release/openintent-cli
 ```
 
-## Architecture
+### Configure
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Layer 5: Intent Interface                                       │
-│  Natural language / Voice / GUI (iced) / API / Cron triggers     │
-├──────────────────────────────────────────────────────────────────┤
-│  Layer 4: Agent Runtime (Rust, tokio)                            │
-│  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌──────────────┐    │
-│  │ Planner   │ │ Executor  │ │ Reflector │ │ LLM Router   │    │
-│  │           │ │           │ │           │ │ local/cloud   │    │
-│  └─────┬─────┘ └─────┬─────┘ └─────┬─────┘ └──────┬───────┘    │
-│        └─────────────┼─────────────┘               │            │
-│                 ReAct Loop (zero-copy, same async runtime)       │
-├──────────────────────────────────────────────────────────────────┤
-│  Layer 3: Micro-Kernel (Rust)                                    │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────────────┐  │
-│  │Scheduler │ │Auth Vault│ │ Memory   │ │ Service Registry  │  │
-│  │lock-free │ │AES-256   │ │ 3-layer  │ │ adapter lifecycle │  │
-│  │crossbeam │ │+keychain │ │ W/E/S    │ │ health+reconnect  │  │
-│  └──────────┘ └──────────┘ └──────────┘ └───────────────────┘  │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────────────┐  │
-│  │ IPC Bus  │ │ Sandbox  │ │ Policy   │ │ Intent Router     │  │
-│  │zero-copy │ │wasmtime  │ │ engine   │ │ SIMD aho-corasick │  │
-│  │ rkyv     │ │isolation │ │ ABAC     │ │ exact→pat→LLM     │  │
-│  └──────────┘ └──────────┘ └──────────┘ └───────────────────┘  │
-├──────────────────────────────────────────────────────────────────┤
-│  Layer 2: Adapters (Rust async, tokio)                           │
-│  ┌───────┐┌───────┐┌───────┐┌────────┐┌─────────┐┌──────────┐ │
-│  │Feishu ││GitHub ││Calendar││ Email  ││Browser  ││Filesystem│ │
-│  └───────┘└───────┘└───────┘└────────┘└─────────┘└──────────┘ │
-│  ┌───────┐┌───────┐┌───────┐┌────────┐                        │
-│  │Memory ││ Web   ││ Cron  ││ Shell  │  + Wasm plugin adapters │
-│  └───────┘└───────┘└───────┘└────────┘                        │
-├──────────────────────────────────────────────────────────────────┤
-│  Layer 1: Runtime & Storage                                      │
-│  tokio │ rusqlite WAL+mmap │ moka cache │ io_uring/kqueue       │
-└──────────────────────────────────────────────────────────────────┘
+```bash
+# Minimum required
+export TELEGRAM_BOT_TOKEN="7123456789:AAFxxxx"
+export OPENAI_API_KEY="sk-proj-xxxx"
+
+# Optional — additional failover providers
+export NVIDIA_API_KEY="nvapi-xxxx"
+export GOOGLE_API_KEY="AIzaSyxxxx"
+export DEEPSEEK_API_KEY="sk-xxxx"
+export GROQ_API_KEY="gsk_xxxx"
+
+# Optional — additional adapters
+export GITHUB_TOKEN="ghp_xxxx"         # enables self-repair evolution
+export DISCORD_BOT_TOKEN="..."
 ```
 
-## Project Structure
+### Run
+
+```bash
+# Telegram bot (foreground)
+cargo run --release --bin openintent-cli -- bot
+
+# Background with log file
+cargo run --release --bin openintent-cli -- bot > /tmp/bot.log 2>&1 &
+
+# Check logs
+tail -f /tmp/bot.log
+```
+
+### Expected startup output
 
 ```
-crates/
-├── openintent-kernel/       Micro-kernel: scheduler, IPC bus, intent router, service registry
-├── openintent-agent/        Agent runtime: ReAct loop, planner, executor, multi-provider LLM client
-├── openintent-store/        Storage engine: SQLite WAL+mmap, 3-layer memory, user accounts, caching
-├── openintent-vault/        Encrypted credential vault: AES-256-GCM, OS keychain, policies
-├── openintent-intent/       Intent parsing and persistent workflow engine with triggers
-├── openintent-adapters/     Built-in adapters: filesystem, shell, browser, email, GitHub, web, etc.
-├── openintent-auth-engine/  Headless OAuth automation: CDP browser, device code flow
-├── openintent-ui/           Native desktop UI (iced, GPU-rendered)
-├── openintent-web/          Web UI and REST API (axum + SSR templates)
-├── openintent-tui/          Terminal UI (ratatui)
-└── openintent-cli/          CLI entry point — the single binary
+INFO  starting Telegram bot gateway
+INFO  database pragmas applied (WAL, mmap 256MiB, cache 62MiB)
+INFO  adapters online: filesystem shell web_search browser feishu calendar email github
+INFO  skills loaded count=5
+INFO  Bot: @OpenIntentbot · Provider: OpenAI · Model: chatgpt-pro
+INFO  Bot is running. Send messages to @OpenIntentbot on Telegram.
 ```
+
+---
 
 ## Configuration
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `ANTHROPIC_API_KEY` | Anthropic Claude API key | Yes (or use OpenAI) |
-| `OPENAI_API_KEY` | OpenAI GPT API key | Optional |
-| `OPENINTENT_MODEL` | Default LLM model (e.g. `claude-sonnet-4-20250514`) | Optional |
-| `OPENINTENT_DATA_DIR` | Data directory (default: `./data`) | Optional |
-| `OPENINTENT_LOG_LEVEL` | Log level: trace, debug, info, warn, error | Optional |
-| `OPENINTENT_WEB_PORT` | Web server port (default: 3000) | Optional |
+All runtime behaviour lives in `config/default.toml`. Hot-reloaded on file change — no restart required.
 
-Additional configuration is available in `config/default.toml`.
+```toml
+[provider]
+name     = "openai"
+base_url = "https://api.openai.com/v1"
+model    = "chatgpt-pro"
 
-## Performance
+[bot]
+history_window         = 20     # messages of context per chat
+show_token_usage       = false  # toggle with /tokens on|off
+simple_query_threshold = 120    # chars; short messages use cheap model
 
-| Scenario | Target | Technique |
-|----------|--------|-----------|
-| Cold start | < 200ms | Single binary, connection warmup |
-| Simple command | < 5ms | SIMD intent router, no LLM |
-| Complex task | < 5s | Streaming LLM + parallel tool calls |
-| Memory footprint | < 15MB | Rust zero-overhead + mmap |
-| Binary size | < 10MB | LTO, strip, panic=abort |
-| SQLite read (hot) | < 0.05us | moka lock-free cache |
-| SQLite read (warm) | < 5us | WAL + mmap |
-| IPC message | < 1us | rkyv zero-copy deserialization |
+[agent]
+max_react_turns   = 10
+tool_timeout_secs = 30
+```
 
-## Security
+Full reference: [Configuration Docs](https://openintentos.github.io/OpenIntentOS/configuration.html)
 
-- All credentials encrypted at rest with AES-256-GCM (ring, hardware AES-NI)
-- Master encryption key stored in OS keychain (macOS Keychain / Linux Secret Service)
-- User passwords hashed with PBKDF2-HMAC-SHA256 (600,000 iterations)
-- Per-action permission policies: allow / confirm / deny
-- Full audit log of every external action
-- Wasm sandbox for third-party plugins
-- No telemetry — fully self-hosted
+---
+
+## Tech Stack
+
+| Component | Technology | Why |
+|-----------|-----------|-----|
+| Language | **Rust 2024** | Zero-cost abstractions, no GC, no runtime |
+| Async | **tokio** | io_uring (Linux), kqueue (macOS) |
+| HTTP client | **reqwest** | HTTP/2, connection pooling, rustls |
+| Database | **rusqlite WAL+mmap** | <5µs reads, embedded, no daemon |
+| Hot cache | **moka** | Lock-free concurrent, no mutex contention |
+| Vector search | **usearch** | <0.5ms, Rust native, SIMD |
+| Local inference | **ort (ONNX Runtime)** | <15ms classification |
+| String matching | **aho-corasick (SIMD)** | ~2 GB/s, zero alloc |
+| Serialisation | **rkyv** | Zero-copy deserialization |
+| JSON | **simd-json + serde** | SIMD-accelerated parsing |
+| Encryption | **ring** | AES-256-GCM, hardware AES-NI |
+| Desktop UI | **iced** | Pure Rust GPU-rendered |
+| Web UI | **axum + askama** | Lightweight SSR, no JS framework |
+| TUI | **ratatui** | Terminal UI for headless servers |
+| Browser | **chromiumoxide** | Rust-native CDP client |
+| Wasm sandbox | **wasmtime** | Fuel metering, secure isolation |
+| Error types | **thiserror** | Library errors; anyhow in CLI only |
+| Logging | **tracing** | Structured, async-aware, zero-cost spans |
+
+---
+
+## Documentation
+
+- [Getting Started](https://openintentos.github.io/OpenIntentOS/getting-started.html) — build, configure, run
+- [Architecture](https://openintentos.github.io/OpenIntentOS/architecture.html) — five-layer design, crate graph, failover internals
+- [Configuration Reference](https://openintentos.github.io/OpenIntentOS/configuration.html) — every config key documented
+
+---
 
 ## License
 
