@@ -10,10 +10,13 @@
 //! (port 465) servers, with credentials passed per-call for flexibility.
 
 use async_trait::async_trait;
+use rustls::ClientConfig;
 use serde_json::{Value, json};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio_rustls::TlsConnector;
 use tracing::{debug, info};
 
 use crate::error::{AdapterError, Result};
@@ -354,17 +357,26 @@ fn parse_fetch_body(lines: &[String]) -> (String, String) {
 // TLS connection helpers
 // ---------------------------------------------------------------------------
 
-/// Establish a TLS connection to the given host and port.
-async fn connect_tls(host: &str, port: u16) -> Result<tokio_native_tls::TlsStream<TcpStream>> {
-    let connector =
-        native_tls::TlsConnector::builder()
-            .build()
-            .map_err(|e| AdapterError::ExecutionFailed {
-                tool_name: "email".into(),
-                reason: format!("failed to build TLS connector: {e}"),
-            })?;
+/// Build a rustls `ClientConfig` using Mozilla's bundled root certificates.
+fn tls_client_config() -> Result<Arc<ClientConfig>> {
+    let root_store = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    let config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    Ok(Arc::new(config))
+}
 
-    let connector = tokio_native_tls::TlsConnector::from(connector);
+/// Establish a TLS connection to the given host and port.
+async fn connect_tls(host: &str, port: u16) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let config = tls_client_config()?;
+    let connector = TlsConnector::from(config);
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_owned())
+        .map_err(|e| AdapterError::ExecutionFailed {
+            tool_name: "email".into(),
+            reason: format!("invalid server name '{host}': {e}"),
+        })?;
 
     let addr = format!("{host}:{port}");
 
@@ -384,7 +396,7 @@ async fn connect_tls(host: &str, port: u16) -> Result<tokio_native_tls::TlsStrea
 
     let tls_stream = tokio::time::timeout(
         Duration::from_secs(CONNECT_TIMEOUT_SECS),
-        connector.connect(host, tcp_stream),
+        connector.connect(server_name, tcp_stream),
     )
     .await
     .map_err(|_| AdapterError::Timeout {
@@ -402,7 +414,7 @@ async fn connect_tls(host: &str, port: u16) -> Result<tokio_native_tls::TlsStrea
 /// Read lines from an IMAP TLS connection until we see a tagged response
 /// or a timeout occurs.
 async fn imap_read_response(
-    reader: &mut BufReader<tokio::io::ReadHalf<tokio_native_tls::TlsStream<TcpStream>>>,
+    reader: &mut BufReader<tokio::io::ReadHalf<tokio_rustls::client::TlsStream<TcpStream>>>,
     tag: &str,
 ) -> Result<Vec<String>> {
     let mut lines = Vec::new();
@@ -453,7 +465,7 @@ async fn imap_read_response(
 
 /// Read an SMTP response (one or more lines) until the final status line.
 async fn smtp_read_response(
-    reader: &mut BufReader<tokio::io::ReadHalf<tokio_native_tls::TlsStream<TcpStream>>>,
+    reader: &mut BufReader<tokio::io::ReadHalf<tokio_rustls::client::TlsStream<TcpStream>>>,
 ) -> Result<(u16, Vec<String>)> {
     let mut lines = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(CONNECT_TIMEOUT_SECS);
@@ -815,8 +827,8 @@ impl EmailAdapter {
 
         // Helper to send a command and check the response.
         async fn smtp_send_cmd(
-            writer: &mut tokio::io::WriteHalf<tokio_native_tls::TlsStream<TcpStream>>,
-            reader: &mut BufReader<tokio::io::ReadHalf<tokio_native_tls::TlsStream<TcpStream>>>,
+            writer: &mut tokio::io::WriteHalf<tokio_rustls::client::TlsStream<TcpStream>>,
+            reader: &mut BufReader<tokio::io::ReadHalf<tokio_rustls::client::TlsStream<TcpStream>>>,
             cmd: &str,
             tool_name: &str,
             expected_status_prefix: u16,

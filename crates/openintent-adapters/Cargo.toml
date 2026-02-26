@@ -21,8 +21,9 @@ openintent-store = { workspace = true }
 openintent-auth-engine = { workspace = true }
 openintent-agent = { workspace = true }
 tokio-tungstenite = { workspace = true }
-tokio-native-tls = "0.3"
-native-tls = "0.2"
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+webpki-roots = "0.26"
 base64 = { workspace = true }
 futures = { workspace = true }
 moka = { workspace = true }
@@ -34,7 +35,7 @@ regex = { workspace = true }
 rumqttc = "0.25"
 
 # SQLite support
-sqlx = { version = "0.8", features = ["runtime-tokio-native-tls", "sqlite", "chrono", "uuid"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
