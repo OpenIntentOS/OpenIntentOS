@@ -23,7 +23,7 @@ hr()   { echo -e "${DIM}──────────────────�
 # ── Paths ─────────────────────────────────────────────────────────────────────
 REPO="OpenIntentOS/OpenIntentOS"
 INSTALL_DIR="$HOME/.openintentos"
-BIN="$INSTALL_DIR/openintent-cli"
+BIN="$INSTALL_DIR/openintent"
 CONFIG_DIR="$INSTALL_DIR/config"
 CONFIG_FILE="$CONFIG_DIR/default.toml"
 ENV_FILE="$INSTALL_DIR/.env"
@@ -125,8 +125,8 @@ mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$DATA_DIR" "$SKILLS_DIR"
 
 if [ -n "$LATEST_TAG" ]; then
   # Download prebuilt binary
-  BINARY_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/openintent-cli-$TARGET.tar.gz"
-  info "Downloading openintent-cli $LATEST_TAG for $TARGET ..."
+  BINARY_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/openintent-$TARGET.tar.gz"
+  info "Downloading openintent $LATEST_TAG for $TARGET ..."
 
   if curl -fsSL "$BINARY_URL" -o /tmp/openintent.tar.gz 2>/dev/null; then
     tar -xzf /tmp/openintent.tar.gz -C "$INSTALL_DIR"
@@ -167,10 +167,10 @@ if [ -z "$LATEST_TAG" ] || [ ! -f "$BIN" ]; then
   # Build
   info "Building release binary (this takes a few minutes)..."
   cd "$REPO_DIR"
-  cargo build --release --bin openintent-cli 2>&1 \
+  cargo build --release --bin openintent 2>&1 \
     | grep -E "(Compiling openintent|Finished|error)" | tail -20 | sed 's/^/     /'
 
-  cp "$REPO_DIR/target/release/openintent-cli" "$BIN"
+  cp "$REPO_DIR/target/release/openintent" "$BIN"
   chmod +x "$BIN"
   cd - >/dev/null
   rm -rf "$REPO_DIR"
@@ -319,7 +319,7 @@ source "\$HOME/.openintentos/.env"
 export TELEGRAM_BOT_TOKEN OPENAI_API_KEY NVIDIA_API_KEY GOOGLE_API_KEY
 export DEEPSEEK_API_KEY GROQ_API_KEY GITHUB_TOKEN DISCORD_BOT_TOKEN
 cd "\$HOME/.openintentos"
-nohup ./openintent-cli bot >> bot.log 2>&1 &
+nohup ./openintent bot >> bot.log 2>&1 &
 echo \$! > "\$PID_FILE"
 echo "✓ Restarted (PID \$(cat "\$PID_FILE"))"
 SCRIPT
@@ -428,14 +428,14 @@ SERVICE
   else
     # Fallback: cron @reboot
     (crontab -l 2>/dev/null | grep -v openintentos; \
-     echo "@reboot source $ENV_FILE && cd $INSTALL_DIR && nohup ./openintent-cli bot >> $LOG_FILE 2>&1 &") \
+     echo "@reboot source $ENV_FILE && cd $INSTALL_DIR && nohup ./openintent bot >> $LOG_FILE 2>&1 &") \
      | crontab -
     ok "Cron @reboot entry installed"
 
     # Start now
     source "$ENV_FILE"
     cd "$INSTALL_DIR"
-    nohup ./openintent-cli bot >> "$LOG_FILE" 2>&1 &
+    nohup ./openintent bot >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
   fi
 fi

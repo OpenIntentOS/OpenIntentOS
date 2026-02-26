@@ -10,7 +10,7 @@ $ErrorActionPreference = "Stop"
 
 $REPO       = "OpenIntentOS/OpenIntentOS"
 $INSTALL_DIR = "$env:APPDATA\openintentos"
-$BIN         = "$INSTALL_DIR\openintent-cli.exe"
+$BIN         = "$INSTALL_DIR\openintent.exe"
 $ENV_FILE    = "$INSTALL_DIR\.env"
 $CONFIG_DIR  = "$INSTALL_DIR\config"
 $DATA_DIR    = "$INSTALL_DIR\data"
@@ -58,9 +58,9 @@ New-Item -ItemType Directory -Force -Path $INSTALL_DIR, $CONFIG_DIR, $DATA_DIR |
 try {
   $release = Invoke-RestMethod "https://api.github.com/repos/$REPO/releases/latest"
   $tag     = $release.tag_name
-  $zipUrl  = "https://github.com/$REPO/releases/download/$tag/openintent-cli-$target.zip"
+  $zipUrl  = "https://github.com/$REPO/releases/download/$tag/openintent-$target.zip"
 
-  Write-Info "Downloading openintent-cli $tag for $target ..."
+  Write-Info "Downloading openintent $tag for $target ..."
   $tmp = "$env:TEMP\openintent.zip"
   Invoke-WebRequest -Uri $zipUrl -OutFile $tmp -UseBasicParsing
   Expand-Archive -Path $tmp -DestinationPath $INSTALL_DIR -Force
@@ -89,8 +89,8 @@ catch {
     $tmpRepo = "$env:TEMP\openintentos-build"
     git clone --depth 1 "https://github.com/$REPO.git" $tmpRepo
     Push-Location $tmpRepo
-    cargo build --release --bin openintent-cli
-    Copy-Item "target\release\openintent-cli.exe" $BIN
+    cargo build --release --bin openintent
+    Copy-Item "target\release\openintent.exe" $BIN
     Pop-Location
     Remove-Item -Recurse -Force $tmpRepo
     Write-Ok "Build complete"
@@ -203,7 +203,7 @@ $restartScript = "$INSTALL_DIR\restart.bat"
 @"
 @echo off
 echo Restarting OpenIntentOS...
-taskkill /f /im openintent-cli.exe 2>nul
+taskkill /f /im openintent.exe 2>nul
 timeout /t 2 /nobreak >nul
 start "" /b "$startScript"
 echo Done. Check logs: $LOG_FILE
@@ -212,7 +212,7 @@ echo Done. Check logs: $LOG_FILE
 $statusScript = "$INSTALL_DIR\status.bat"
 @"
 @echo off
-tasklist /fi "imagename eq openintent-cli.exe" | find "openintent-cli.exe" >nul
+tasklist /fi "imagename eq openintent.exe" | find "openintent.exe" >nul
 if %errorlevel%==0 (
   echo [OK] OpenIntentOS is running
 ) else (
@@ -227,7 +227,7 @@ $uninstallScript = "$INSTALL_DIR\uninstall.bat"
 @"
 @echo off
 echo Uninstalling OpenIntentOS...
-taskkill /f /im openintent-cli.exe 2>nul
+taskkill /f /im openintent.exe 2>nul
 schtasks /delete /tn "OpenIntentOS" /f 2>nul
 rmdir /s /q "$INSTALL_DIR"
 echo Done. OpenIntentOS has been removed.
@@ -257,7 +257,7 @@ Write-Step 5 5 "Starting OpenIntentOS"
 Start-Process -FilePath $startScript -WindowStyle Hidden
 Start-Sleep -Seconds 4
 
-$proc = Get-Process "openintent-cli" -ErrorAction SilentlyContinue
+$proc = Get-Process "openintent" -ErrorAction SilentlyContinue
 if ($proc) {
   Write-Ok "Bot is running (PID $($proc.Id))"
 } else {
