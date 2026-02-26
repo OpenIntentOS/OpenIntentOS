@@ -245,28 +245,84 @@ echo -e "    3. Choose a name and username"
 echo -e "    4. Copy the token it gives you${NC}\n"
 prompt_secret TELEGRAM_BOT_TOKEN "Telegram Bot Token" "https://t.me/BotFather" "required"
 
-# ── Primary LLM provider ───────────────────────────────────────────────────────
-echo -e "  ${CYAN}🧠 AI Provider  (pick at least one)${NC}\n"
+# ── Primary LLM provider — smart menu ─────────────────────────────────────────
+OPENAI_API_KEY=""; NVIDIA_API_KEY=""; GOOGLE_API_KEY=""
+DEEPSEEK_API_KEY=""; GROQ_API_KEY=""
 
-prompt_secret OPENAI_API_KEY     "OpenAI API Key"     "https://platform.openai.com/api-keys"
-prompt_secret NVIDIA_API_KEY     "NVIDIA NIM API Key  (free tier)" "https://build.nvidia.com"
-prompt_secret GOOGLE_API_KEY     "Google Gemini Key"  "https://aistudio.google.com/apikey"
-prompt_secret DEEPSEEK_API_KEY   "DeepSeek API Key"   "https://platform.deepseek.com"
-prompt_secret GROQ_API_KEY       "Groq API Key"       "https://console.groq.com/keys"
+# Check if Ollama is running locally (zero-config AI option)
+OLLAMA_AVAILABLE=false
+if curl -s --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+  OLLAMA_AVAILABLE=true
+fi
 
-# ── Optional integrations ──────────────────────────────────────────────────────
-echo -e "  ${CYAN}🔗 Optional Integrations${NC}\n"
-prompt_secret GITHUB_TOKEN       "GitHub Token (enables self-repair)" "https://github.com/settings/tokens"
-prompt_secret DISCORD_BOT_TOKEN  "Discord Bot Token" "https://discord.com/developers/applications"
+echo -e "  ${CYAN}🧠 AI Provider${NC}\n"
+
+if $OLLAMA_AVAILABLE; then
+  ok "Ollama detected on this machine — no API key needed!"
+  echo -e "  ${DIM}  The bot will use your local Ollama models by default."
+  echo -e "  You can still add a cloud API key for more powerful models.${NC}\n"
+fi
+
+echo -e "  ${DIM}Which AI provider do you have? (Enter a number)${NC}\n"
+echo -e "  ${BOLD}  1)${NC} OpenAI          ${DIM}(ChatGPT — paid, most popular)${NC}"
+echo -e "  ${BOLD}  2)${NC} Google Gemini   ${DIM}(free tier available at aistudio.google.com)${NC}"
+echo -e "  ${BOLD}  3)${NC} Groq            ${DIM}(free tier, very fast — console.groq.com)${NC}"
+echo -e "  ${BOLD}  4)${NC} NVIDIA NIM      ${DIM}(free \$100 credit for new accounts — build.nvidia.com)${NC}"
+echo -e "  ${BOLD}  5)${NC} DeepSeek        ${DIM}(very affordable — platform.deepseek.com)${NC}"
+if $OLLAMA_AVAILABLE; then
+  echo -e "  ${BOLD}  0)${NC} Use local Ollama only ${DIM}(already detected — free, no internet)${NC}"
+fi
+echo -e "  ${BOLD}  s)${NC} Skip for now   ${DIM}(add key later by editing $ENV_FILE)${NC}"
+echo ""
+printf "  Your choice: "
+read -r ai_choice <&3
+echo ""
+
+case "$ai_choice" in
+  1)
+    echo -e "  ${DIM}Get your key at: https://platform.openai.com/api-keys${NC}"
+    prompt_secret OPENAI_API_KEY "OpenAI API Key" "" "required"
+    ;;
+  2)
+    echo -e "  ${DIM}Get your free key at: https://aistudio.google.com/apikey${NC}"
+    prompt_secret GOOGLE_API_KEY "Google Gemini API Key" "" "required"
+    ;;
+  3)
+    echo -e "  ${DIM}Get your free key at: https://console.groq.com/keys${NC}"
+    prompt_secret GROQ_API_KEY "Groq API Key" "" "required"
+    ;;
+  4)
+    echo -e "  ${DIM}Get your free key at: https://build.nvidia.com${NC}"
+    prompt_secret NVIDIA_API_KEY "NVIDIA NIM API Key" "" "required"
+    ;;
+  5)
+    echo -e "  ${DIM}Get your key at: https://platform.deepseek.com${NC}"
+    prompt_secret DEEPSEEK_API_KEY "DeepSeek API Key" "" "required"
+    ;;
+  0)
+    ok "Using local Ollama — no key needed"
+    ;;
+  s|S|"")
+    warn "Skipped — add a key later by editing: $ENV_FILE"
+    ;;
+  *)
+    warn "Unrecognized choice — skipping. Add a key later by editing: $ENV_FILE"
+    ;;
+esac
 
 exec 3<&-
 
-# Validate at least one LLM key provided
-if [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${NVIDIA_API_KEY:-}" ] && \
-   [ -z "${GOOGLE_API_KEY:-}" ] && [ -z "${DEEPSEEK_API_KEY:-}" ] && \
-   [ -z "${GROQ_API_KEY:-}" ]; then
-  warn "No AI provider key was entered. The bot will use Ollama (local) if available."
-  warn "You can add keys later by editing: $ENV_FILE"
+# Validate at least one option available
+ALL_KEYS_EMPTY=true
+for k in "$OPENAI_API_KEY" "$NVIDIA_API_KEY" "$GOOGLE_API_KEY" "$DEEPSEEK_API_KEY" "$GROQ_API_KEY"; do
+  [ -n "$k" ] && ALL_KEYS_EMPTY=false
+done
+if $ALL_KEYS_EMPTY && ! $OLLAMA_AVAILABLE; then
+  echo ""
+  warn "No AI key provided and Ollama is not running."
+  warn "The bot will start but won't be able to answer until you add a key."
+  warn "Edit $ENV_FILE and run $INSTALL_DIR/restart.sh"
+  echo ""
 fi
 
 # Write .env file
@@ -502,6 +558,11 @@ echo -e "  ${CYAN}  openintent status${NC}              — check everything is 
 echo -e "  ${CYAN}  $INSTALL_DIR/status.sh${NC}   — is the bot running?"
 echo -e "  ${CYAN}  $INSTALL_DIR/restart.sh${NC}  — restart after config changes"
 echo -e "  ${CYAN}  $INSTALL_DIR/uninstall.sh${NC} — remove OpenIntentOS"
+echo ""
+echo -e "  ${DIM}── Add more integrations later (edit $ENV_FILE) ─────────────${NC}"
+echo -e "  ${DIM}  GITHUB_TOKEN        — lets the bot read/write your GitHub repos${NC}"
+echo -e "  ${DIM}  DISCORD_BOT_TOKEN   — connect to a Discord server too${NC}"
+echo -e "  ${DIM}  (restart the bot after editing the file)${NC}"
 echo ""
 echo -e "  ${DIM}To update to a newer version: run the install command again.${NC}"
 echo -e "  ${DIM}Your data and settings are never deleted on update.${NC}"
