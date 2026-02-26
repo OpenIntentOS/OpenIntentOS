@@ -36,10 +36,44 @@ jobs:
           # workspace members, so only Cargo.toml needs updating.
           sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
 
+      - name: Update CHANGELOG.md
+        run: |
+          NEW_VERSION="${{ steps.bump.outputs.new }}"
+          DATE=$(date -u +%Y-%m-%d)
+
+          # Collect commits since the last tag, excluding release chore commits.
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            CHANGES=$(git log "${LAST_TAG}..HEAD" --pretty=format:"- %s" --no-merges \
+              | grep -v "^- chore: release")
+          else
+            CHANGES=$(git log --pretty=format:"- %s" --no-merges \
+              | grep -v "^- chore: release")
+          fi
+
+          # Fall back if nothing to list.
+          if [ -z "$CHANGES" ]; then
+            CHANGES="- maintenance release"
+          fi
+
+          ENTRY="## [${NEW_VERSION}] - ${DATE}"$'\n'"${CHANGES}"$'\n'
+
+          if [ -f CHANGELOG.md ]; then
+            # Preserve the heading and prepend the new entry after it.
+            HEADING=$(head -1 CHANGELOG.md)
+            REST=$(tail -n +2 CHANGELOG.md)
+            printf '%s\n\n%s\n%s' "$HEADING" "$ENTRY" "$REST" > CHANGELOG.md
+          else
+            printf '# Changelog\n\n%s\n' "$ENTRY" > CHANGELOG.md
+          fi
+
+          echo "--- CHANGELOG entry ---"
+          head -10 CHANGELOG.md
+
       - name: Commit
         id: commit
         run: |
-          git add Cargo.toml
+          git add Cargo.toml CHANGELOG.md
           git commit -m "chore: release v${{ steps.bump.outputs.new }}"
           git push origin main
           echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
