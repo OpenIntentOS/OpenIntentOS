@@ -3979,9 +3979,7 @@ version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
-[[package]]
-name = "openintent-adapters"
-version = "0.1.0"
+0.1.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4012,9 +4010,7 @@ dependencies = [
  "webpki-roots 0.26.11",
 ]
 
-[[package]]
-name = "openintent-agent"
-version = "0.1.0"
+0.1.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4035,9 +4031,7 @@ dependencies = [
  "uuid",
 ]
 
-[[package]]
-name = "openintent-auth-engine"
-version = "0.1.0"
+0.1.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4054,9 +4048,7 @@ dependencies = [
  "uuid",
 ]
 
-[[package]]
-name = "openintent-cli"
-version = "0.1.0"
+0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4088,9 +4080,7 @@ dependencies = [
  "url",
 ]
 
-[[package]]
-name = "openintent-intent"
-version = "0.1.0"
+0.1.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4105,9 +4095,7 @@ dependencies = [
  "uuid",
 ]
 
-[[package]]
-name = "openintent-kernel"
-version = "0.1.0"
+0.1.1"
 dependencies = [
  "aho-corasick",
  "async-trait",
@@ -4124,9 +4112,7 @@ dependencies = [
  "uuid",
 ]
 
-[[package]]
-name = "openintent-sandbox"
-version = "0.1.0"
+0.1.1"
 dependencies = [
  "async-trait",
  "openintent-adapters",
@@ -4139,9 +4125,7 @@ dependencies = [
  "wasmtime",
 ]
 
-[[package]]
-name = "openintent-skills"
-version = "0.1.0"
+0.1.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4155,9 +4139,7 @@ dependencies = [
  "tracing",
 ]
 
-[[package]]
-name = "openintent-store"
-version = "0.1.0"
+0.1.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4173,9 +4155,7 @@ dependencies = [
  "uuid",
 ]
 
-[[package]]
-name = "openintent-tui"
-version = "0.1.0"
+0.1.1"
 dependencies = [
  "async-trait",
  "crossterm",
@@ -4189,9 +4169,7 @@ dependencies = [
  "tracing",
 ]
 
-[[package]]
-name = "openintent-ui"
-version = "0.1.0"
+0.1.1"
 dependencies = [
  "iced",
  "openintent-agent",
@@ -4202,9 +4180,7 @@ dependencies = [
  "tracing",
 ]
 
-[[package]]
-name = "openintent-vault"
-version = "0.1.0"
+0.1.1"
 dependencies = [
  "chrono",
  "ring",
@@ -4218,9 +4194,7 @@ dependencies = [
  "tracing",
 ]
 
-[[package]]
-name = "openintent-web"
-version = "0.1.0"
+0.1.1"
 dependencies = [
  "async-trait",
  "axum",
