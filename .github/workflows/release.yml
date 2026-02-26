@@ -16,14 +16,35 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-apple-darwin
-            os: macos-latest
+          # macOS
           - target: aarch64-apple-darwin
             os: macos-latest
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          # Linux x86_64
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
+            archive: tar.gz
+          # Linux ARM64 (Raspberry Pi 4/5, AWS Graviton, Apple M1 Linux)
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04
+            archive: tar.gz
+            cross_linker: gcc-aarch64-linux-gnu
+          # Linux ARMv7 (Raspberry Pi 2/3, older ARM devices)
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-22.04
+            archive: tar.gz
+            cross_linker: gcc-arm-linux-gnueabihf
+          # Windows x64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+          # Windows ARM64 (Surface Pro X, Snapdragon laptops)
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
 
     steps:
       - name: Checkout
@@ -35,11 +56,13 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install cross-compilation tools (Linux ARM)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        if: matrix.cross_linker != ''
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          sudo apt-get install -y ${{ matrix.cross_linker }}
+          LINKER_BIN="${{ matrix.cross_linker }}"
+          ENV_KEY="CARGO_TARGET_$(echo '${{ matrix.target }}' | tr '[:lower:]-' '[:upper:]_')_LINKER"
+          echo "${ENV_KEY}=${LINKER_BIN}" >> $GITHUB_ENV
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -54,13 +77,23 @@ jobs:
       - name: Build release binary
         run: cargo build --release --bin openintent-cli --target ${{ matrix.target }}
 
-      - name: Package binary
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
           BIN="target/${{ matrix.target }}/release/openintent-cli"
           ARCHIVE="openintent-cli-${{ matrix.target }}.tar.gz"
           tar -czf "$ARCHIVE" -C "$(dirname $BIN)" "$(basename $BIN)"
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
+
+      - name: Package (zip — Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $bin = "target\${{ matrix.target }}\release\openintent-cli.exe"
+          $archive = "openintent-cli-${{ matrix.target }}.zip"
+          Compress-Archive -Path $bin -DestinationPath $archive
+          "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -85,20 +118,31 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*.tar.gz
           generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
           body: |
-            ## Install
+            ## One-line Install
 
+            **macOS / Linux / WSL / Raspberry Pi:**
             ```bash
             curl -fsSL https://raw.githubusercontent.com/OpenIntentOS/OpenIntentOS/main/install.sh | bash
             ```
 
+            **Windows (PowerShell):**
+            ```powershell
+            irm https://raw.githubusercontent.com/OpenIntentOS/OpenIntentOS/main/install.ps1 | iex
+            ```
+
             ## Manual Download
 
-            | Platform | File |
-            |----------|------|
-            | macOS (Apple Silicon M1/M2/M3) | `openintent-cli-aarch64-apple-darwin.tar.gz` |
-            | macOS (Intel) | `openintent-cli-x86_64-apple-darwin.tar.gz` |
-            | Linux x86_64 | `openintent-cli-x86_64-unknown-linux-gnu.tar.gz` |
-            | Linux ARM64 (Raspberry Pi 4+) | `openintent-cli-aarch64-unknown-linux-gnu.tar.gz` |
+            | Platform | Architecture | File |
+            |----------|-------------|------|
+            | macOS | Apple Silicon (M1/M2/M3/M4) | `openintent-cli-aarch64-apple-darwin.tar.gz` |
+            | macOS | Intel | `openintent-cli-x86_64-apple-darwin.tar.gz` |
+            | Linux | x86_64 (PC/Server/WSL) | `openintent-cli-x86_64-unknown-linux-gnu.tar.gz` |
+            | Linux | ARM64 (Raspberry Pi 4/5) | `openintent-cli-aarch64-unknown-linux-gnu.tar.gz` |
+            | Linux | ARMv7 (Raspberry Pi 2/3) | `openintent-cli-armv7-unknown-linux-gnueabihf.tar.gz` |
+            | Windows | x64 | `openintent-cli-x86_64-pc-windows-msvc.zip` |
+            | Windows | ARM64 (Snapdragon) | `openintent-cli-aarch64-pc-windows-msvc.zip` |

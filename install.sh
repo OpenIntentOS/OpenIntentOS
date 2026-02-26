@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # OpenIntentOS Installer
 # Usage: curl -fsSL https://raw.githubusercontent.com/OpenIntentOS/OpenIntentOS/main/install.sh | bash
+#
+# Supported platforms:
+#   macOS       — Apple Silicon (M1/M2/M3/M4), Intel
+#   Linux       — x86_64, ARM64, ARMv7 (Raspberry Pi 2/3/4/5)
+#   WSL         — Windows Subsystem for Linux (uses Linux binary)
+#   Android     — Termux (uses ARM64 Linux binary)
+#   FreeBSD     — x86_64, ARM64 (builds from source)
 set -euo pipefail
 
 # ── Colors ────────────────────────────────────────────────────────────────────
@@ -40,6 +47,20 @@ echo -e "\n${BOLD}Step 1/5 · Detecting your system${NC}\n"
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
+IS_WSL=false
+IS_TERMUX=false
+BUILD_FROM_SOURCE=false
+
+# Detect WSL (Windows Subsystem for Linux)
+if grep -qi microsoft /proc/version 2>/dev/null || \
+   grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
+  IS_WSL=true
+fi
+
+# Detect Termux (Android)
+if [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux" ]; then
+  IS_TERMUX=true
+fi
 
 case "$OS" in
   Darwin)
@@ -53,18 +74,45 @@ case "$OS" in
   Linux)
     PLATFORM="linux"
     case "$ARCH" in
-      x86_64)  TARGET="x86_64-unknown-linux-gnu" ;;
-      aarch64) TARGET="aarch64-unknown-linux-gnu" ;;
-      armv7l)  TARGET="armv7-unknown-linux-gnueabihf" ;;
-      *)       die "Unsupported Linux architecture: $ARCH" ;;
+      x86_64)          TARGET="x86_64-unknown-linux-gnu" ;;
+      aarch64|arm64)   TARGET="aarch64-unknown-linux-gnu" ;;
+      armv7l|armv7)    TARGET="armv7-unknown-linux-gnueabihf" ;;
+      armv6l)          TARGET="arm-unknown-linux-gnueabihf" ; BUILD_FROM_SOURCE=true ;;
+      i686|i386)       TARGET="i686-unknown-linux-gnu"       ; BUILD_FROM_SOURCE=true ;;
+      riscv64)         TARGET="riscv64gc-unknown-linux-gnu"  ; BUILD_FROM_SOURCE=true ;;
+      *)               die "Unsupported Linux architecture: $ARCH. Try building from source: https://github.com/$REPO" ;;
+    esac
+    ;;
+  FreeBSD)
+    PLATFORM="freebsd"
+    BUILD_FROM_SOURCE=true
+    case "$ARCH" in
+      amd64)   TARGET="x86_64-unknown-freebsd" ;;
+      aarch64) TARGET="aarch64-unknown-freebsd" ;;
+      *)       die "Unsupported FreeBSD architecture: $ARCH" ;;
     esac
     ;;
   *)
-    die "Unsupported OS: $OS. OpenIntentOS supports macOS and Linux."
+    echo ""
+    echo -e "  ${YELLOW}Unsupported OS: $OS${NC}"
+    echo ""
+    echo -e "  ${BOLD}Windows users:${NC} run this instead in PowerShell:"
+    echo ""
+    echo -e "  ${CYAN}  irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex${NC}"
+    echo ""
+    exit 1
     ;;
 esac
 
-ok "Detected: $OS ($ARCH)"
+# Friendly OS label
+OS_LABEL="$OS ($ARCH)"
+$IS_WSL      && OS_LABEL="Windows WSL ($ARCH)"
+$IS_TERMUX   && OS_LABEL="Android / Termux ($ARCH)"
+
+ok "Detected: $OS_LABEL → target: $TARGET"
+$IS_WSL    && info "WSL detected — using Linux binary (works natively in WSL)"
+$IS_TERMUX && info "Termux detected — using Linux ARM64 binary"
+$BUILD_FROM_SOURCE && warn "No prebuilt binary for $ARCH — will compile from source"
 
 # ── Step 2: Download binary ───────────────────────────────────────────────────
 echo -e "\n${BOLD}Step 2/5 · Downloading OpenIntentOS${NC}\n"

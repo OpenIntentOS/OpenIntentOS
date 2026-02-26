@@ -31,19 +31,34 @@
 
 ## Install
 
+**macOS · Linux · WSL · Raspberry Pi · Android (Termux)**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/OpenIntentOS/OpenIntentOS/main/install.sh | bash
 ```
 
-That's it. The script will:
-- Download the prebuilt binary for your OS (macOS / Linux, Intel / ARM)
-- Walk you through entering your API keys — with links to where to get each one
-- Install a system service so the bot starts automatically on every reboot
-- Start the bot immediately
+**Windows 10 / 11** — open PowerShell and run:
+```powershell
+irm https://raw.githubusercontent.com/OpenIntentOS/OpenIntentOS/main/install.ps1 | iex
+```
 
-No Rust, no Docker, no terminal experience required.
+That's it. The installer will:
+1. Auto-detect your OS and download the right prebuilt binary
+2. Walk you through entering API keys — with a direct link for each one
+3. Install a system service so the bot survives reboots and auto-restarts on crash
+4. Start the bot immediately
 
-**Supported platforms:** macOS (Apple Silicon · Intel) · Linux (x86\_64 · ARM64 / Raspberry Pi)
+**No Rust, no Docker, no terminal experience required.**
+
+| Platform | Architecture | Install command |
+|----------|-------------|-----------------|
+| macOS | Apple Silicon (M1/M2/M3/M4) | `curl ... \| bash` |
+| macOS | Intel | `curl ... \| bash` |
+| Linux | x86\_64 (PC / VPS / WSL) | `curl ... \| bash` |
+| Linux | ARM64 (Raspberry Pi 4/5 · AWS Graviton) | `curl ... \| bash` |
+| Linux | ARMv7 (Raspberry Pi 2/3 · older ARM) | `curl ... \| bash` |
+| Windows 10/11 | x64 | `irm ... \| iex` |
+| Windows | ARM64 (Snapdragon laptops) | `irm ... \| iex` |
+| Android | Termux (ARM64) | `curl ... \| bash` |
 
 ---
 
@@ -295,8 +310,14 @@ openintent-cli          (binary — single executable)
 
 ### One-line install (recommended)
 
+**macOS / Linux / WSL / Raspberry Pi / Termux:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/OpenIntentOS/OpenIntentOS/main/install.sh | bash
+```
+
+**Windows 10 / 11** — open PowerShell as normal user (no admin needed):
+```powershell
+irm https://raw.githubusercontent.com/OpenIntentOS/OpenIntentOS/main/install.ps1 | iex
 ```
 
 The installer will guide you through everything step by step.
