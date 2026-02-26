@@ -184,12 +184,12 @@ curl -fsSL "$CONFIG_RAW" -o "$CONFIG_FILE" 2>/dev/null \
   && ok "Configuration ready" \
   || warn "Could not download config — will use built-in defaults"
 
-# Download skills directory listing and files
+# Download built-in skills from repo
 SKILLS_BASE="https://raw.githubusercontent.com/$REPO/main/skills"
 for skill in weather-check email-automation web-search-plus ip-lookup; do
   mkdir -p "$SKILLS_DIR/$skill"
-  curl -fsSL "$SKILLS_BASE/$skill/skill.toml" \
-    -o "$SKILLS_DIR/$skill/skill.toml" 2>/dev/null || true
+  curl -fsSL "$SKILLS_BASE/$skill/SKILL.md" \
+    -o "$SKILLS_DIR/$skill/SKILL.md" 2>/dev/null || true
 done
 
 # ── Step 3: API key setup ─────────────────────────────────────────────────────
@@ -197,8 +197,13 @@ echo -e "\n${BOLD}Step 3/5 · Connect your AI providers${NC}\n"
 echo -e "${DIM}  You need at least one AI key + a Telegram bot token."
 echo -e "  All values are saved locally — never sent anywhere except the AI APIs.${NC}\n"
 
-# Read from terminal even when piped
-exec 3</dev/tty
+# Read from terminal even when piped (fallback to stdin if /dev/tty unavailable)
+if [ -e /dev/tty ] && exec 3</dev/tty 2>/dev/null; then
+  : # /dev/tty opened on fd 3
+else
+  exec 3<&0  # fall back to stdin (keys will be visible but at least won't crash)
+  warn "/dev/tty not available — input will be visible (Termux/container). You can edit $ENV_FILE after install."
+fi
 
 prompt_secret() {
   local var_name="$1"
@@ -216,17 +221,18 @@ prompt_secret() {
     echo -e "  ${DIM}(optional — press Enter to skip)${NC}"
   fi
   printf "  Enter: "
-  read -r value <&3
-  echo ""
+  # -s hides input so API keys are not visible on screen
+  read -rs value <&3
+  echo ""  # newline after hidden input
 
   if [ -n "$value" ]; then
-    eval "$var_name='$value'"
+    printf -v "$var_name" '%s' "$value"
     ok "$label saved"
   elif [ "$required" = "required" ]; then
     warn "Skipped — you can add this later by editing $ENV_FILE"
-    eval "$var_name=''"
+    printf -v "$var_name" '%s' ""
   else
-    eval "$var_name=''"
+    printf -v "$var_name" '%s' ""
   fi
 }
 
@@ -440,9 +446,21 @@ SERVICE
   fi
 fi
 
+# ── Add binary to PATH ────────────────────────────────────────────────────────
+PATH_LINE="export PATH=\"\$HOME/.openintentos:\$PATH\""
+for rc_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+  if [ -f "$rc_file" ] && ! grep -q ".openintentos" "$rc_file" 2>/dev/null; then
+    echo "" >> "$rc_file"
+    echo "# OpenIntentOS" >> "$rc_file"
+    echo "$PATH_LINE" >> "$rc_file"
+  fi
+done
+export PATH="$HOME/.openintentos:$PATH"
+
 # ── Step 5: Verify ────────────────────────────────────────────────────────────
 echo -e "\n${BOLD}Step 5/5 · Verifying bot is running${NC}\n"
-sleep 3
+info "Waiting for bot to connect to Telegram..."
+sleep 10
 
 BOT_RUNNING=false
 if [ "$PLATFORM" = "macos" ]; then
@@ -465,22 +483,28 @@ fi
 echo ""
 hr
 echo ""
-echo -e "${BOLD}${GREEN}  ✓  OpenIntentOS is installed and running!${NC}"
+echo -e "${BOLD}${GREEN}  ✓  OpenIntentOS installed!${NC}"
 echo ""
+
 if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
-  echo -e "  ${BOLD}Open Telegram and message your bot to get started.${NC}"
+  echo -e "  ${BOLD}Next step: open Telegram and send a message to your bot.${NC}"
+  echo -e "  ${DIM}  It will respond immediately. Try saying: \"hello\" or \"what can you do?\"${NC}"
 else
-  echo -e "  ${YELLOW}  Add your Telegram bot token to: $ENV_FILE${NC}"
-  echo -e "  ${YELLOW}  Then run: $INSTALL_DIR/restart.sh${NC}"
+  echo -e "  ${YELLOW}  You didn't enter a Telegram token.${NC}"
+  echo -e "  ${YELLOW}  Edit this file and add your token, then restart:${NC}"
+  echo -e "  ${CYAN}    $ENV_FILE${NC}"
+  echo -e "  ${CYAN}    $INSTALL_DIR/restart.sh${NC}"
 fi
+
 echo ""
-echo -e "  ${DIM}Useful commands:${NC}"
-echo -e "  ${CYAN}  $INSTALL_DIR/status.sh${NC}    — check if bot is running"
-echo -e "  ${CYAN}  $INSTALL_DIR/restart.sh${NC}   — apply config changes"
-echo -e "  ${CYAN}  $INSTALL_DIR/uninstall.sh${NC} — remove everything"
-echo -e "  ${CYAN}  tail -f $LOG_FILE${NC} — live logs"
+echo -e "  ${DIM}── Useful commands ──────────────────────────────────────────${NC}"
+echo -e "  ${CYAN}  openintent status${NC}              — check everything is OK"
+echo -e "  ${CYAN}  $INSTALL_DIR/status.sh${NC}   — is the bot running?"
+echo -e "  ${CYAN}  $INSTALL_DIR/restart.sh${NC}  — restart after config changes"
+echo -e "  ${CYAN}  $INSTALL_DIR/uninstall.sh${NC} — remove OpenIntentOS"
 echo ""
-echo -e "  ${DIM}To update: run the install command again. No data will be lost.${NC}"
+echo -e "  ${DIM}To update to a newer version: run the install command again.${NC}"
+echo -e "  ${DIM}Your data and settings are never deleted on update.${NC}"
 echo ""
 hr
 echo ""
