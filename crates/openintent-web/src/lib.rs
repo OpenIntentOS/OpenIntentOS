@@ -12,11 +12,13 @@ pub mod api;
 pub mod frontend;
 pub mod mcp;
 pub mod server;
+pub mod setup;
 pub mod state;
 pub mod ws;
 
 pub use mcp::McpServer;
 pub use server::WebServer;
+pub use setup::{SETUP_HTML, is_configured, serve_setup};
 pub use state::AppState;
 
 /// Web server configuration.

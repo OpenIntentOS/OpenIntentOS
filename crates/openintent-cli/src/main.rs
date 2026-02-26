@@ -249,6 +249,11 @@ async fn cmd_sessions(action: SessionAction) -> Result<()> {
 async fn cmd_serve(bind: String, port: u16) -> Result<()> {
     init_tracing("info");
 
+    // If no AI keys are configured yet, start the first-run setup wizard.
+    if !openintent_web::setup::is_configured() {
+        return cmd_serve_setup(bind, port).await;
+    }
+
     info!("starting OpenIntentOS web server");
 
     let data_dir = Path::new("data");
@@ -301,6 +306,16 @@ async fn cmd_serve(bind: String, port: u16) -> Result<()> {
     server.start().await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// First-run setup wizard server
+// ---------------------------------------------------------------------------
+
+async fn cmd_serve_setup(bind: String, port: u16) -> Result<()> {
+    openintent_web::serve_setup(&bind, port)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 // ---------------------------------------------------------------------------
