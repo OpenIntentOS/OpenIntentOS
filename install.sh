@@ -4,7 +4,7 @@
 #
 # Supported platforms:
 #   macOS       — Apple Silicon (M1/M2/M3/M4), Intel
-#   Linux       — x86_64, ARM64, ARMv7 (Raspberry Pi 2/3/4/5)
+#   Linux       — x86_64, ARM64 (Raspberry Pi 4/5)
 #   WSL         — Windows Subsystem for Linux (uses Linux binary)
 #   Android     — Termux (uses ARM64 Linux binary)
 #   FreeBSD     — x86_64, ARM64 (builds from source)
@@ -76,7 +76,7 @@ case "$OS" in
     case "$ARCH" in
       x86_64)          TARGET="x86_64-unknown-linux-gnu" ;;
       aarch64|arm64)   TARGET="aarch64-unknown-linux-gnu" ;;
-      armv7l|armv7)    TARGET="armv7-unknown-linux-gnueabihf" ;;
+      armv7l|armv7)    TARGET="armv7-unknown-linux-gnueabihf" ; BUILD_FROM_SOURCE=true ;;
       armv6l)          TARGET="arm-unknown-linux-gnueabihf" ; BUILD_FROM_SOURCE=true ;;
       i686|i386)       TARGET="i686-unknown-linux-gnu"       ; BUILD_FROM_SOURCE=true ;;
       riscv64)         TARGET="riscv64gc-unknown-linux-gnu"  ; BUILD_FROM_SOURCE=true ;;

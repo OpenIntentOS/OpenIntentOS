@@ -30,12 +30,8 @@ jobs:
             os: ubuntu-22.04
             use_cross: false
 
-          # ── Linux ARM (cross — needs sysroot with OpenSSL) ────
+          # ── Linux ARM64 (cross-compiled) ──────────────────────
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
-            use_cross: true
-
-          - target: armv7-unknown-linux-gnueabihf
             os: ubuntu-22.04
             use_cross: true
 
@@ -145,6 +141,5 @@ jobs:
             | macOS | Intel | `openintent-x86_64-apple-darwin.tar.gz` |
             | Linux | x86_64 (PC / VPS / WSL) | `openintent-x86_64-unknown-linux-gnu.tar.gz` |
             | Linux | ARM64 (Raspberry Pi 4/5) | `openintent-aarch64-unknown-linux-gnu.tar.gz` |
-            | Linux | ARMv7 (Raspberry Pi 2/3) | `openintent-armv7-unknown-linux-gnueabihf.tar.gz` |
             | Windows | x64 | `openintent-x86_64-pc-windows-msvc.zip` |
             | Windows | ARM64 (Snapdragon) | `openintent-aarch64-pc-windows-msvc.zip` |

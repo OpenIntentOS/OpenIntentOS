@@ -55,7 +55,6 @@ That's it. The installer will:
 | macOS | Intel | `curl ... \| bash` |
 | Linux | x86\_64 (PC / VPS / WSL) | `curl ... \| bash` |
 | Linux | ARM64 (Raspberry Pi 4/5 · AWS Graviton) | `curl ... \| bash` |
-| Linux | ARMv7 (Raspberry Pi 2/3 · older ARM) | `curl ... \| bash` |
 | Windows 10/11 | x64 | `irm ... \| iex` |
 | Windows | ARM64 (Snapdragon laptops) | `irm ... \| iex` |
 | Android | Termux (ARM64) | `curl ... \| bash` |
