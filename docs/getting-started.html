@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Getting Started — OpenIntentOS</title>
+  <meta name="description" content="Build and run OpenIntentOS from source. Telegram bot, provider configuration, adapter setup.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">
+        <span style="color:var(--green);font-size:1.1rem;">⬡</span>
+        Open<span class="accent">Intent</span>OS
+        <span class="version">v0.1</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="index.html">Home</a></li>
+        <li><a href="getting-started.html" class="active">Get Started</a></li>
+        <li><a href="architecture.html">Architecture</a></li>
+        <li><a href="configuration.html">Config</a></li>
+      </ul>
+      <a href="https://github.com/openintent/OpenIntentOS" class="nav-github" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-layout">
+
+  <!-- Sidebar -->
+  <aside class="docs-sidebar">
+    <div class="sidebar-group">
+      <div class="sidebar-group-label">Prerequisites</div>
+      <a href="#prerequisites" class="sidebar-link active">Requirements</a>
+      <a href="#rust-toolchain" class="sidebar-link">Rust Toolchain</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-label">Installation</div>
+      <a href="#clone" class="sidebar-link">Clone &amp; Build</a>
+      <a href="#environment" class="sidebar-link">Environment Variables</a>
+      <a href="#config" class="sidebar-link">Configuration File</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-label">Running</div>
+      <a href="#telegram-bot" class="sidebar-link">Telegram Bot</a>
+      <a href="#bot-commands" class="sidebar-link">Bot Commands</a>
+      <a href="#model-switching" class="sidebar-link">Model Switching</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-label">Providers</div>
+      <a href="#openai" class="sidebar-link">OpenAI</a>
+      <a href="#nvidia" class="sidebar-link">NVIDIA NIM</a>
+      <a href="#gemini" class="sidebar-link">Google Gemini</a>
+      <a href="#deepseek" class="sidebar-link">DeepSeek</a>
+      <a href="#groq" class="sidebar-link">Groq</a>
+      <a href="#ollama" class="sidebar-link">Ollama (local)</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-label">Adapters</div>
+      <a href="#browser" class="sidebar-link">Browser (CDP)</a>
+      <a href="#email" class="sidebar-link">Email</a>
+      <a href="#github-token" class="sidebar-link">GitHub</a>
+    </div>
+  </aside>
+
+  <!-- Content -->
+  <main class="docs-content">
+
+    <div class="hero-eyebrow" style="margin-bottom:16px;">Getting Started</div>
+    <h1>Build &amp; Run OpenIntentOS</h1>
+    <p style="color:var(--text-dim);font-size:0.9rem;margin-bottom:40px;line-height:1.8;">
+      OpenIntentOS compiles to a single ~10 MB binary. All you need is the Rust toolchain and at least one LLM API key.
+    </p>
+
+    <!-- Prerequisites -->
+    <h2 id="prerequisites">Prerequisites</h2>
+    <div class="metric-grid" style="margin-bottom:32px;">
+      <div class="metric-card">
+        <div class="metric-value" style="font-size:1rem;">Rust</div>
+        <div class="metric-label">1.80+ (2024 edition)</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value" style="font-size:1rem;">OS</div>
+        <div class="metric-label">macOS · Linux · Windows</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value" style="font-size:1rem;">RAM</div>
+        <div class="metric-label">512 MB minimum</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value" style="font-size:1rem;">LLM key</div>
+        <div class="metric-label">At least one provider</div>
+      </div>
+    </div>
+
+    <h2 id="rust-toolchain">Install Rust</h2>
+    <pre><span class="code-comment"># Install rustup (skip if already installed)</span>
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+<span class="code-comment"># Verify</span>
+rustc --version   <span class="code-comment"># should be ≥ 1.80</span>
+cargo --version</pre>
+
+    <div class="divider"></div>
+
+    <!-- Installation -->
+    <h2 id="clone">Clone &amp; Build</h2>
+    <pre><span class="code-comment"># Clone the repository</span>
+git clone https://github.com/openintent/OpenIntentOS
+cd OpenIntentOS
+
+<span class="code-comment"># Release build (optimised, ~10 MB binary)</span>
+cargo build --release
+
+<span class="code-comment"># The binary ends up at:</span>
+./target/release/openintent-cli</pre>
+
+    <p style="margin-top:16px;">Build time is typically 2–4 minutes on first compile (compiles all crates). Incremental rebuilds are under 10 seconds.</p>
+
+    <h2 id="environment">Environment Variables</h2>
+    <p>Set these before running. Only <code>TELEGRAM_BOT_TOKEN</code> and one LLM key are strictly required.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Variable</th><th>Required</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="td-key">TELEGRAM_BOT_TOKEN</td><td><span class="badge badge-orange">required</span></td><td>Token from @BotFather</td></tr>
+          <tr><td class="td-key">OPENAI_API_KEY</td><td><span class="badge badge-green">recommended</span></td><td>Primary LLM provider</td></tr>
+          <tr><td class="td-key">NVIDIA_API_KEY</td><td><span class="badge badge-cyan">optional</span></td><td>NVIDIA NIM free tier</td></tr>
+          <tr><td class="td-key">GOOGLE_API_KEY</td><td><span class="badge badge-cyan">optional</span></td><td>Google Gemini</td></tr>
+          <tr><td class="td-key">DEEPSEEK_API_KEY</td><td><span class="badge badge-cyan">optional</span></td><td>DeepSeek cloud</td></tr>
+          <tr><td class="td-key">GROQ_API_KEY</td><td><span class="badge badge-cyan">optional</span></td><td>Groq (ultra-fast inference)</td></tr>
+          <tr><td class="td-key">GITHUB_TOKEN</td><td><span class="badge badge-cyan">optional</span></td><td>Enables evolution self-repair</td></tr>
+          <tr><td class="td-key">DISCORD_BOT_TOKEN</td><td><span class="badge badge-cyan">optional</span></td><td>Discord gateway</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <pre><span class="code-comment"># Example .env (never commit this file)</span>
+export TELEGRAM_BOT_TOKEN="7123456789:AAFxxxx"
+export OPENAI_API_KEY="sk-proj-xxxx"
+export NVIDIA_API_KEY="nvapi-xxxx"
+export GOOGLE_API_KEY="AIzaSyxxxx"
+export DEEPSEEK_API_KEY="sk-xxxx"
+export GROQ_API_KEY="gsk_xxxx"</pre>
+
+    <h2 id="config">Configuration File</h2>
+    <p>The main config lives at <code>config/default.toml</code>. The bot reads it at startup and hot-reloads changes automatically.</p>
+    <pre><span class="code-comment"># config/default.toml (key sections)</span>
+
+[provider]
+name = <span class="code-string">"openai"</span>
+base_url = <span class="code-string">"https://api.openai.com/v1"</span>
+model = <span class="code-string">"chatgpt-pro"</span>
+
+[bot]
+history_window = <span class="code-num">20</span>         <span class="code-comment"># messages of context kept per chat</span>
+show_token_usage = <span class="code-keyword">false</span>    <span class="code-comment"># toggle with /tokens on|off in chat</span>
+simple_query_threshold = <span class="code-num">120</span> <span class="code-comment"># chars; short queries use cheap model</span></pre>
+
+    <div class="divider"></div>
+
+    <!-- Running -->
+    <h2 id="telegram-bot">Run the Telegram Bot</h2>
+    <pre><span class="code-comment"># Foreground (logs to stdout)</span>
+cargo run --release --bin openintent-cli -- bot
+
+<span class="code-comment"># Background with logging to file</span>
+cargo run --release --bin openintent-cli -- bot &gt; /tmp/bot.log 2&gt;&amp;1 &amp;
+
+<span class="code-comment"># Check it's alive</span>
+tail -f /tmp/bot.log</pre>
+
+    <div class="terminal">
+      <div class="terminal-bar">
+        <div class="terminal-dots">
+          <div class="terminal-dot"></div><div class="terminal-dot"></div><div class="terminal-dot"></div>
+        </div>
+        <span class="terminal-title">Expected startup output</span>
+      </div>
+      <div class="terminal-body" style="min-height:auto;">
+        <span class="terminal-line"><span class="terminal-ok">INFO</span><span class="terminal-out"> starting Telegram bot gateway</span></span>
+        <span class="terminal-line"><span class="terminal-ok">INFO</span><span class="terminal-out"> database pragmas applied (WAL, mmap 256MiB, cache 62MiB)</span></span>
+        <span class="terminal-line"><span class="terminal-ok">INFO</span><span class="terminal-out"> adapters online: filesystem shell web_search browser feishu calendar email github</span></span>
+        <span class="terminal-line"><span class="terminal-ok">INFO</span><span class="terminal-out"> skills loaded count=5</span></span>
+        <span class="terminal-line"><span class="terminal-ok">INFO</span><span class="terminal-out"> Bot: @OpenIntentbot · Provider: OpenAI · Model: chatgpt-pro</span></span>
+        <span class="terminal-line"><span class="terminal-ok">INFO</span><span class="terminal-out"> Bot is running. Send messages to @OpenIntentbot on Telegram.</span></span>
+      </div>
+    </div>
+
+    <h2 id="bot-commands">Bot Commands</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="td-key">/start</td><td>Welcome message and capability overview</td></tr>
+          <tr><td class="td-key">/help</td><td>List all commands</td></tr>
+          <tr><td class="td-key">/models</td><td>Show available model aliases with inline keyboard</td></tr>
+          <tr><td class="td-key">/model &lt;alias&gt;</td><td>Switch model for this chat (persists across restarts)</td></tr>
+          <tr><td class="td-key">/tokens on|off</td><td>Toggle token usage display after each response</td></tr>
+          <tr><td class="td-key">/status</td><td>Show current provider, model, and health</td></tr>
+          <tr><td class="td-key">/clear</td><td>Clear conversation history for this chat</td></tr>
+          <tr><td class="td-key">/reset</td><td>Reset to default provider and model</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="model-switching">Model Switching</h2>
+    <p>Use <code>/models</code> for an inline keyboard, or type <code>/model &lt;alias&gt;</code> directly.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Alias</th><th>Provider</th><th>Model ID</th></tr></thead>
+        <tbody>
+          <tr><td class="td-key">gpt4o</td><td>OpenAI</td><td>gpt-4o</td></tr>
+          <tr><td class="td-key">o3</td><td>OpenAI</td><td>o3-mini</td></tr>
+          <tr><td class="td-key">nvidia</td><td>NVIDIA NIM</td><td>qwen/qwen3.5-397b-a17b</td></tr>
+          <tr><td class="td-key">nvidia-kimi</td><td>NVIDIA NIM</td><td>moonshotai/kimi-k2.5</td></tr>
+          <tr><td class="td-key">nemotron</td><td>NVIDIA NIM</td><td>nvidia/nemotron-3-nano-30b-a3b</td></tr>
+          <tr><td class="td-key">gemini</td><td>Google</td><td>gemini-2.5-flash</td></tr>
+          <tr><td class="td-key">deepseek</td><td>DeepSeek</td><td>deepseek-chat</td></tr>
+          <tr><td class="td-key">r1</td><td>DeepSeek</td><td>deepseek-reasoner</td></tr>
+          <tr><td class="td-key">groq</td><td>Groq</td><td>llama-3.3-70b-versatile</td></tr>
+          <tr><td class="td-key">ollama</td><td>Local Ollama</td><td>llama3.2 (configurable)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Providers -->
+    <h2 id="openai">OpenAI</h2>
+    <p>Default provider. Set <code>OPENAI_API_KEY</code> and the bot uses it automatically. To use a specific model:</p>
+    <pre>export OPENAI_API_KEY="sk-proj-xxxx"
+<span class="code-comment"># In config/default.toml:</span>
+[provider]
+model = <span class="code-string">"chatgpt-pro"</span>  <span class="code-comment"># or gpt-4o, o3-mini, etc.</span></pre>
+
+    <h2 id="nvidia">NVIDIA NIM (Free Tier)</h2>
+    <p>Sign up at <a href="https://build.nvidia.com" style="color:var(--cyan);" target="_blank" rel="noopener">build.nvidia.com</a> for a free API key. Models available depend on your account — check the NIM catalog to see what's enabled.</p>
+    <pre>export NVIDIA_API_KEY="nvapi-xxxx"</pre>
+    <p>The failover chain automatically uses NVIDIA NIM as the first fallback. You can also manually switch: <code>/model nvidia</code></p>
+
+    <h2 id="gemini">Google Gemini</h2>
+    <p>Get a key at <a href="https://aistudio.google.com" style="color:var(--cyan);" target="_blank" rel="noopener">aistudio.google.com</a>. Gemini is used as the second cascade fallback.</p>
+    <pre>export GOOGLE_API_KEY="AIzaSyxxxx"</pre>
+
+    <h2 id="deepseek">DeepSeek</h2>
+    <pre>export DEEPSEEK_API_KEY="sk-xxxx"</pre>
+    <p>DeepSeek Reasoner (<code>deepseek-reasoner</code> / alias <code>r1</code>) is excellent for step-by-step reasoning tasks.</p>
+
+    <h2 id="groq">Groq</h2>
+    <p>Groq offers the fastest inference latency of any cloud provider — useful for simple queries.</p>
+    <pre>export GROQ_API_KEY="gsk_xxxx"</pre>
+
+    <h2 id="ollama">Ollama (Local)</h2>
+    <p>Install <a href="https://ollama.ai" style="color:var(--cyan);" target="_blank" rel="noopener">Ollama</a> and pull a model. The bot connects to it on <code>localhost:11434</code>.</p>
+    <pre><span class="code-comment"># Install and pull</span>
+ollama pull llama3.2
+
+<span class="code-comment"># config/default.toml</span>
+[provider.ollama]
+base_url = <span class="code-string">"http://localhost:11434/v1"</span>
+model = <span class="code-string">"llama3.2"</span></pre>
+
+    <div class="divider"></div>
+
+    <!-- Optional adapters -->
+    <h2 id="browser">Browser Adapter (CDP)</h2>
+    <p>Launch Chrome with remote debugging enabled before starting the bot:</p>
+    <pre><span class="code-comment"># macOS</span>
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --remote-debugging-port=9222 --no-first-run &amp;
+
+<span class="code-comment"># Linux</span>
+google-chrome --remote-debugging-port=9222 --no-first-run &amp;</pre>
+    <p>The bot detects it automatically at startup: <code>DevTools endpoint already reachable</code>.</p>
+
+    <h2 id="email">Email Adapter</h2>
+    <pre><span class="code-comment"># config/default.toml</span>
+[adapters.email]
+imap_host = <span class="code-string">"imap.gmail.com"</span>
+imap_port = <span class="code-num">993</span>
+smtp_host = <span class="code-string">"smtp.gmail.com"</span>
+smtp_port = <span class="code-num">587</span>
+username  = <span class="code-string">"you@gmail.com"</span>
+<span class="code-comment"># Password/OAuth token stored in encrypted vault</span></pre>
+
+    <h2 id="github-token">GitHub Token</h2>
+    <p>Setting <code>GITHUB_TOKEN</code> enables the evolution self-repair system: the agent can read its own issues and PRs to plan fixes.</p>
+    <pre>export GITHUB_TOKEN="ghp_xxxx"</pre>
+
+  </main>
+</div>
+
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <span>OpenIntentOS · Full Rust · MIT License</span>
+      <div class="footer-links">
+        <a href="index.html">Home</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="configuration.html">Config Reference</a>
+        <a href="https://github.com/openintent/OpenIntentOS" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

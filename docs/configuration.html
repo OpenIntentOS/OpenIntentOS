@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Configuration Reference — OpenIntentOS</title>
+  <meta name="description" content="Full reference for config/default.toml — provider, bot, adapters, messages, skills, and auth profiles.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">
+        <span style="color:var(--green);font-size:1.1rem;">⬡</span>
+        Open<span class="accent">Intent</span>OS
+        <span class="version">v0.1</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="index.html">Home</a></li>
+        <li><a href="getting-started.html">Get Started</a></li>
+        <li><a href="architecture.html">Architecture</a></li>
+        <li><a href="configuration.html" class="active">Config</a></li>
+      </ul>
+      <a href="https://github.com/openintent/OpenIntentOS" class="nav-github" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-layout">
+
+  <aside class="docs-sidebar">
+    <div class="sidebar-group">
+      <div class="sidebar-group-label">Config File</div>
+      <a href="#overview" class="sidebar-link active">Overview</a>
+      <a href="#hot-reload" class="sidebar-link">Hot Reload</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-label">Sections</div>
+      <a href="#provider" class="sidebar-link">[provider]</a>
+      <a href="#bot" class="sidebar-link">[bot]</a>
+      <a href="#agent" class="sidebar-link">[agent]</a>
+      <a href="#adapters" class="sidebar-link">[adapters]</a>
+      <a href="#messages" class="sidebar-link">[messages]</a>
+      <a href="#auth-profiles" class="sidebar-link">[auth_profiles]</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-label">Env Variables</div>
+      <a href="#env-vars" class="sidebar-link">Full Reference</a>
+      <a href="#precedence" class="sidebar-link">Precedence Rules</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-label">Skills</div>
+      <a href="#skills" class="sidebar-link">Skill Definitions</a>
+      <a href="#skill-scripts" class="sidebar-link">Embedded Scripts</a>
+    </div>
+  </aside>
+
+  <main class="docs-content">
+
+    <div class="hero-eyebrow" style="margin-bottom:16px;">Configuration Reference</div>
+    <h1>config/default.toml</h1>
+    <p style="color:var(--text-dim);font-size:0.9rem;margin-bottom:40px;line-height:1.8;">
+      All runtime behaviour is controlled from a single TOML file. No hardcoded strings — every user-facing message, model name, and adapter parameter lives here.
+    </p>
+
+    <h2 id="overview">Overview</h2>
+    <p>The config file is located at <code>config/default.toml</code> relative to the working directory. The bot reads it on startup and watches it for changes (hot reload).</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Section</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="td-key">[provider]</td><td>Primary LLM provider and model selection</td></tr>
+          <tr><td class="td-key">[bot]</td><td>Telegram gateway behaviour (history, tokens, routing)</td></tr>
+          <tr><td class="td-key">[agent]</td><td>ReAct loop parameters (max turns, timeout)</td></tr>
+          <tr><td class="td-key">[adapters.*]</td><td>Per-adapter configuration (email, calendar, browser, …)</td></tr>
+          <tr><td class="td-key">[messages.*]</td><td>All user-facing strings (internationalised, loaded at runtime)</td></tr>
+          <tr><td class="td-key">[auth_profiles.*]</td><td>Named auth configurations for multi-account support</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="hot-reload">Hot Reload</h2>
+    <p>The config watcher (powered by <code>notify</code>) detects file changes using OS-native events. Changed sections are merged without restarting the bot. Changes to <code>[provider]</code> take effect on the next message.</p>
+
+    <div class="divider"></div>
+
+    <!-- [provider] -->
+    <h2 id="provider">[provider]</h2>
+    <pre><span class="code-comment"># Primary LLM provider</span>
+[provider]
+name     = <span class="code-string">"openai"</span>
+base_url = <span class="code-string">"https://api.openai.com/v1"</span>
+model    = <span class="code-string">"chatgpt-pro"</span>
+<span class="code-comment"># api_key loaded from OPENAI_API_KEY env var (never put secrets here)</span>
+
+<span class="code-comment"># Fallback providers (used by cascade failover)</span>
+[provider.nvidia]
+base_url  = <span class="code-string">"https://integrate.api.nvidia.com/v1"</span>
+model     = <span class="code-string">"qwen/qwen3.5-397b-a17b"</span>
+
+[provider.google]
+base_url  = <span class="code-string">"https://generativelanguage.googleapis.com/v1beta/openai"</span>
+model     = <span class="code-string">"gemini-2.5-flash"</span>
+
+[provider.deepseek]
+base_url  = <span class="code-string">"https://api.deepseek.com/v1"</span>
+model     = <span class="code-string">"deepseek-chat"</span>
+
+[provider.groq]
+base_url  = <span class="code-string">"https://api.groq.com/openai/v1"</span>
+model     = <span class="code-string">"llama-3.3-70b-versatile"</span>
+
+[provider.ollama]
+base_url  = <span class="code-string">"http://localhost:11434/v1"</span>
+model     = <span class="code-string">"llama3.2"</span></pre>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="td-key">name</td><td>string</td><td>Provider identifier (used in logs and /status)</td></tr>
+          <tr><td class="td-key">base_url</td><td>string</td><td>OpenAI-compatible endpoint (no trailing slash)</td></tr>
+          <tr><td class="td-key">model</td><td>string</td><td>Default model ID for this provider</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- [bot] -->
+    <h2 id="bot">[bot]</h2>
+    <pre>[bot]
+history_window          = <span class="code-num">20</span>    <span class="code-comment"># messages of context kept per chat</span>
+show_token_usage        = <span class="code-keyword">false</span> <span class="code-comment"># override per-chat with /tokens on|off</span>
+simple_query_threshold  = <span class="code-num">120</span>   <span class="code-comment"># chars; shorter messages use cheap model</span>
+long_poll_timeout_secs  = <span class="code-num">30</span>    <span class="code-comment"># Telegram getUpdates timeout</span>
+startup_notify          = <span class="code-keyword">true</span>  <span class="code-comment"># notify active chats on bot start</span></pre>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="td-key">history_window</td><td class="td-metric">20</td><td>Number of prior messages included in each LLM call. Lower = fewer tokens, shorter memory.</td></tr>
+          <tr><td class="td-key">show_token_usage</td><td class="td-metric">false</td><td>Show token stats after each response. Users can toggle with <code>/tokens on</code>.</td></tr>
+          <tr><td class="td-key">simple_query_threshold</td><td class="td-metric">120</td><td>Messages shorter than this (and without tool keywords) use the cheapest available model.</td></tr>
+          <tr><td class="td-key">long_poll_timeout_secs</td><td class="td-metric">30</td><td>Telegram getUpdates long-poll duration.</td></tr>
+          <tr><td class="td-key">startup_notify</td><td class="td-metric">true</td><td>Send a startup message to all active chats when the bot (re)starts.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- [agent] -->
+    <h2 id="agent">[agent]</h2>
+    <pre>[agent]
+max_react_turns   = <span class="code-num">10</span>   <span class="code-comment"># max tool call rounds per user message</span>
+tool_timeout_secs = <span class="code-num">30</span>   <span class="code-comment"># per-tool execution timeout</span>
+stream_responses  = <span class="code-keyword">true</span> <span class="code-comment"># SSE streaming (Telegram uses full message)</span></pre>
+
+    <!-- [adapters] -->
+    <h2 id="adapters">[adapters]</h2>
+
+    <h3 style="color:var(--cyan);margin:20px 0 8px;">Filesystem</h3>
+    <pre>[adapters.filesystem]
+root = <span class="code-string">"."</span>         <span class="code-comment"># sandbox root — the agent cannot escape this</span>
+max_read_chars = <span class="code-num">16000</span>  <span class="code-comment"># truncate large file reads (UTF-8-safe)</span></pre>
+
+    <h3 style="color:var(--cyan);margin:20px 0 8px;">Browser (CDP)</h3>
+    <pre>[adapters.browser]
+port = <span class="code-num">9222</span>        <span class="code-comment"># Chrome DevTools Protocol port</span></pre>
+
+    <h3 style="color:var(--cyan);margin:20px 0 8px;">Email</h3>
+    <pre>[adapters.email]
+imap_host = <span class="code-string">"imap.gmail.com"</span>
+imap_port = <span class="code-num">993</span>
+smtp_host = <span class="code-string">"smtp.gmail.com"</span>
+smtp_port = <span class="code-num">587</span>
+username  = <span class="code-string">"you@example.com"</span>
+<span class="code-comment"># password/token stored in encrypted vault, not here</span></pre>
+
+    <h3 style="color:var(--cyan);margin:20px 0 8px;">Calendar (CalDAV)</h3>
+    <pre>[adapters.calendar]
+caldav_url = <span class="code-string">"https://caldav.example.com/dav/calendars/user/"</span>
+username   = <span class="code-string">"you@example.com"</span></pre>
+
+    <h3 style="color:var(--cyan);margin:20px 0 8px;">Web Search</h3>
+    <pre>[adapters.web_search]
+engines = [<span class="code-string">"duckduckgo"</span>]   <span class="code-comment"># bing, google (needs API key)</span>
+max_results = <span class="code-num">5</span></pre>
+
+    <h3 style="color:var(--cyan);margin:20px 0 8px;">Feishu / Lark</h3>
+    <pre>[adapters.feishu]
+<span class="code-comment"># app_id and app_secret loaded from FEISHU_APP_ID / FEISHU_APP_SECRET env vars</span></pre>
+
+    <div class="divider"></div>
+
+    <!-- [messages] -->
+    <h2 id="messages">[messages]</h2>
+    <p>All user-facing strings live here. This is the single source of truth for every message the bot sends. Modify to localise or customise the bot's personality.</p>
+    <pre>[messages.start]
+welcome = <span class="code-string">"Hello! I'm your AI assistant. How can I help?"</span>
+
+[messages.error]
+provider_failed     = <span class="code-string">"Provider error, trying fallback..."</span>
+all_providers_down  = <span class="code-string">"All providers are temporarily unavailable."</span>
+tool_timeout        = <span class="code-string">"Tool execution timed out."</span>
+
+[messages.bot]
+token_usage  = <span class="code-string">"📊 {input} in · {output} out"</span>
+tokens_on    = <span class="code-string">"Token tracking enabled for this chat."</span>
+tokens_off   = <span class="code-string">"Token tracking disabled."</span>
+
+[messages.models]
+switched     = <span class="code-string">"Switched to {model} ({provider})"</span>
+unknown      = <span class="code-string">"Unknown model alias. Use /models to see options."</span></pre>
+
+    <!-- [auth_profiles] -->
+    <h2 id="auth-profiles">[auth_profiles]</h2>
+    <p>Named auth profiles for multi-account or multi-environment setups. Referenced by adapter config.</p>
+    <pre>[auth_profiles.work]
+provider = <span class="code-string">"openai"</span>
+<span class="code-comment"># api_key from vault key "work_openai_key"</span>
+
+[auth_profiles.personal]
+provider = <span class="code-string">"deepseek"</span></pre>
+
+    <div class="divider"></div>
+
+    <!-- Env vars -->
+    <h2 id="env-vars">Environment Variables — Full Reference</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Variable</th><th>Used by</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="td-key">OPENAI_API_KEY</td><td>LLM client</td><td>OpenAI (primary provider)</td></tr>
+          <tr><td class="td-key">NVIDIA_API_KEY</td><td>LLM failover</td><td>NVIDIA NIM API key</td></tr>
+          <tr><td class="td-key">GOOGLE_API_KEY</td><td>LLM failover</td><td>Google Gemini API key</td></tr>
+          <tr><td class="td-key">DEEPSEEK_API_KEY</td><td>LLM failover</td><td>DeepSeek API key</td></tr>
+          <tr><td class="td-key">GROQ_API_KEY</td><td>LLM failover</td><td>Groq API key</td></tr>
+          <tr><td class="td-key">ANTHROPIC_API_KEY</td><td>LLM client</td><td>Claude (optional provider)</td></tr>
+          <tr><td class="td-key">TELEGRAM_BOT_TOKEN</td><td>bot.rs</td><td>Token from @BotFather</td></tr>
+          <tr><td class="td-key">DISCORD_BOT_TOKEN</td><td>discord adapter</td><td>Discord bot token</td></tr>
+          <tr><td class="td-key">GITHUB_TOKEN</td><td>github adapter</td><td>Enables evolution self-repair</td></tr>
+          <tr><td class="td-key">FEISHU_APP_ID</td><td>feishu adapter</td><td>Feishu / Lark app ID</td></tr>
+          <tr><td class="td-key">FEISHU_APP_SECRET</td><td>feishu adapter</td><td>Feishu / Lark app secret</td></tr>
+          <tr><td class="td-key">DATABASE_PATH</td><td>store</td><td>Override default <code>data/openintent.db</code></td></tr>
+          <tr><td class="td-key">CONFIG_PATH</td><td>config loader</td><td>Override default <code>config/default.toml</code></td></tr>
+          <tr><td class="td-key">RUST_LOG</td><td>tracing</td><td>Log level e.g. <code>info</code>, <code>debug</code>, <code>openintent=trace</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="precedence">Precedence Rules</h2>
+    <p>Configuration is resolved in this order (highest wins):</p>
+
+    <div style="display:flex;flex-direction:column;gap:6px;margin:20px 0;">
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border:1px solid rgba(0,255,136,0.3);border-radius:4px;background:rgba(0,255,136,0.04);">
+        <span style="color:var(--green);font-weight:700;min-width:28px;">1.</span>
+        <span style="color:var(--text-bright);">Runtime overrides</span>
+        <span style="color:var(--text-dim);font-size:0.78rem;">— model switches via /model command, cascade failover state</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border:1px solid var(--border);border-radius:4px;">
+        <span style="color:var(--cyan);font-weight:700;min-width:28px;">2.</span>
+        <span style="color:var(--text-bright);">Environment variables</span>
+        <span style="color:var(--text-dim);font-size:0.78rem;">— OPENAI_API_KEY, TELEGRAM_BOT_TOKEN, etc.</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border:1px solid var(--border);border-radius:4px;">
+        <span style="color:var(--purple);font-weight:700;min-width:28px;">3.</span>
+        <span style="color:var(--text-bright);">config/default.toml</span>
+        <span style="color:var(--text-dim);font-size:0.78rem;">— the main configuration file</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border:1px solid var(--border);border-radius:4px;">
+        <span style="color:var(--text-dim);font-weight:700;min-width:28px;">4.</span>
+        <span style="color:var(--text-bright);">Built-in defaults</span>
+        <span style="color:var(--text-dim);font-size:0.78rem;">— hardcoded fallback values in Rust code</span>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Skills -->
+    <h2 id="skills">Skill Definitions</h2>
+    <p>Skills live in the <code>skills/</code> directory. Each skill is a TOML file with optional embedded scripts.</p>
+    <pre><span class="code-comment"># skills/weather-check/skill.toml</span>
+[skill]
+name        = <span class="code-string">"weather-check"</span>
+description = <span class="code-string">"Check current weather and forecast for a location"</span>
+triggers    = [<span class="code-string">"weather"</span>, <span class="code-string">"forecast"</span>, <span class="code-string">"temperature"</span>]
+
+[skill.tool]
+name        = <span class="code-string">"check_weather"</span>
+description = <span class="code-string">"Get weather data for a city"</span>
+
+[[skill.tool.parameters]]
+name     = <span class="code-string">"city"</span>
+type     = <span class="code-string">"string"</span>
+required = <span class="code-keyword">true</span></pre>
+
+    <h2 id="skill-scripts">Embedded Scripts</h2>
+    <p>Skills can embed shell scripts that are executed by the shell adapter in a sandboxed subprocess.</p>
+    <pre><span class="code-comment"># skills/ip-lookup/skill.toml</span>
+[skill.script]
+interpreter = <span class="code-string">"bash"</span>
+body = <span class="code-string">"""
+#!/usr/bin/env bash
+IP="${1:-$(curl -s ifconfig.me)}"
+curl -s "http://ip-api.com/json/${IP}" | jq '.'
+"""</span></pre>
+
+  </main>
+</div>
+
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <span>OpenIntentOS · Full Rust · MIT License</span>
+      <div class="footer-links">
+        <a href="index.html">Home</a>
+        <a href="getting-started.html">Get Started</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="https://github.com/openintent/OpenIntentOS" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

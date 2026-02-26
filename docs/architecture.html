@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Architecture — OpenIntentOS</title>
+  <meta name="description" content="Five-layer kernel design, crate dependency graph, ReAct agent loop, cascading LLM failover internals.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">
+        <span style="color:var(--green);font-size:1.1rem;">⬡</span>
+        Open<span class="accent">Intent</span>OS
+        <span class="version">v0.1</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="index.html">Home</a></li>
+        <li><a href="getting-started.html">Get Started</a></li>
+        <li><a href="architecture.html" class="active">Architecture</a></li>
+        <li><a href="configuration.html">Config</a></li>
+      </ul>
+      <a href="https://github.com/openintent/OpenIntentOS" class="nav-github" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-layout">
+
+  <aside class="docs-sidebar">
+    <div class="sidebar-group">
+      <div class="sidebar-group-label">Overview</div>
+      <a href="#layers" class="sidebar-link active">Five-Layer Design</a>
+      <a href="#crate-graph" class="sidebar-link">Crate Graph</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-label">Core Systems</div>
+      <a href="#react-loop" class="sidebar-link">ReAct Agent Loop</a>
+      <a href="#failover" class="sidebar-link">LLM Failover</a>
+      <a href="#auth-vault" class="sidebar-link">Auth Vault</a>
+      <a href="#intent-router" class="sidebar-link">Intent Router</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-label">Storage</div>
+      <a href="#storage" class="sidebar-link">SQLite + WAL</a>
+      <a href="#memory-model" class="sidebar-link">3-Layer Memory</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-label">Performance</div>
+      <a href="#perf" class="sidebar-link">Design Goals</a>
+      <a href="#tech-stack" class="sidebar-link">Full Tech Stack</a>
+    </div>
+  </aside>
+
+  <main class="docs-content">
+
+    <div class="hero-eyebrow" style="margin-bottom:16px;">Architecture</div>
+    <h1>System Design</h1>
+    <p style="color:var(--text-dim);font-size:0.9rem;margin-bottom:40px;line-height:1.8;">
+      OpenIntentOS is structured as a five-layer micro-kernel. Each layer has a single responsibility and communicates through well-defined async trait boundaries.
+    </p>
+
+    <!-- Five layers -->
+    <h2 id="layers">Five-Layer Design</h2>
+
+    <div style="display:flex;flex-direction:column;gap:8px;margin:24px 0;">
+      <div style="border:1px solid rgba(0,255,136,0.35);border-radius:6px;padding:16px 20px;background:rgba(0,255,136,0.04);">
+        <div style="color:var(--green);font-weight:700;font-size:0.85rem;margin-bottom:6px;">Layer 5 · Intent Interface</div>
+        <div style="color:var(--text-dim);font-size:0.78rem;">Natural language · Voice · Telegram / Discord / Feishu gateways · REST API · Cron triggers</div>
+      </div>
+      <div style="border:1px solid rgba(0,212,255,0.3);border-radius:6px;padding:16px 20px;background:rgba(0,212,255,0.03);">
+        <div style="color:var(--cyan);font-weight:700;font-size:0.85rem;margin-bottom:6px;">Layer 4 · Agent Runtime <span style="font-weight:400;opacity:0.6;">(tokio)</span></div>
+        <div style="color:var(--text-dim);font-size:0.78rem;">Planner · Executor · Reflector · LLM Router — connected by a zero-copy ReAct loop</div>
+      </div>
+      <div style="border:1px solid rgba(139,92,246,0.3);border-radius:6px;padding:16px 20px;background:rgba(139,92,246,0.03);">
+        <div style="color:var(--purple);font-weight:700;font-size:0.85rem;margin-bottom:6px;">Layer 3 · Micro-Kernel</div>
+        <div style="color:var(--text-dim);font-size:0.78rem;">Scheduler (crossbeam lock-free) · Auth Vault (AES-256) · 3-layer Memory · Service Registry · SIMD Intent Router · Wasm Sandbox · ABAC Policy</div>
+      </div>
+      <div style="border:1px solid rgba(249,115,22,0.3);border-radius:6px;padding:16px 20px;background:rgba(249,115,22,0.03);">
+        <div style="color:var(--orange);font-weight:700;font-size:0.85rem;margin-bottom:6px;">Layer 2 · Adapters</div>
+        <div style="color:var(--text-dim);font-size:0.78rem;">Feishu · GitHub · Calendar (CalDAV) · Email (IMAP) · Browser (CDP) · Filesystem · Shell · Web Search · HTTP · Cron · Wasm plugins</div>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:6px;padding:16px 20px;background:rgba(8,14,24,0.8);">
+        <div style="color:var(--text-bright);font-weight:700;font-size:0.85rem;margin-bottom:6px;">Layer 1 · Runtime &amp; Storage</div>
+        <div style="color:var(--text-dim);font-size:0.78rem;">tokio · rusqlite WAL+mmap · moka lock-free cache · io_uring (Linux) / kqueue (macOS)</div>
+      </div>
+    </div>
+
+    <!-- Crate graph -->
+    <h2 id="crate-graph">Crate Dependency Graph</h2>
+    <p>The workspace is structured so that the binary crate (<code>openintent-cli</code>) depends on all libraries, but no library crate has circular dependencies.</p>
+
+    <div class="arch-diagram"><span class="code-keyword">openintent-cli</span>  <span class="code-comment">(binary — the only executable)</span>
+├── <span class="code-type">openintent-kernel</span>      micro-kernel: scheduler, IPC bus, memory, service registry
+├── <span class="code-type">openintent-agent</span>       ReAct loop, LLM client, tool dispatcher
+│   └── openintent-kernel  (IPC, scheduler integration)
+├── <span class="code-type">openintent-store</span>       SQLite persistence layer, migrations
+├── <span class="code-type">openintent-vault</span>       AES-256-GCM encrypted secret storage
+├── <span class="code-type">openintent-intent</span>      intent classification (SIMD aho-corasick → LLM fallback)
+│   └── openintent-agent   (LLM calls for ambiguous intents)
+├── <span class="code-type">openintent-adapters</span>    all async adapters (filesystem, shell, web, browser, …)
+│   └── openintent-vault   (auth tokens via vault)
+├── <span class="code-type">openintent-auth-engine</span> OAuth flows, token refresh, headless CDP auth
+│   └── openintent-vault
+├── <span class="code-type">openintent-ui</span>          iced desktop GUI (GPU-rendered)
+├── <span class="code-type">openintent-web</span>         axum HTTP server + SSR templates
+└── <span class="code-type">openintent-tui</span>         ratatui terminal UI</div>
+
+    <div class="divider"></div>
+
+    <!-- ReAct loop -->
+    <h2 id="react-loop">ReAct Agent Loop</h2>
+    <p>Every user message enters the ReAct loop. The agent thinks, acts with a tool, observes the result, and repeats — up to a configurable max turns.</p>
+
+    <div class="arch-diagram"><span class="code-comment">── ReAct turn ─────────────────────────────────────────────────────</span>
+
+  User message
+       │
+       ▼
+  <span class="code-fn">build_messages()</span>         append system prompt + history window (N=20)
+       │
+       ▼
+  <span class="code-fn">LlmClient::stream_chat()</span> SSE stream → accumulate → (LlmResponse, Usage)
+       │
+       ├─ tool_calls? ──► <span class="code-fn">dispatch_tool()</span> ─► adapter.execute() ─► Observation
+       │                        │
+       │                   loop back (max_turns)
+       │
+       └─ text response? ──► send to user + record token usage</div>
+
+    <p>Tool results are appended as <code>role: "tool"</code> messages and fed back into the next LLM call. The loop terminates when the model produces a text response with no tool calls.</p>
+
+    <!-- Failover -->
+    <h2 id="failover">LLM Failover System</h2>
+    <p>When any provider returns an error that matches <code>is_provider_error()</code>, the cascade failover kicks in automatically.</p>
+
+    <pre><span class="code-comment">// Errors that trigger cascade (failover.rs)</span>
+<span class="code-keyword">fn</span> <span class="code-fn">is_provider_error</span>(error: &<span class="code-type">str</span>) -> <span class="code-type">bool</span> {
+    is_rate_limit_error(error)          <span class="code-comment">// 429, quota, throttle</span>
+    || error.contains(<span class="code-string">"401 Unauthorized"</span>)
+    || error.contains(<span class="code-string">"authentication_error"</span>)
+    || error.contains(<span class="code-string">"token has expired"</span>)
+    || error.contains(<span class="code-string">"403 Forbidden"</span>)
+    || error.contains(<span class="code-string">"404 Not Found"</span>)
+    || error.contains(<span class="code-string">"503 Service Unavailable"</span>)
+    || error.contains(<span class="code-string">"502 Bad Gateway"</span>)
+}</pre>
+
+    <p>The fallback chain with a 120-second cooldown per provider:</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Provider</th><th>Model</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td class="td-metric">0</td><td>OpenAI</td><td>chatgpt-pro</td><td>Primary (config)</td></tr>
+          <tr><td class="td-metric">1</td><td>NVIDIA NIM</td><td>qwen/qwen3.5-397b-a17b</td><td>Free tier, 397B MoE</td></tr>
+          <tr><td class="td-metric">2</td><td>NVIDIA NIM</td><td>moonshotai/kimi-k2.5</td><td>Long context</td></tr>
+          <tr><td class="td-metric">3</td><td>NVIDIA NIM</td><td>nvidia/nemotron-3-nano-30b-a3b</td><td>Fast, nano</td></tr>
+          <tr><td class="td-metric">4</td><td>Google Gemini</td><td>gemini-2.5-flash</td><td>Multimodal</td></tr>
+          <tr><td class="td-metric">5</td><td>DeepSeek</td><td>deepseek-chat</td><td>Cost-efficient</td></tr>
+          <tr><td class="td-metric">6</td><td>Groq</td><td>llama-3.3-70b-versatile</td><td>Ultra-fast inference</td></tr>
+          <tr><td class="td-metric">7</td><td>Ollama</td><td>llama3.2 (local)</td><td>Offline capable</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>After exhausting all providers, the bot restores the primary provider and clears per-chat model overrides. When any provider's cooldown expires, it re-enters the chain on the next request.</p>
+
+    <!-- Auth vault -->
+    <h2 id="auth-vault">Auth Vault</h2>
+    <p>All secrets (API keys, OAuth tokens, passwords) are stored in the encrypted vault. On macOS, the vault master key is stored in the system Keychain. On Linux, it falls back to an encrypted file protected by a derived key.</p>
+    <pre><span class="code-comment">// Vault interface (openintent-vault)</span>
+<span class="code-keyword">pub trait</span> <span class="code-type">VaultStore</span>: <span class="code-type">Send</span> + <span class="code-type">Sync</span> {
+    <span class="code-keyword">async fn</span> <span class="code-fn">get</span>(&self, key: &<span class="code-type">str</span>) -> <span class="code-type">Result</span>&lt;<span class="code-type">Option</span>&lt;<span class="code-type">String</span>&gt;&gt;;
+    <span class="code-keyword">async fn</span> <span class="code-fn">set</span>(&self, key: &<span class="code-type">str</span>, value: &<span class="code-type">str</span>) -> <span class="code-type">Result</span>&lt;()&gt;;
+    <span class="code-keyword">async fn</span> <span class="code-fn">delete</span>(&self, key: &<span class="code-type">str</span>) -> <span class="code-type">Result</span>&lt;()&gt;;
+}</pre>
+
+    <!-- Intent router -->
+    <h2 id="intent-router">Intent Router</h2>
+    <p>Before every LLM call, the intent router classifies the message using three tiers — cheapest first:</p>
+
+    <div style="display:flex;flex-direction:column;gap:8px;margin:20px 0;">
+      <div class="card" style="padding:16px;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span style="color:var(--green);font-weight:700;font-size:0.9rem;">Tier 1</span>
+          <span style="color:var(--text-bright);">Exact match</span>
+          <span class="badge badge-green">~0 µs</span>
+        </div>
+        <p style="margin-top:8px;">Command prefix lookup. <code>/start</code>, <code>/help</code>, <code>/model</code>, <code>/tokens</code> etc.</p>
+      </div>
+      <div class="card" style="padding:16px;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span style="color:var(--cyan);font-weight:700;font-size:0.9rem;">Tier 2</span>
+          <span style="color:var(--text-bright);">Pattern match</span>
+          <span class="badge badge-cyan">~2 µs</span>
+        </div>
+        <p style="margin-top:8px;">SIMD aho-corasick over skill trigger patterns. Simple queries (&lt;120 chars, no tool keywords) routed to cheap model automatically.</p>
+      </div>
+      <div class="card" style="padding:16px;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span style="color:var(--purple);font-weight:700;font-size:0.9rem;">Tier 3</span>
+          <span style="color:var(--text-bright);">LLM classification</span>
+          <span class="badge badge-purple">~200 ms</span>
+        </div>
+        <p style="margin-top:8px;">Complex or ambiguous messages sent to the full ReAct agent with all tools available.</p>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Storage -->
+    <h2 id="storage">SQLite + WAL</h2>
+    <p>The single embedded database is configured for maximum performance:</p>
+    <pre><span class="code-comment">-- Applied at every connection open</span>
+PRAGMA journal_mode = WAL;
+PRAGMA mmap_size = 268435456;   <span class="code-comment">-- 256 MiB memory-mapped I/O</span>
+PRAGMA cache_size = -63488;     <span class="code-comment">-- 62 MiB page cache</span>
+PRAGMA synchronous = NORMAL;
+PRAGMA temp_store = MEMORY;
+PRAGMA foreign_keys = ON;</pre>
+
+    <p>Read latency is under 5 µs for key-value lookups. The WAL file allows concurrent readers without blocking the writer.</p>
+
+    <!-- Memory model -->
+    <h2 id="memory-model">3-Layer Memory</h2>
+
+    <div class="grid-3" style="margin:20px 0;">
+      <div class="card">
+        <h3 style="color:var(--green);">Working (W)</h3>
+        <p>Current conversation context. History window of 20 messages per chat. Stored in-process, serialised to SQLite on flush.</p>
+      </div>
+      <div class="card">
+        <h3 style="color:var(--cyan);">Episodic (E)</h3>
+        <p>Long-term conversation history and task outcomes. SQLite-backed, vector-searchable via usearch embeddings.</p>
+      </div>
+      <div class="card">
+        <h3 style="color:var(--purple);">Semantic (S)</h3>
+        <p>Factual knowledge extracted from interactions. ONNX local embedding model, &lt;15 ms classification.</p>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Performance goals -->
+    <h2 id="perf">Performance Design Goals</h2>
+
+    <div class="metric-grid">
+      <div class="metric-card"><div class="metric-value">&lt;200ms</div><div class="metric-label">Cold start</div></div>
+      <div class="metric-card"><div class="metric-value">&lt;5µs</div><div class="metric-label">SQLite hot reads</div></div>
+      <div class="metric-card"><div class="metric-value">&lt;2µs</div><div class="metric-label">Intent pattern match</div></div>
+      <div class="metric-card"><div class="metric-value">&lt;15ms</div><div class="metric-label">Local ONNX classification</div></div>
+      <div class="metric-card"><div class="metric-value">&lt;0.5ms</div><div class="metric-label">Vector search (usearch)</div></div>
+      <div class="metric-card"><div class="metric-value">~2GB/s</div><div class="metric-label">SIMD string matching</div></div>
+    </div>
+
+    <h2 id="tech-stack">Full Tech Stack</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Component</th><th>Technology</th><th>Rationale</th></tr></thead>
+        <tbody>
+          <tr><td class="td-label">Language</td><td class="td-key">Rust 2024</td><td>Zero-cost abstractions, no GC pauses</td></tr>
+          <tr><td class="td-label">Async runtime</td><td class="td-key">tokio</td><td>io_uring (Linux) / kqueue (macOS)</td></tr>
+          <tr><td class="td-label">HTTP client</td><td class="td-key">reqwest</td><td>Async, HTTP/2, connection pooling</td></tr>
+          <tr><td class="td-label">Database</td><td class="td-key">rusqlite WAL+mmap</td><td>&lt;5 µs reads, embedded, no daemon</td></tr>
+          <tr><td class="td-label">Hot cache</td><td class="td-key">moka</td><td>Lock-free concurrent cache</td></tr>
+          <tr><td class="td-label">Vector search</td><td class="td-key">usearch</td><td>&lt;0.5 ms, Rust native</td></tr>
+          <tr><td class="td-label">Local inference</td><td class="td-key">ort (ONNX Runtime)</td><td>&lt;15 ms classification</td></tr>
+          <tr><td class="td-label">String matching</td><td class="td-key">aho-corasick (SIMD)</td><td>~2 GB/s throughput</td></tr>
+          <tr><td class="td-label">Serialisation</td><td class="td-key">rkyv (zero-copy)</td><td>0 allocation deserialisation</td></tr>
+          <tr><td class="td-label">JSON</td><td class="td-key">simd-json + serde</td><td>SIMD-accelerated JSON parsing</td></tr>
+          <tr><td class="td-label">Encryption</td><td class="td-key">ring</td><td>AES-256-GCM, hardware AES-NI</td></tr>
+          <tr><td class="td-label">Desktop UI</td><td class="td-key">iced</td><td>Pure Rust GPU-rendered UI</td></tr>
+          <tr><td class="td-label">Web UI</td><td class="td-key">axum + askama</td><td>Lightweight SSR, no JS framework</td></tr>
+          <tr><td class="td-label">TUI</td><td class="td-key">ratatui</td><td>Terminal UI for headless devices</td></tr>
+          <tr><td class="td-label">Headless browser</td><td class="td-key">chromiumoxide</td><td>Rust-native CDP client</td></tr>
+          <tr><td class="td-label">Wasm sandbox</td><td class="td-key">wasmtime</td><td>Secure plugin execution</td></tr>
+          <tr><td class="td-label">CLI</td><td class="td-key">clap</td><td>Derive-based argument parsing</td></tr>
+          <tr><td class="td-label">Logging</td><td class="td-key">tracing</td><td>Structured, async-aware, zero-cost spans</td></tr>
+          <tr><td class="td-label">Error types</td><td class="td-key">thiserror</td><td>Library errors; anyhow in CLI only</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </main>
+</div>
+
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <span>OpenIntentOS · Full Rust · MIT License</span>
+      <div class="footer-links">
+        <a href="index.html">Home</a>
+        <a href="getting-started.html">Get Started</a>
+        <a href="configuration.html">Config Reference</a>
+        <a href="https://github.com/openintent/OpenIntentOS" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

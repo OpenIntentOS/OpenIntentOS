@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenIntentOS — Intent-Driven AI Operating System</title>
+  <meta name="description" content="An AI-native micro operating system built entirely in Rust. 10MB binary, &lt;200ms cold start, cascading multi-provider LLM failover.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<!-- ── Navigation ──────────────────────────────────── -->
+<nav>
+  <div class="container">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-logo">
+        <span style="color:var(--green);font-size:1.1rem;">⬡</span>
+        Open<span class="accent">Intent</span>OS
+        <span class="version">v0.1</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="index.html" class="active">Home</a></li>
+        <li><a href="getting-started.html">Get Started</a></li>
+        <li><a href="architecture.html">Architecture</a></li>
+        <li><a href="configuration.html">Config</a></li>
+      </ul>
+      <a href="https://github.com/openintent/OpenIntentOS" class="nav-github" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- ── Hero ────────────────────────────────────────── -->
+<div class="container">
+  <div class="hero">
+    <div class="hero-eyebrow">Full Rust · Intent-Driven · Multi-Provider LLM</div>
+    <h1>The AI OS that<br><span class="highlight">never goes down.</span></h1>
+    <p class="hero-sub">
+      OpenIntentOS is not a chatbot. It's an intent-driven operating system —
+      built entirely in Rust, with cascading LLM failover, zero-copy IPC,
+      and a 10 MB binary that cold-starts in under 200 ms.
+    </p>
+    <div class="hero-actions">
+      <a href="getting-started.html" class="btn btn-primary">▶ Get Started</a>
+      <a href="architecture.html" class="btn btn-secondary">View Architecture</a>
+    </div>
+  </div>
+
+  <!-- Terminal demo -->
+  <div class="terminal">
+    <div class="terminal-bar">
+      <div class="terminal-dots">
+        <div class="terminal-dot"></div>
+        <div class="terminal-dot"></div>
+        <div class="terminal-dot"></div>
+      </div>
+      <span class="terminal-title">openintent-bot · @OpenIntentbot</span>
+    </div>
+    <div class="terminal-body">
+      <span class="terminal-line"><span class="terminal-prompt">→</span> <span class="terminal-cmd">cargo run --release --bin openintent-cli -- bot</span></span>
+      <span class="terminal-line"><span class="terminal-out">  Opening database              path=data/openintent.db</span></span>
+      <span class="terminal-line"><span class="terminal-out">  Database pragmas applied      WAL · mmap 256MiB · cache 62MiB</span></span>
+      <span class="terminal-line"><span class="terminal-out">  Adapters online               filesystem shell web_search browser feishu calendar email</span></span>
+      <span class="terminal-line"><span class="terminal-out">  Skills loaded                 count=5</span></span>
+      <span class="terminal-line"><span class="terminal-ok">  ✓ Bot is running              @OpenIntentbot · provider=OpenAI · model=chatgpt-pro</span></span>
+      <span class="terminal-line">&nbsp;</span>
+      <span class="terminal-line"><span class="terminal-info">  [user] Search GitHub for Rust async runtime benchmarks</span></span>
+      <span class="terminal-line"><span class="terminal-out">  → web_search("Rust async runtime tokio vs async-std 2025")</span></span>
+      <span class="terminal-line"><span class="terminal-out">  → fs_write_file("results/runtime-benchmarks.md", ...)</span></span>
+      <span class="terminal-line"><span class="terminal-ok">  ✓ Done — 3 sources, saved to file, 847 tokens used</span></span>
+      <span class="terminal-line"><span class="terminal-prompt">▌</span><span class="terminal-cursor"></span></span>
+    </div>
+  </div>
+</div>
+
+<!-- ── Metrics strip ────────────────────────────────── -->
+<section style="padding:40px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:rgba(0,255,136,0.015);">
+  <div class="container">
+    <div class="metric-grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));">
+      <div class="metric-card">
+        <div class="metric-value">&lt;200ms</div>
+        <div class="metric-label">Cold start</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value">~10MB</div>
+        <div class="metric-label">Binary size</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value">&lt;15MB</div>
+        <div class="metric-label">RAM at idle</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value">&lt;5µs</div>
+        <div class="metric-label">SQLite reads</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value">7+</div>
+        <div class="metric-label">LLM providers</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value">0</div>
+        <div class="metric-label">Allocations on hot path</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Features ─────────────────────────────────────── -->
+<section>
+  <div class="container">
+    <div class="section-label">Core Capabilities</div>
+    <h2 class="section-title">Built different.</h2>
+    <p class="section-sub">Every design decision optimised for real-world reliability and sub-millisecond latency.</p>
+
+    <div class="grid-3">
+      <div class="card">
+        <div class="card-num">01</div>
+        <span class="card-icon">⚡</span>
+        <h3>Cascading LLM Failover</h3>
+        <p>Primary fails → automatically tries NVIDIA NIM → Gemini → DeepSeek → Groq → Ollama. Zero downtime, transparent to the user.</p>
+      </div>
+      <div class="card">
+        <div class="card-num">02</div>
+        <span class="card-icon">🦀</span>
+        <h3>Pure Rust, No Compromise</h3>
+        <p>No Node.js, no TypeScript, no Python. Every crate is async-native with tokio. AES-256-GCM encrypted vault on macOS Keychain.</p>
+      </div>
+      <div class="card">
+        <div class="card-num">03</div>
+        <span class="card-icon">🔧</span>
+        <h3>ReAct Agent Loop</h3>
+        <p>Think → Act → Observe cycles with structured tool calling. Filesystem, shell, web search, browser CDP, email, Feishu, GitHub, cron.</p>
+      </div>
+      <div class="card">
+        <div class="card-num">04</div>
+        <span class="card-icon">💾</span>
+        <h3>Zero-Copy Storage</h3>
+        <p>SQLite with WAL + mmap. rkyv zero-copy deserialization. moka lock-free hot cache. SIMD aho-corasick pattern matching.</p>
+      </div>
+      <div class="card">
+        <div class="card-num">05</div>
+        <span class="card-icon">🔑</span>
+        <h3>Headless Auth</h3>
+        <p>AI-driven OAuth flows via Chromium DevTools Protocol. Automated token refresh. Cascades to fallback provider on auth failure.</p>
+      </div>
+      <div class="card">
+        <div class="card-num">06</div>
+        <span class="card-icon">🌐</span>
+        <h3>Multi-Platform Gateway</h3>
+        <p>Telegram, Discord, Feishu bots. Native GPU desktop (iced), web (axum), and TUI (ratatui) frontends — one binary.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Comparison ───────────────────────────────────── -->
+<section style="background:rgba(8,14,24,0.6);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
+  <div class="container">
+    <div class="section-label">Comparison</div>
+    <h2 class="section-title">OpenIntentOS vs the field.</h2>
+    <p class="section-sub">Measured against typical Node.js-based agent frameworks.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Aspect</th>
+            <th>Typical Node.js Agent</th>
+            <th style="color:var(--green);">OpenIntentOS</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="td-label">Language</td><td>TypeScript / Node.js</td><td class="td-metric">Full Rust (2024)</td></tr>
+          <tr><td class="td-label">Binary size</td><td>~200 MB (runtime)</td><td class="td-metric">~10 MB</td></tr>
+          <tr><td class="td-label">Cold start</td><td>~3 s</td><td class="td-metric">&lt;200 ms</td></tr>
+          <tr><td class="td-label">Idle RAM</td><td>~300 MB</td><td class="td-metric">&lt;15 MB</td></tr>
+          <tr><td class="td-label">LLM failover</td><td class="compare-no">Manual / single retry</td><td class="td-metric compare-yes">7-provider cascade</td></tr>
+          <tr><td class="td-label">Plugin sandbox</td><td>Child process</td><td class="td-metric">Wasm (wasmtime)</td></tr>
+          <tr><td class="td-label">Auth storage</td><td>Config file / .env</td><td class="td-metric">AES-256 encrypted vault</td></tr>
+          <tr><td class="td-label">UI</td><td>Web only</td><td class="td-metric">Desktop GPU + Web + TUI</td></tr>
+          <tr><td class="td-label">Intent routing</td><td class="compare-no">LLM every time</td><td class="td-metric">SIMD aho-corasick → LLM fallback</td></tr>
+          <tr class="compare-highlight"><td class="td-label">Interaction model</td><td>Reactive (responds)</td><td class="td-metric">Proactive (senses + acts)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ── Providers ─────────────────────────────────────── -->
+<section>
+  <div class="container">
+    <div class="section-label">LLM Providers</div>
+    <h2 class="section-title">Seven providers. One failover chain.</h2>
+    <p class="section-sub">Configure once. Automatically degrades gracefully when any provider is unavailable.</p>
+
+    <div class="grid-4">
+      <div class="card" style="text-align:center;">
+        <div style="font-size:0.65rem;letter-spacing:0.15em;color:var(--text-dim);margin-bottom:8px;">PRIMARY</div>
+        <h3 style="color:var(--green);">OpenAI</h3>
+        <p>GPT-4o, chatgpt-pro, o3-mini</p>
+        <div style="margin-top:12px;"><span class="badge badge-green">default</span></div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:0.65rem;letter-spacing:0.15em;color:var(--text-dim);margin-bottom:8px;">FALLBACK 1</div>
+        <h3 style="color:var(--cyan);">NVIDIA NIM</h3>
+        <p>Qwen3.5-397B, Kimi K2.5, Nemotron</p>
+        <div style="margin-top:12px;"><span class="badge badge-cyan">free tier</span></div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:0.65rem;letter-spacing:0.15em;color:var(--text-dim);margin-bottom:8px;">FALLBACK 2</div>
+        <h3 style="color:var(--purple);">Google Gemini</h3>
+        <p>gemini-2.5-flash, gemini-2.0-flash</p>
+        <div style="margin-top:12px;"><span class="badge badge-purple">fast</span></div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:0.65rem;letter-spacing:0.15em;color:var(--text-dim);margin-bottom:8px;">FALLBACK 3–5</div>
+        <h3 style="color:var(--orange);">DeepSeek · Groq · Ollama</h3>
+        <p>Local + cloud hybrid, offline capable</p>
+        <div style="margin-top:12px;"><span class="badge badge-orange">resilient</span></div>
+      </div>
+    </div>
+
+    <div class="terminal" style="margin-top:32px;">
+      <div class="terminal-bar">
+        <div class="terminal-dots">
+          <div class="terminal-dot"></div>
+          <div class="terminal-dot"></div>
+          <div class="terminal-dot"></div>
+        </div>
+        <span class="terminal-title">failover.rs — cascade in action</span>
+      </div>
+      <div class="terminal-body" style="min-height:auto;">
+        <span class="terminal-line"><span class="terminal-out">WARN  OpenAI 429 rate limit — starting cascade failover</span></span>
+        <span class="terminal-line"><span class="terminal-out">INFO  trying NVIDIA NIM (qwen/qwen3.5-397b-a17b)</span></span>
+        <span class="terminal-line"><span class="terminal-ok">INFO  ✓ NVIDIA NIM responded in 1.2s — resuming with this provider</span></span>
+        <span class="terminal-line"><span class="terminal-out">INFO  primary provider restored after 120s cooldown</span></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Adapters ──────────────────────────────────────── -->
+<section style="background:rgba(8,14,24,0.6);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
+  <div class="container">
+    <div class="section-label">Adapters</div>
+    <h2 class="section-title">Connected to everything.</h2>
+    <p class="section-sub">Each adapter is a Rust async trait, hot-reloadable, with auth managed by the encrypted vault.</p>
+
+    <div class="grid-3">
+      <div class="card">
+        <h3>🗂 Filesystem + Shell</h3>
+        <p>Read, write, list, search files. Execute shell commands with timeout and capture. 16 KB safe truncation on large reads.</p>
+      </div>
+      <div class="card">
+        <h3>🌐 Web Search + Fetch</h3>
+        <p>DuckDuckGo search with result ranking. Full page fetch with text extraction. HTTP request adapter for arbitrary APIs.</p>
+      </div>
+      <div class="card">
+        <h3>🖥 Browser (CDP)</h3>
+        <p>Chromium DevTools Protocol automation. Navigate, click, fill forms, screenshot. Used for headless OAuth flows.</p>
+      </div>
+      <div class="card">
+        <h3>📧 Email (IMAP/SMTP)</h3>
+        <p>Read inbox, send messages, manage folders. OAuth 2.0 with automated token refresh. Feishu integration for enterprise.</p>
+      </div>
+      <div class="card">
+        <h3>📅 Calendar (CalDAV)</h3>
+        <p>Create, read, update events via CalDAV. Works with Apple Calendar, Nextcloud, Google Calendar (via adapter).</p>
+      </div>
+      <div class="card">
+        <h3>🐙 GitHub</h3>
+        <p>List repos, read issues and PRs, post comments. Optional token for private access. Used for evolution self-repair.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Architecture preview ──────────────────────────── -->
+<section>
+  <div class="container">
+    <div class="section-label">Architecture</div>
+    <h2 class="section-title">Five-layer kernel design.</h2>
+    <p class="section-sub">Intent Interface → Agent Runtime → Micro-Kernel → Adapters → Storage. Zero coupling between layers.</p>
+
+    <div class="arch-diagram"><span style="color:var(--green);">Layer 5 · Intent Interface</span>
+  Natural language · Voice · Telegram/Discord/Feishu · Cron · REST API
+
+<span style="color:var(--cyan);">Layer 4 · Agent Runtime  (tokio)</span>
+  Planner ──── Executor ──── Reflector ──── LLM Router
+               ReAct Loop  (zero-copy, same async runtime)
+
+<span style="color:var(--purple);">Layer 3 · Micro-Kernel  (Rust)</span>
+  Scheduler  │  Auth Vault (AES-256)  │  Memory (W/E/S)  │  Service Registry
+  IPC Bus    │  Wasm Sandbox          │  Policy (ABAC)   │  Intent Router (SIMD)
+
+<span style="color:var(--orange);">Layer 2 · Adapters  (async traits)</span>
+  Feishu  GitHub  Calendar  Email  Browser(CDP)  Filesystem  Shell  Web  HTTP  Cron
+
+<span style="color:var(--text-dim);">Layer 1 · Runtime &amp; Storage</span>
+  tokio · rusqlite WAL+mmap · moka cache · io_uring/kqueue</div>
+
+    <div style="margin-top:24px;text-align:center;">
+      <a href="architecture.html" class="btn btn-secondary">Full Architecture Docs →</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── Get started CTA ──────────────────────────────── -->
+<section style="background:rgba(0,255,136,0.03);border-top:1px solid rgba(0,255,136,0.1);border-bottom:1px solid rgba(0,255,136,0.1);">
+  <div class="container" style="text-align:center;padding:80px 0;">
+    <div class="section-label" style="justify-content:center;">Quick Start</div>
+    <h2 class="section-title">Up in three commands.</h2>
+    <pre style="max-width:600px;margin:32px auto;text-align:left;"><span style="color:var(--text-dim)"># Clone and build</span>
+git clone https://github.com/openintent/OpenIntentOS
+cd OpenIntentOS
+cargo build --release
+
+<span style="color:var(--text-dim)"># Configure your LLM API key</span>
+export OPENAI_API_KEY=sk-...
+
+<span style="color:var(--text-dim)"># Run the Telegram gateway</span>
+export TELEGRAM_BOT_TOKEN=...
+cargo run --release --bin openintent-cli -- bot</pre>
+    <a href="getting-started.html" class="btn btn-primary" style="font-size:0.85rem;padding:12px 28px;">Full Getting Started Guide →</a>
+  </div>
+</section>
+
+<!-- ── Footer ───────────────────────────────────────── -->
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <span>OpenIntentOS · Full Rust · MIT License</span>
+      <div class="footer-links">
+        <a href="getting-started.html">Docs</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="configuration.html">Config</a>
+        <a href="https://github.com/openintent/OpenIntentOS" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
