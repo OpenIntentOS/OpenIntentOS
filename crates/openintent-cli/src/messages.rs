@@ -41,6 +41,11 @@ pub mod keys {
     pub const STARTUP_WITH_UPDATES: &str = "startup.with_updates";
     pub const STARTUP_SIMPLE: &str = "startup.simple";
 
+    // Bot messages
+    pub const BOT_TOKEN_USAGE: &str = "bot.token_usage";
+    pub const BOT_TOKENS_ON: &str = "bot.tokens_on";
+    pub const BOT_TOKENS_OFF: &str = "bot.tokens_off";
+
     // Tool status
     pub const STATUS_RESEARCHING: &str = "status.researching";
     pub const STATUS_SEARCHING: &str = "status.searching";
@@ -336,6 +341,9 @@ fn builtin_defaults() -> HashMap<String, String> {
     m.insert("status.running_command".into(), "Running command...".into());
     m.insert("status.accessing_memory".into(), "Accessing memory...".into());
     m.insert("status.github".into(), "Working with GitHub...".into());
+    m.insert("bot.token_usage".into(), "📊 tokens: ↑{input} ↓{output} (total: {total})".into());
+    m.insert("bot.tokens_on".into(), "Token usage display enabled for this chat.".into());
+    m.insert("bot.tokens_off".into(), "Token usage display disabled for this chat.".into());
 
     m
 }

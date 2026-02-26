@@ -308,11 +308,11 @@ impl LlmClient {
     }
 
     /// Send a chat request using streaming SSE and return the aggregated
-    /// response.
+    /// response together with token usage statistics.
     ///
     /// Internally consumes the SSE stream, accumulating text and tool-call
     /// fragments until the message is complete.
-    pub async fn stream_chat(&self, request: &ChatRequest) -> Result<LlmResponse> {
+    pub async fn stream_chat(&self, request: &ChatRequest) -> Result<(LlmResponse, Usage)> {
         match self.provider() {
             LlmProvider::Anthropic => self.stream_chat_anthropic(request).await,
             LlmProvider::OpenAI => self.stream_chat_openai(request, &mut |_| {}).await,
@@ -321,11 +321,13 @@ impl LlmClient {
 
     /// Send a chat request using streaming SSE, invoking a callback for each
     /// text delta so callers can render incremental output.
+    ///
+    /// Returns the aggregated response together with token usage statistics.
     pub async fn stream_chat_with_callback<F>(
         &self,
         request: &ChatRequest,
         mut on_text: F,
-    ) -> Result<LlmResponse>
+    ) -> Result<(LlmResponse, Usage)>
     where
         F: FnMut(&str) + Send,
     {
@@ -369,7 +371,10 @@ impl LlmClient {
     }
 
     /// Streaming Anthropic chat (no callback).
-    async fn stream_chat_anthropic(&self, request: &ChatRequest) -> Result<LlmResponse> {
+    async fn stream_chat_anthropic(
+        &self,
+        request: &ChatRequest,
+    ) -> Result<(LlmResponse, Usage)> {
         self.stream_chat_anthropic_with_callback(request, &mut |_| {})
             .await
     }
@@ -379,7 +384,7 @@ impl LlmClient {
         &self,
         request: &ChatRequest,
         on_text: &mut F,
-    ) -> Result<LlmResponse>
+    ) -> Result<(LlmResponse, Usage)>
     where
         F: FnMut(&str),
     {
@@ -494,12 +499,12 @@ impl LlmClient {
 
     // -- Anthropic streaming -------------------------------------------------
 
-    /// Consume an Anthropic SSE stream and aggregate into a final response.
+    /// Consume an Anthropic SSE stream and aggregate into a final response with usage.
     async fn consume_anthropic_stream<F>(
         &self,
         resp: reqwest::Response,
         on_text: &mut F,
-    ) -> Result<LlmResponse>
+    ) -> Result<(LlmResponse, Usage)>
     where
         F: FnMut(&str),
     {
@@ -572,7 +577,7 @@ impl LlmClient {
         &self,
         request: &ChatRequest,
         on_text: &mut F,
-    ) -> Result<LlmResponse>
+    ) -> Result<(LlmResponse, Usage)>
     where
         F: FnMut(&str),
     {
@@ -651,12 +656,12 @@ impl LlmClient {
 
     // -- OpenAI streaming ----------------------------------------------------
 
-    /// Consume an OpenAI SSE stream and aggregate into a final response.
+    /// Consume an OpenAI SSE stream and aggregate into a final response with usage.
     async fn consume_openai_stream<F>(
         &self,
         resp: reqwest::Response,
         on_text: &mut F,
-    ) -> Result<LlmResponse>
+    ) -> Result<(LlmResponse, Usage)>
     where
         F: FnMut(&str),
     {
@@ -969,8 +974,7 @@ struct StreamAccumulator {
     /// The stop reason, if received.
     stop_reason: Option<String>,
 
-    /// Usage tracking (populated when message_start includes usage info).
-    #[allow(dead_code)]
+    /// Usage tracking (populated from message_start and message_delta events).
     usage: Usage,
 }
 
@@ -994,6 +998,10 @@ impl StreamAccumulator {
         F: FnMut(&str),
     {
         match event {
+            StreamEvent::MessageStart { input_tokens, .. } => {
+                self.usage.input_tokens = *input_tokens;
+            }
+
             StreamEvent::ContentBlockStart {
                 content_type,
                 id,
@@ -1021,18 +1029,23 @@ impl StreamAccumulator {
                 }
             },
 
-            StreamEvent::MessageDelta { stop_reason } => {
+            StreamEvent::MessageDelta {
+                stop_reason,
+                output_tokens,
+            } => {
                 self.stop_reason = stop_reason.clone();
+                self.usage.output_tokens = *output_tokens;
             }
 
             _ => {}
         }
     }
 
-    /// Convert the accumulated state into a final [`LlmResponse`].
-    fn into_response(self) -> Result<LlmResponse> {
+    /// Convert the accumulated state into a final [`LlmResponse`] and [`Usage`].
+    fn into_response(self) -> Result<(LlmResponse, Usage)> {
+        let usage = self.usage;
         if self.tool_calls.is_empty() {
-            Ok(LlmResponse::Text(self.text))
+            Ok((LlmResponse::Text(self.text), usage))
         } else {
             let calls: Result<Vec<ToolCall>> = self
                 .tool_calls
@@ -1059,7 +1072,7 @@ impl StreamAccumulator {
                 })
                 .collect();
 
-            Ok(LlmResponse::ToolCalls(calls?))
+            Ok((LlmResponse::ToolCalls(calls?), usage))
         }
     }
 }

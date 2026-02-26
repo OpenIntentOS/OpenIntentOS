@@ -318,8 +318,8 @@ async fn handle_chat_message(
             let _ = send(socket, &OutboundMessage::text_delta(&delta)).await;
         }
 
-        // Await the completed response.
-        let response = stream_handle.await.map_err(|e| {
+        // Await the completed response (destructure to discard usage at this layer).
+        let (response, _usage) = stream_handle.await.map_err(|e| {
             Box::new(std::io::Error::other(format!(
                 "LLM stream task panicked: {e}"
             ))) as Box<dyn std::error::Error + Send + Sync>

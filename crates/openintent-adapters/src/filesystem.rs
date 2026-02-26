@@ -4,6 +4,10 @@
 //! All paths are resolved relative to an optional `root_dir` and validated
 //! against path traversal attacks (e.g. `../../etc/passwd`).
 
+/// Maximum characters returned per file read to limit token usage.
+/// Approximately 4 000 tokens at typical tokenization rates.
+const MAX_FILE_READ_CHARS: usize = 16_000;
+
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tracing::{debug, info};
@@ -86,11 +90,32 @@ impl FilesystemAdapter {
         let full_path = self.safe_resolve(path_str, "fs_read_file")?;
         debug!(path = %full_path.display(), "reading file");
 
-        let content = tokio::fs::read_to_string(&full_path).await?;
+        let raw = tokio::fs::read_to_string(&full_path).await?;
+        let total_chars = raw.len();
+
+        // Truncate at a safe UTF-8 char boundary to avoid splitting multibyte
+        // characters, then append a truncation notice.
+        let (content, truncated) = if total_chars > MAX_FILE_READ_CHARS {
+            // Walk backwards from the limit to find a valid char boundary.
+            let mut end = MAX_FILE_READ_CHARS;
+            while !raw.is_char_boundary(end) {
+                end -= 1;
+            }
+            let truncated_body = &raw[..end];
+            let notice = format!(
+                "\n\n[... file truncated at {end} chars ({total_chars} total). \
+                 Use offset param to read more.]"
+            );
+            (format!("{truncated_body}{notice}"), true)
+        } else {
+            (raw, false)
+        };
+
         Ok(json!({
             "path": full_path.display().to_string(),
             "content": content,
-            "size_bytes": content.len(),
+            "size_bytes": total_chars,
+            "truncated": truncated,
         }))
     }
 

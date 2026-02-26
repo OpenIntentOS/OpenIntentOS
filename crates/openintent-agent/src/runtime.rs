@@ -207,6 +207,12 @@ pub struct AgentResponse {
 
     /// The task ID for this invocation.
     pub task_id: Uuid,
+
+    /// Total input tokens consumed across all turns in this invocation.
+    pub input_tokens: u32,
+
+    /// Total output tokens generated across all turns in this invocation.
+    pub output_tokens: u32,
 }
 
 impl AgentResponse {
@@ -216,7 +222,16 @@ impl AgentResponse {
             text,
             turns_used,
             task_id,
+            input_tokens: 0,
+            output_tokens: 0,
         }
+    }
+
+    /// Set the accumulated token usage for this response.
+    pub fn with_usage(mut self, input: u32, output: u32) -> Self {
+        self.input_tokens = input;
+        self.output_tokens = output;
+        self
     }
 }
 
@@ -239,6 +254,10 @@ pub async fn react_loop(ctx: &mut AgentContext) -> Result<AgentResponse> {
     let tools = ctx.all_tool_definitions();
     let task_id = ctx.task_id;
     let max_turns = ctx.config.max_turns;
+
+    // Accumulate token usage across all turns.
+    let mut total_input: u32 = 0;
+    let mut total_output: u32 = 0;
 
     tracing::info!(
         task_id = %task_id,
@@ -312,7 +331,7 @@ pub async fn react_loop(ctx: &mut AgentContext) -> Result<AgentResponse> {
         };
 
         // Call the LLM — use streaming callback if one is provided.
-        let response = if let Some(ref cb) = ctx.on_text_delta {
+        let (response, turn_usage) = if let Some(ref cb) = ctx.on_text_delta {
             let cb = Arc::clone(cb);
             ctx.llm
                 .stream_chat_with_callback(&request, |delta| {
@@ -325,11 +344,17 @@ pub async fn react_loop(ctx: &mut AgentContext) -> Result<AgentResponse> {
             ctx.llm.stream_chat(&request).await?
         };
 
+        // Accumulate token usage for this turn.
+        total_input = total_input.saturating_add(turn_usage.input_tokens);
+        total_output = total_output.saturating_add(turn_usage.output_tokens);
+
         match response {
             LlmResponse::Text(text) => {
                 tracing::info!(
                     task_id = %task_id,
                     turns = turn + 1,
+                    input_tokens = total_input,
+                    output_tokens = total_output,
                     "ReAct loop completed with text response"
                 );
 
@@ -342,7 +367,8 @@ pub async fn react_loop(ctx: &mut AgentContext) -> Result<AgentResponse> {
                     memory.add_message(assistant_message).await;
                 }
 
-                return Ok(AgentResponse::new(text, turn + 1, task_id));
+                return Ok(AgentResponse::new(text, turn + 1, task_id)
+                    .with_usage(total_input, total_output));
             }
 
             LlmResponse::ToolCalls(calls) => {

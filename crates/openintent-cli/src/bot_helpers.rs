@@ -338,3 +338,92 @@ pub async fn handle_cascade_failover(
         all_exhausted: true,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Task recovery notifications
+// ---------------------------------------------------------------------------
+
+/// Notify users about dev tasks that were in-progress or pending at restart.
+pub async fn notify_recovered_tasks(
+    http: &reqwest::Client,
+    telegram_api: &str,
+    dev_task_store: &openintent_store::DevTaskStore,
+) {
+    use crate::messages::safe_prefix;
+
+    if let Ok(recoverable) = dev_task_store.list_recoverable().await {
+        for task in &recoverable {
+            if let Some(cid) = task.chat_id {
+                let short_id = safe_prefix(&task.id, 8);
+                let _ = http
+                    .post(format!("{telegram_api}/sendMessage"))
+                    .json(&serde_json::json!({
+                        "chat_id": cid,
+                        "text": format!(
+                            "Bot restarted. Resuming your task [{short_id}]...\n\
+                             Intent: {}\nStatus: {}",
+                            task.intent, task.status
+                        ),
+                    }))
+                    .send()
+                    .await;
+            }
+        }
+        if let Ok(pending) = dev_task_store.list_by_status("pending", 50, 0).await {
+            for task in &pending {
+                if let Some(cid) = task.chat_id {
+                    let short_id = safe_prefix(&task.id, 8);
+                    let _ = http
+                        .post(format!("{telegram_api}/sendMessage"))
+                        .json(&serde_json::json!({
+                            "chat_id": cid,
+                            "text": format!(
+                                "Bot restarted. Your pending task [{short_id}] will be processed shortly.\n\
+                                 Intent: {}",
+                                task.intent
+                            ),
+                        }))
+                        .send()
+                        .await;
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Token usage stats
+// ---------------------------------------------------------------------------
+
+/// Send a token usage stats message to a Telegram chat when enabled.
+pub async fn send_token_stats(
+    http: &reqwest::Client,
+    telegram_api: &str,
+    chat_id: i64,
+    input: u32,
+    output: u32,
+    msgs: &crate::messages::Messages,
+) {
+    use crate::messages::keys;
+
+    if input + output == 0 {
+        return;
+    }
+    let total = input + output;
+    let stats_msg = msgs.get_with(
+        keys::BOT_TOKEN_USAGE,
+        &[
+            ("input", &input.to_string()),
+            ("output", &output.to_string()),
+            ("total", &total.to_string()),
+        ],
+    );
+    let _ = http
+        .post(format!("{telegram_api}/sendMessage"))
+        .json(&serde_json::json!({
+            "chat_id": chat_id,
+            "text": stats_msg,
+        }))
+        .send()
+        .await;
+}

@@ -17,12 +17,15 @@ use openintent_agent::{
 use openintent_store::{BotStateStore, DevTaskStore, SessionStore};
 
 use crate::adapters::init_adapters;
-use crate::bot_helpers::{send_startup_notification, split_telegram_message};
+use crate::bot_config::{load_bot_config, select_model_for_query};
+use crate::bot_helpers::{
+    notify_recovered_tasks, send_startup_notification, send_token_stats, split_telegram_message,
+};
 use crate::dev_commands;
 use crate::dev_worker::{DevWorker, ProgressCallback};
 use crate::failover::{self, FailoverManager};
 use crate::helpers::{env_non_empty, init_tracing, load_system_prompt, resolve_llm_config};
-use crate::messages::{self, Messages, keys, safe_prefix};
+use crate::messages::{self, Messages, keys};
 
 /// Run the Telegram bot gateway.
 pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result<()> {
@@ -100,6 +103,12 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     let mut model = primary_model.clone();
     let llm = Arc::new(LlmClient::new(llm_config).context("failed to create LLM client")?);
 
+    // Load [bot] configuration from config/default.toml.
+    let bot_cfg = load_bot_config();
+    let history_window: u32 = bot_cfg.history_window;
+    let global_show_token_usage: bool = bot_cfg.show_token_usage;
+    let simple_query_threshold: usize = bot_cfg.simple_query_threshold;
+
     // Per-chat model alias. Maps chat_id → alias string (e.g. "gemini-flash").
     // Used to re-apply model switches after failover resets.
     let mut chat_model_alias: HashMap<i64, String> = HashMap::new();
@@ -168,45 +177,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     info!("DevWorker spawned as background task");
 
     // Notify users about recovered tasks.
-    if let Ok(recoverable) = dev_task_store.list_recoverable().await {
-        for task in &recoverable {
-            if let Some(cid) = task.chat_id {
-                let short_id = safe_prefix(&task.id, 8);
-                let _ = http
-                    .post(format!("{telegram_api}/sendMessage"))
-                    .json(&serde_json::json!({
-                        "chat_id": cid,
-                        "text": format!(
-                            "Bot restarted. Resuming your task [{short_id}]...\n\
-                             Intent: {}\nStatus: {}",
-                            task.intent, task.status
-                        ),
-                    }))
-                    .send()
-                    .await;
-            }
-        }
-        // Also check pending tasks that haven't started yet.
-        if let Ok(pending) = dev_task_store.list_by_status("pending", 50, 0).await {
-            for task in &pending {
-                if let Some(cid) = task.chat_id {
-                    let short_id = safe_prefix(&task.id, 8);
-                    let _ = http
-                        .post(format!("{telegram_api}/sendMessage"))
-                        .json(&serde_json::json!({
-                            "chat_id": cid,
-                            "text": format!(
-                                "Bot restarted. Your pending task [{short_id}] will be processed shortly.\n\
-                                 Intent: {}",
-                                task.intent
-                            ),
-                        }))
-                        .send()
-                        .await;
-                }
-            }
-        }
-    }
+    notify_recovered_tasks(&http, &telegram_api, &dev_task_store).await;
 
     // Print banner.
     println!();
@@ -233,13 +204,10 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     // Send startup notification with latest changes to all recent active chats.
     send_startup_notification(&http, &telegram_api, &sessions, &llm, &model, &msgs).await;
 
-    // Per-chat conversation history (in-memory, keyed by chat_id).
+    // Per-chat state maps.
     let mut chat_histories: HashMap<i64, Vec<Message>> = HashMap::new();
-
-    // Per-chat user language (from Telegram's language_code).
     let mut user_languages: HashMap<i64, String> = HashMap::new();
-
-    // Rate-limit failover manager — tracks cooldowns and switches providers.
+    let mut chat_show_tokens: HashMap<i64, bool> = HashMap::new();
     let mut failover_mgr = FailoverManager::new();
 
     // Polling loop -- restore offset from persistent state.
@@ -462,6 +430,35 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 continue;
             }
 
+            // Handle /tokens on|off command.
+            if text == "/tokens on" {
+                chat_show_tokens.insert(chat_id, true);
+                let reply = msgs.get(keys::BOT_TOKENS_ON);
+                let _ = http
+                    .post(format!("{telegram_api}/sendMessage"))
+                    .json(&serde_json::json!({
+                        "chat_id": chat_id,
+                        "text": reply,
+                    }))
+                    .send()
+                    .await;
+                continue;
+            }
+
+            if text == "/tokens off" {
+                chat_show_tokens.insert(chat_id, false);
+                let reply = msgs.get(keys::BOT_TOKENS_OFF);
+                let _ = http
+                    .post(format!("{telegram_api}/sendMessage"))
+                    .json(&serde_json::json!({
+                        "chat_id": chat_id,
+                        "text": reply,
+                    }))
+                    .send()
+                    .await;
+                continue;
+            }
+
             // Handle /dev command.
             if text.starts_with("/dev ") {
                 let instruction = text.trim_start_matches("/dev ").trim();
@@ -649,20 +646,22 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 system_prompt.push_str(&skill_prompt_ext);
             }
 
+            // Simple query routing: short, non-tool messages use a cheaper model.
+            let effective_model =
+                select_model_for_query(raw_text, &model, simple_query_threshold, chat_id);
             let agent_config = AgentConfig {
                 max_turns: 100,
-                model: model.clone(),
+                model: effective_model,
                 temperature: Some(0.5),
                 max_tokens: Some(8192),
                 ..AgentConfig::default()
             };
-
             let mut ctx = AgentContext::new(llm.clone(), adapters.clone(), agent_config)
                 .with_system_prompt(&system_prompt);
 
             // Restore conversation history.
             if !chat_histories.contains_key(&chat_id) {
-                if let Ok(db_msgs) = sessions.get_messages(&session_key, Some(100)).await {
+                if let Ok(db_msgs) = sessions.get_messages(&session_key, Some(history_window)).await {
                     let restored: Vec<Message> = db_msgs
                         .into_iter()
                         .filter(|m| m.role == "user" || m.role == "assistant")
@@ -775,11 +774,27 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             });
 
             // Run the ReAct loop.
-            let reply_text = match react_loop(&mut ctx).await {
+            let (reply_text, token_stats) = match react_loop(&mut ctx).await {
                 Ok(response) => {
-                    info!(chat_id, turns = response.turns_used, "agent completed");
+                    let tokens = (response.input_tokens, response.output_tokens);
+                    info!(
+                        chat_id,
+                        turns = response.turns_used,
+                        input_tokens = response.input_tokens,
+                        output_tokens = response.output_tokens,
+                        "agent completed"
+                    );
+                    // Always log token usage.
+                    if response.input_tokens + response.output_tokens > 0 {
+                        tracing::info!(
+                            chat_id,
+                            input_tokens = response.input_tokens,
+                            output_tokens = response.output_tokens,
+                            "token usage"
+                        );
+                    }
 
-                    if let Some(ref evo) = evolution {
+                    let text_out = if let Some(ref evo) = evolution {
                         let mut evo = evo.lock().await;
                         if let Some(issue_url) = evo
                             .analyze_response(text, &response.text, "telegram", response.turns_used)
@@ -795,7 +810,9 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                         }
                     } else {
                         response.text
-                    }
+                    };
+
+                    (text_out, Some(tokens))
                 }
                 Err(e) => {
                     let err_str = e.to_string();
@@ -805,7 +822,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                     // not found, 502/503, etc.).  Cascade through all fallback
                     // providers until one succeeds or all are exhausted.
                     // -------------------------------------------------------
-                    if failover::is_provider_error(&err_str) {
+                    let err_text = if failover::is_provider_error(&err_str) {
                         tracing::warn!(error = %err_str, "provider error, attempting cascading failover");
 
                         // For auth errors, try Keychain refresh first.
@@ -925,7 +942,8 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                                 .await
                             }
                         }
-                    }
+                    };
+                    (err_text, None)
                 }
             };
 
@@ -962,8 +980,18 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                     tracing::error!(error = %e, "failed to send Telegram reply");
                 }
             }
+
+            // Send token usage stats if enabled for this chat.
+            let show_tokens = chat_show_tokens
+                .get(&chat_id)
+                .copied()
+                .unwrap_or(global_show_token_usage);
+
+            if show_tokens {
+                if let Some((input, output)) = token_stats {
+                    send_token_stats(&http, &telegram_api, chat_id, input, output, &msgs).await;
+                }
+            }
         }
     }
 }
-
-

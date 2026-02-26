@@ -3,6 +3,15 @@ name = "OpenIntentOS"
 data_dir = "data"
 log_level = "info"
 
+[bot]
+# Number of conversation history messages to load per request (reduce to save tokens)
+history_window = 20
+# Show token usage stats after each response (false = log only, true = also show in chat)
+show_token_usage = false
+# Simple query threshold: messages shorter than this (chars) use a cheaper model
+# Set to 0 to disable smart routing
+simple_query_threshold = 120
+
 # ---------------------------------------------------------------------------
 # LLM Configuration
 # ---------------------------------------------------------------------------
@@ -21,8 +30,8 @@ log_level = "info"
 #   OPENINTENT_API_KEY       - Generic API key (used with custom providers)
 
 [llm]
-provider = "anthropic"
-model = "claude-sonnet-4-20250514"
+provider = "openai"
+model = "chatgpt-pro"
 max_tokens = 4096
 temperature = 0.0
 
@@ -127,6 +136,11 @@ repair_failed = "Sorry, I encountered an issue and tried to fix it automatically
 [messages.startup]
 with_updates = "I just restarted with updates!\n\n{summary}"
 simple = "I just restarted and I'm ready to help!"
+
+[messages.bot]
+token_usage = "📊 tokens: ↑{input} ↓{output} (total: {total})"
+tokens_on = "Token usage display enabled for this chat."
+tokens_off = "Token usage display disabled for this chat."
 
 [messages.status]
 researching = "💡 Diving deep into research like a detective!"

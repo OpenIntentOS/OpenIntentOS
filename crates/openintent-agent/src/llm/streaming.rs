@@ -65,9 +65,13 @@ impl SseParser {
             "message_start" => {
                 let v: Value = parse_json(data)?;
                 let message = &v["message"];
+                let input_tokens = message["usage"]["input_tokens"]
+                    .as_u64()
+                    .unwrap_or(0) as u32;
                 Ok(Some(StreamEvent::MessageStart {
                     message_id: json_string(message, "id"),
                     model: json_string(message, "model"),
+                    input_tokens,
                 }))
             }
 
@@ -116,7 +120,10 @@ impl SseParser {
             "message_delta" => {
                 let v: Value = parse_json(data)?;
                 let stop_reason = v["delta"]["stop_reason"].as_str().map(String::from);
-                Ok(Some(StreamEvent::MessageDelta { stop_reason }))
+                let output_tokens = v["usage"]["output_tokens"]
+                    .as_u64()
+                    .unwrap_or(0) as u32;
+                Ok(Some(StreamEvent::MessageDelta { stop_reason, output_tokens }))
             }
 
             "message_stop" => Ok(Some(StreamEvent::MessageStop)),
@@ -171,9 +178,10 @@ mod tests {
             .unwrap();
 
         match event {
-            StreamEvent::MessageStart { message_id, model } => {
+            StreamEvent::MessageStart { message_id, model, input_tokens } => {
                 assert_eq!(message_id, "msg_01");
                 assert_eq!(model, "claude-sonnet-4-20250514");
+                assert_eq!(input_tokens, 10);
             }
             other => panic!("unexpected event: {other:?}"),
         }

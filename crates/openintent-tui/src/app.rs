@@ -358,7 +358,7 @@ async fn run_agent_loop(
             stream: true,
         };
 
-        let response = llm.stream_chat(&request).await?;
+        let (response, _usage) = llm.stream_chat(&request).await?;
 
         match response {
             LlmResponse::Text(text) => {

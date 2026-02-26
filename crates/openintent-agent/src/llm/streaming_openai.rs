@@ -8,7 +8,7 @@
 use serde_json::Value;
 
 use crate::error::{AgentError, Result};
-use crate::llm::types::{LlmResponse, ToolCall};
+use crate::llm::types::{LlmResponse, ToolCall, Usage};
 
 // ---------------------------------------------------------------------------
 // Stream accumulator
@@ -32,6 +32,10 @@ pub struct OpenAiStreamAccumulator {
 
     /// Whether the `[DONE]` sentinel has been received.
     done: bool,
+
+    /// Token usage collected from stream chunks that include a `usage` field
+    /// (OpenAI sends this in the final chunk before `[DONE]`).
+    usage: Usage,
 }
 
 /// In-progress tool call being assembled from streaming deltas.
@@ -133,16 +137,27 @@ impl OpenAiStreamAccumulator {
             }
         }
 
+        // Some OpenAI-compatible providers include usage in stream chunks.
+        if let Some(usage_obj) = v.get("usage").filter(|u| !u.is_null()) {
+            if let Some(input) = usage_obj["prompt_tokens"].as_u64() {
+                self.usage.input_tokens = input as u32;
+            }
+            if let Some(output) = usage_obj["completion_tokens"].as_u64() {
+                self.usage.output_tokens = output as u32;
+            }
+        }
+
         Ok(text_delta)
     }
 
-    /// Consume the accumulator and produce the final [`LlmResponse`].
+    /// Consume the accumulator and produce the final [`LlmResponse`] and [`Usage`].
     ///
     /// If any tool calls were accumulated, they take priority over text
     /// content (matching the non-streaming behavior).
-    pub fn into_response(self) -> Result<LlmResponse> {
+    pub fn into_response(self) -> Result<(LlmResponse, Usage)> {
+        let usage = self.usage;
         if self.tool_call_builders.is_empty() {
-            return Ok(LlmResponse::Text(self.text));
+            return Ok((LlmResponse::Text(self.text), usage));
         }
 
         let calls: Result<Vec<ToolCall>> = self
@@ -168,7 +183,7 @@ impl OpenAiStreamAccumulator {
             })
             .collect();
 
-        Ok(LlmResponse::ToolCalls(calls?))
+        Ok((LlmResponse::ToolCalls(calls?), usage))
     }
 }
 
@@ -198,7 +213,7 @@ mod tests {
             .unwrap();
         assert_eq!(delta2, Some(" world".to_owned()));
 
-        let resp = acc.into_response().unwrap();
+        let (resp, _usage) = acc.into_response().unwrap();
         match resp {
             LlmResponse::Text(t) => assert_eq!(t, "Hello world"),
             _ => panic!("expected Text response"),
@@ -248,7 +263,7 @@ mod tests {
         acc.feed_line("data: [DONE]").unwrap();
         assert!(acc.is_done());
 
-        let resp = acc.into_response().unwrap();
+        let (resp, _usage) = acc.into_response().unwrap();
         match resp {
             LlmResponse::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
@@ -277,7 +292,7 @@ mod tests {
 
         acc.feed_line("data: [DONE]").unwrap();
 
-        let resp = acc.into_response().unwrap();
+        let (resp, _usage) = acc.into_response().unwrap();
         match resp {
             LlmResponse::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 2);
@@ -291,7 +306,7 @@ mod tests {
     #[test]
     fn empty_stream_returns_empty_text() {
         let acc = OpenAiStreamAccumulator::new();
-        let resp = acc.into_response().unwrap();
+        let (resp, _usage) = acc.into_response().unwrap();
         match resp {
             LlmResponse::Text(t) => assert!(t.is_empty()),
             _ => panic!("expected Text response"),

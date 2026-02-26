@@ -9,6 +9,7 @@
 
 mod adapters;
 mod bot;
+mod bot_config;
 mod bot_helpers;
 mod bridge;
 mod cli;

@@ -206,12 +206,15 @@ pub struct ToolDefinition {
 /// These map to the `event:` field in the SSE stream.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
-    /// The stream has started; contains the message id and model info.
+    /// The stream has started; contains the message id, model info, and
+    /// initial token usage (input tokens are known at stream start).
     MessageStart {
         /// The unique message id from the API.
         message_id: String,
         /// The model that is responding.
         model: String,
+        /// Number of input (prompt) tokens billed for this request.
+        input_tokens: u32,
     },
 
     /// A new content block has started.  For text blocks, `content_type` will
@@ -245,6 +248,8 @@ pub enum StreamEvent {
     MessageDelta {
         /// The stop reason (`"end_turn"`, `"tool_use"`, `"max_tokens"`, etc.).
         stop_reason: Option<String>,
+        /// Number of output tokens generated in this response.
+        output_tokens: u32,
     },
 
     /// The stream has fully terminated.
