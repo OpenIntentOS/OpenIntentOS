@@ -193,16 +193,38 @@ for skill in weather-check email-automation web-search-plus ip-lookup; do
 done
 
 # ── Step 3: API key setup ─────────────────────────────────────────────────────
-echo -e "\n${BOLD}Step 3/5 · Connect your AI providers${NC}\n"
-echo -e "${DIM}  You need at least one AI key + a Telegram bot token."
-echo -e "  All values are saved locally — never sent anywhere except the AI APIs.${NC}\n"
+# Check if all required values are already set via environment variables.
+# This enables fully silent/automated installation:
+#   TELEGRAM_BOT_TOKEN=xxx OPENAI_API_KEY=sk-xxx curl -fsSL .../install.sh | bash
+SILENT_INSTALL=false
+if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+  # At least the Telegram token is pre-set — check if an AI key is also present
+  if [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${NVIDIA_API_KEY:-}" ] || \
+     [ -n "${GOOGLE_API_KEY:-}" ] || [ -n "${DEEPSEEK_API_KEY:-}" ] || \
+     [ -n "${GROQ_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    SILENT_INSTALL=true
+    echo -e "\n${BOLD}Step 3/5 · Credentials${NC}\n"
+    ok "All credentials detected from environment — skipping prompts"
+    ok "Telegram token: set"
+    for provider in OPENAI NVIDIA GOOGLE DEEPSEEK GROQ ANTHROPIC; do
+      key_var="${provider}_API_KEY"
+      [ -n "${!key_var:-}" ] && ok "${provider} API key: set"
+    done
+  fi
+fi
 
-# Read from terminal even when piped (fallback to stdin if /dev/tty unavailable)
-if [ -e /dev/tty ] && exec 3</dev/tty 2>/dev/null; then
-  : # /dev/tty opened on fd 3
-else
-  exec 3<&0  # fall back to stdin (keys will be visible but at least won't crash)
-  warn "/dev/tty not available — input will be visible (Termux/container). You can edit $ENV_FILE after install."
+if ! $SILENT_INSTALL; then
+  echo -e "\n${BOLD}Step 3/5 · Connect your AI providers${NC}\n"
+  echo -e "${DIM}  All values are saved locally in $ENV_FILE"
+  echo -e "  Never sent anywhere except the AI APIs you choose.${NC}\n"
+
+  # Read from terminal even when piped (fallback to stdin if /dev/tty unavailable)
+  if [ -e /dev/tty ] && exec 3</dev/tty 2>/dev/null; then
+    : # /dev/tty opened on fd 3
+  else
+    exec 3<&0  # fall back to stdin (keys will be visible but at least won't crash)
+    warn "/dev/tty not available — input will be visible. You can edit $ENV_FILE after install."
+  fi
 fi
 
 prompt_secret() {
@@ -237,17 +259,22 @@ prompt_secret() {
 }
 
 # ── Telegram (required) ────────────────────────────────────────────────────────
-echo -e "  ${CYAN}📱 Telegram Bot${NC}\n"
-echo -e "  ${DIM}Don't have a bot yet? Here's how:"
-echo -e "    1. Open Telegram, search for @BotFather"
-echo -e "    2. Send: /newbot"
-echo -e "    3. Choose a name and username"
-echo -e "    4. Copy the token it gives you${NC}\n"
-prompt_secret TELEGRAM_BOT_TOKEN "Telegram Bot Token" "https://t.me/BotFather" "required"
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"; NVIDIA_API_KEY="${NVIDIA_API_KEY:-}"
+GOOGLE_API_KEY="${GOOGLE_API_KEY:-}"; DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
+GROQ_API_KEY="${GROQ_API_KEY:-}"; ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 
-# ── Primary LLM provider — smart menu ─────────────────────────────────────────
-OPENAI_API_KEY=""; NVIDIA_API_KEY=""; GOOGLE_API_KEY=""
-DEEPSEEK_API_KEY=""; GROQ_API_KEY=""
+if ! $SILENT_INSTALL; then
+  echo -e "  ${CYAN}📱 Telegram Bot${NC}\n"
+  echo -e "  ${DIM}Don't have a bot yet? Here's how:"
+  echo -e "    1. Open Telegram, search for @BotFather"
+  echo -e "    2. Send: /newbot"
+  echo -e "    3. Choose a name and username"
+  echo -e "    4. Copy the token it gives you${NC}\n"
+  prompt_secret TELEGRAM_BOT_TOKEN "Telegram Bot Token" "https://t.me/BotFather" "required"
+fi
+
+# ── Primary LLM provider — smart menu (interactive only) ──────────────────────
 
 # Check if Ollama is running locally (zero-config AI option)
 OLLAMA_AVAILABLE=false
@@ -255,62 +282,64 @@ if curl -s --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
   OLLAMA_AVAILABLE=true
 fi
 
-echo -e "  ${CYAN}🧠 AI Provider${NC}\n"
+if ! $SILENT_INSTALL; then
+  echo -e "  ${CYAN}🧠 AI Provider${NC}\n"
 
-if $OLLAMA_AVAILABLE; then
-  ok "Ollama detected on this machine — no API key needed!"
-  echo -e "  ${DIM}  The bot will use your local Ollama models by default."
-  echo -e "  You can still add a cloud API key for more powerful models.${NC}\n"
+  if $OLLAMA_AVAILABLE; then
+    ok "Ollama detected on this machine — no API key needed!"
+    echo -e "  ${DIM}  The bot will use your local Ollama models by default."
+    echo -e "  You can still add a cloud API key for more powerful models.${NC}\n"
+  fi
+
+  echo -e "  ${DIM}Which AI provider do you have? (Enter a number)${NC}\n"
+  echo -e "  ${BOLD}  1)${NC} OpenAI          ${DIM}(ChatGPT — paid, most popular)${NC}"
+  echo -e "  ${BOLD}  2)${NC} Google Gemini   ${DIM}(free tier available at aistudio.google.com)${NC}"
+  echo -e "  ${BOLD}  3)${NC} Groq            ${DIM}(free tier, very fast — console.groq.com)${NC}"
+  echo -e "  ${BOLD}  4)${NC} NVIDIA NIM      ${DIM}(free \$100 credit for new accounts — build.nvidia.com)${NC}"
+  echo -e "  ${BOLD}  5)${NC} DeepSeek        ${DIM}(very affordable — platform.deepseek.com)${NC}"
+  if $OLLAMA_AVAILABLE; then
+    echo -e "  ${BOLD}  0)${NC} Use local Ollama only ${DIM}(already detected — free, no internet)${NC}"
+  fi
+  echo -e "  ${BOLD}  s)${NC} Skip for now   ${DIM}(add key later by editing $ENV_FILE)${NC}"
+  echo ""
+  printf "  Your choice: "
+  read -r ai_choice <&3
+  echo ""
+
+  case "$ai_choice" in
+    1)
+      echo -e "  ${DIM}Get your key at: https://platform.openai.com/api-keys${NC}"
+      prompt_secret OPENAI_API_KEY "OpenAI API Key" "" "required"
+      ;;
+    2)
+      echo -e "  ${DIM}Get your free key at: https://aistudio.google.com/apikey${NC}"
+      prompt_secret GOOGLE_API_KEY "Google Gemini API Key" "" "required"
+      ;;
+    3)
+      echo -e "  ${DIM}Get your free key at: https://console.groq.com/keys${NC}"
+      prompt_secret GROQ_API_KEY "Groq API Key" "" "required"
+      ;;
+    4)
+      echo -e "  ${DIM}Get your free key at: https://build.nvidia.com${NC}"
+      prompt_secret NVIDIA_API_KEY "NVIDIA NIM API Key" "" "required"
+      ;;
+    5)
+      echo -e "  ${DIM}Get your key at: https://platform.deepseek.com${NC}"
+      prompt_secret DEEPSEEK_API_KEY "DeepSeek API Key" "" "required"
+      ;;
+    0)
+      ok "Using local Ollama — no key needed"
+      ;;
+    s|S|"")
+      warn "Skipped — add a key later by editing: $ENV_FILE"
+      ;;
+    *)
+      warn "Unrecognized choice — skipping. Add a key later by editing: $ENV_FILE"
+      ;;
+  esac
+
+  exec 3<&-
 fi
-
-echo -e "  ${DIM}Which AI provider do you have? (Enter a number)${NC}\n"
-echo -e "  ${BOLD}  1)${NC} OpenAI          ${DIM}(ChatGPT — paid, most popular)${NC}"
-echo -e "  ${BOLD}  2)${NC} Google Gemini   ${DIM}(free tier available at aistudio.google.com)${NC}"
-echo -e "  ${BOLD}  3)${NC} Groq            ${DIM}(free tier, very fast — console.groq.com)${NC}"
-echo -e "  ${BOLD}  4)${NC} NVIDIA NIM      ${DIM}(free \$100 credit for new accounts — build.nvidia.com)${NC}"
-echo -e "  ${BOLD}  5)${NC} DeepSeek        ${DIM}(very affordable — platform.deepseek.com)${NC}"
-if $OLLAMA_AVAILABLE; then
-  echo -e "  ${BOLD}  0)${NC} Use local Ollama only ${DIM}(already detected — free, no internet)${NC}"
-fi
-echo -e "  ${BOLD}  s)${NC} Skip for now   ${DIM}(add key later by editing $ENV_FILE)${NC}"
-echo ""
-printf "  Your choice: "
-read -r ai_choice <&3
-echo ""
-
-case "$ai_choice" in
-  1)
-    echo -e "  ${DIM}Get your key at: https://platform.openai.com/api-keys${NC}"
-    prompt_secret OPENAI_API_KEY "OpenAI API Key" "" "required"
-    ;;
-  2)
-    echo -e "  ${DIM}Get your free key at: https://aistudio.google.com/apikey${NC}"
-    prompt_secret GOOGLE_API_KEY "Google Gemini API Key" "" "required"
-    ;;
-  3)
-    echo -e "  ${DIM}Get your free key at: https://console.groq.com/keys${NC}"
-    prompt_secret GROQ_API_KEY "Groq API Key" "" "required"
-    ;;
-  4)
-    echo -e "  ${DIM}Get your free key at: https://build.nvidia.com${NC}"
-    prompt_secret NVIDIA_API_KEY "NVIDIA NIM API Key" "" "required"
-    ;;
-  5)
-    echo -e "  ${DIM}Get your key at: https://platform.deepseek.com${NC}"
-    prompt_secret DEEPSEEK_API_KEY "DeepSeek API Key" "" "required"
-    ;;
-  0)
-    ok "Using local Ollama — no key needed"
-    ;;
-  s|S|"")
-    warn "Skipped — add a key later by editing: $ENV_FILE"
-    ;;
-  *)
-    warn "Unrecognized choice — skipping. Add a key later by editing: $ENV_FILE"
-    ;;
-esac
-
-exec 3<&-
 
 # Validate at least one option available
 ALL_KEYS_EMPTY=true
