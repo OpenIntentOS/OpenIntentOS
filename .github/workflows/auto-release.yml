@@ -32,16 +32,14 @@ jobs:
           NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
           echo "new=${NEW_VERSION}" >> $GITHUB_OUTPUT
           echo "Bumping: ${CURRENT} → ${NEW_VERSION}"
+          # Cargo.lock v4 does not store path-dependency versions for
+          # workspace members, so only Cargo.toml needs updating.
           sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
-          ESCAPED=$(echo "$CURRENT" | sed 's/\./\\./g')
-          perl -i -0pe \
-            "s/(\[\[package\]\]\nname = \"openintent-[^\"\n]+\"\nversion = \")${ESCAPED}\"/$1${NEW_VERSION}\"/g" \
-            Cargo.lock
 
       - name: Commit
         id: commit
         run: |
-          git add Cargo.toml Cargo.lock
+          git add Cargo.toml
           git commit -m "chore: release v${{ steps.bump.outputs.new }}"
           git push origin main
           echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
