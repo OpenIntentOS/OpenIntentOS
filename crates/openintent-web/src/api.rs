@@ -99,7 +99,7 @@ pub async fn perform_health_checks(state: &AppState) -> HealthChecks {
 async fn check_database_health(db: &openintent_store::Database) -> bool {
     // Try a simple query to verify database connectivity
     match db.execute(|conn| {
-        conn.execute("SELECT 1", [])?;
+        conn.query_row("SELECT 1", [], |_| Ok(()))?;
         Ok(())
     }).await {
         Ok(_) => true,
@@ -273,14 +273,24 @@ pub struct ChatBody {
 
 /// Perform a one-shot (non-streaming) chat: run the full ReAct loop and
 /// return the final text response with automatic error recovery.
+///
+/// Error strategy:
+/// - **Quota / rate-limit (429)**: immediately switch to the next provider in
+///   the failover chain and retry.  This is tried up to `MAX_PROVIDER_SWITCHES`
+///   times before giving up.
+/// - **Transient errors** (network, 5xx): exponential back-off retry up to
+///   `MAX_RETRIES` attempts on the same provider.
 pub async fn chat(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ChatBody>,
 ) -> (StatusCode, Json<Value>) {
-    let max_retries = 3;
-    let mut last_error = None;
+    const MAX_RETRIES: u32 = 3;
+    const MAX_PROVIDER_SWITCHES: u32 = 3;
 
-    for attempt in 1..=max_retries {
+    let mut last_error: Option<openintent_agent::error::AgentError> = None;
+    let mut provider_switches = 0;
+
+    for attempt in 1..=(MAX_RETRIES + MAX_PROVIDER_SWITCHES) {
         let tool_adapters: Vec<Arc<dyn openintent_agent::ToolAdapter>> = state
             .adapters
             .iter()
@@ -296,10 +306,7 @@ pub async fn chat(
         match react_loop(&mut ctx).await {
             Ok(response) => {
                 if attempt > 1 {
-                    tracing::info!(
-                        attempt = attempt,
-                        "chat request succeeded after retry"
-                    );
+                    tracing::info!(attempt, "chat request succeeded after retry");
                 }
                 return (
                     StatusCode::OK,
@@ -312,42 +319,67 @@ pub async fn chat(
                 );
             }
             Err(e) => {
-                last_error = Some(e);
-                tracing::warn!(
-                    attempt = attempt,
-                    max_retries = max_retries,
-                    error = %last_error.as_ref().unwrap(),
-                    "chat request failed, retrying..."
-                );
+                let error_str = e.to_string();
 
-                if attempt < max_retries {
-                    // Exponential backoff: 100ms, 200ms, 400ms
-                    let delay = Duration::from_millis(100 * (1 << (attempt - 1)));
-                    tokio::time::sleep(delay).await;
+                if is_quota_error(&error_str) && provider_switches < MAX_PROVIDER_SWITCHES {
+                    // 429 quota exceeded — switch to the next provider immediately.
+                    if state.llm.failover_on_quota() {
+                        provider_switches += 1;
+                        tracing::warn!(
+                            attempt,
+                            provider_switches,
+                            "quota exceeded, switched to next provider"
+                        );
+                        last_error = Some(e);
+                        continue; // retry immediately with new provider
+                    }
+                    // Failover chain exhausted — fall through to error.
+                } else if !is_quota_error(&error_str) {
+                    // Transient error: exponential back-off before retrying.
+                    tracing::warn!(
+                        attempt,
+                        error = %error_str,
+                        "transient chat error, retrying with back-off"
+                    );
+                    let retry_attempt = attempt - provider_switches;
+                    if retry_attempt < MAX_RETRIES {
+                        let delay = Duration::from_millis(100 * (1 << (retry_attempt - 1)));
+                        tokio::time::sleep(delay).await;
+                        last_error = Some(e);
+                        continue;
+                    }
                 }
+
+                last_error = Some(e);
+                break;
             }
         }
     }
 
-    // All retries failed
+    // All attempts failed.
     let error_msg = last_error
         .map(|e| e.to_string())
         .unwrap_or_else(|| "Unknown error".to_string());
 
-    tracing::error!(
-        max_retries = max_retries,
-        error = %error_msg,
-        "chat request failed after all retries"
-    );
+    tracing::error!(error = %error_msg, "chat request failed after all attempts");
 
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({
-            "error": format!("Request failed after {} attempts: {}", max_retries, error_msg),
-            "attempts": max_retries,
+            "error": error_msg,
             "recoverable": is_recoverable_error(&error_msg),
         })),
     )
+}
+
+/// Returns `true` for HTTP 429 / quota-exceeded errors that warrant a
+/// provider switch rather than a same-provider retry.
+fn is_quota_error(error: &str) -> bool {
+    error.contains("429")
+        || error.contains("insufficient_quota")
+        || error.contains("RESOURCE_EXHAUSTED")
+        || error.contains("quota")
+        || error.contains("exceeded your current quota")
 }
 
 /// Determine if an error is potentially recoverable with retry.

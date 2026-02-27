@@ -235,14 +235,14 @@ impl LlmClient {
     /// Returns true if failover was successful, false if no more providers.
     pub async fn attempt_failover(&self, current_provider_index: usize) -> bool {
         let chain = Self::create_failover_chain();
-        
+
         if current_provider_index + 1 >= chain.len() {
             tracing::warn!("Failover chain exhausted, no more providers available");
             return false;
         }
 
         let (provider, base_url, model) = &chain[current_provider_index + 1];
-        
+
         tracing::info!(
             provider = ?provider,
             base_url = %base_url,
@@ -252,6 +252,78 @@ impl LlmClient {
 
         self.switch_provider(provider.clone(), base_url.clone(), model.clone());
         true
+    }
+
+    /// Resolve the API key for a provider URL from environment variables.
+    fn env_api_key_for_url(base_url: &str) -> String {
+        if base_url.contains("anthropic.com") {
+            std::env::var("ANTHROPIC_API_KEY").unwrap_or_default()
+        } else if base_url.contains("openai.com") {
+            std::env::var("OPENAI_API_KEY").unwrap_or_default()
+        } else if base_url.contains("deepseek.com") {
+            std::env::var("DEEPSEEK_API_KEY").unwrap_or_default()
+        } else if base_url.contains("generativelanguage.googleapis.com")
+            || base_url.contains("googleapis.com")
+        {
+            std::env::var("GOOGLE_API_KEY").unwrap_or_default()
+        } else if base_url.contains("api.nvidia.com") {
+            std::env::var("NVIDIA_API_KEY").unwrap_or_default()
+        } else {
+            // Local providers (Ollama, LM Studio) need no key.
+            String::new()
+        }
+    }
+
+    /// Switch to the next available provider when the current one returns a
+    /// quota / rate-limit error (HTTP 429).
+    ///
+    /// Iterates the failover chain in priority order, skipping:
+    /// - the currently active provider
+    /// - providers whose API key is absent (unless they are local)
+    ///
+    /// Also switches the API key so the new provider is authenticated
+    /// correctly.
+    ///
+    /// Returns `true` if a new provider was selected, `false` if the chain is
+    /// exhausted.
+    pub fn failover_on_quota(&self) -> bool {
+        let chain = Self::create_failover_chain();
+        let current_url = self.current_base_url();
+
+        for (provider, base_url, model) in &chain {
+            if *base_url == current_url {
+                continue; // skip current
+            }
+
+            let api_key = Self::env_api_key_for_url(base_url);
+            let is_local = base_url.contains("localhost") || base_url.contains("127.0.0.1");
+
+            if api_key.is_empty() && !is_local {
+                tracing::debug!(
+                    url = %base_url,
+                    "skipping failover candidate: no API key in environment"
+                );
+                continue;
+            }
+
+            tracing::warn!(
+                from = %current_url,
+                to   = %base_url,
+                model = %model,
+                "quota exceeded — failing over to next provider"
+            );
+
+            if let Ok(mut o) = self.overrides.write() {
+                o.provider      = Some(provider.clone());
+                o.base_url      = Some(base_url.clone());
+                o.default_model = Some(model.clone());
+                o.api_key       = api_key;
+            }
+            return true;
+        }
+
+        tracing::warn!("failover chain exhausted: no provider with a valid API key found");
+        false
     }
 
     /// Reset all runtime overrides back to the original config defaults.

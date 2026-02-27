@@ -31,6 +31,8 @@ pub mod keys {
     pub const REPAIR_COMMITTING: &str = "self_repair.committing";
     pub const REPAIR_PUSHING: &str = "self_repair.pushing";
     pub const REPAIR_PUSH_FAILED: &str = "self_repair.push_failed";
+    pub const REPAIR_WAITING_FOR_RELEASE: &str = "self_repair.waiting_for_release";
+    pub const REPAIR_RELEASE_READY: &str = "self_repair.release_ready";
     pub const REPAIR_SUCCESS: &str = "self_repair.success";
 
     // Errors
@@ -333,6 +335,8 @@ fn builtin_defaults() -> HashMap<String, String> {
     m.insert("self_repair.committing".into(), "Saving the fix...".into());
     m.insert("self_repair.pushing".into(), "Pushing fix to remote repository...".into());
     m.insert("self_repair.push_failed".into(), "Fix saved locally, but push to remote failed. Will retry later.".into());
+    m.insert("self_repair.waiting_for_release".into(), "Fix pushed! CI is now building the release (~15 min). I'll download and restart automatically when it's ready...".into());
+    m.insert("self_repair.release_ready".into(), "New release downloaded from CI. Restarting now...".into());
     m.insert("self_repair.success".into(), "I found and fixed an issue automatically!\n\nFix: {summary}\n\nRestarting now — please resend your message in a few seconds...".into());
     m.insert("errors.general".into(), "Sorry, something went wrong while processing your request. Please try again later or rephrase your message.".into());
     m.insert("errors.repair_failed".into(), "Sorry, I encountered an issue and tried to fix it automatically, but it didn't work this time. The developer has been notified. Please try again later.".into());

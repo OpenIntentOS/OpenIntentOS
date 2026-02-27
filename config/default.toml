@@ -31,7 +31,7 @@ simple_query_threshold = 120
 
 [llm]
 provider = "openai"
-model = "chatgpt-pro"
+model = "gpt-4o"
 max_tokens = 4096
 temperature = 0.0
 
@@ -127,6 +127,8 @@ build_failed = "Auto-fix failed: build error. I'll keep improving."
 committing = "Saving the fix..."
 pushing = "Pushing fix to remote repository..."
 push_failed = "Fix saved locally, but push to remote failed. Will retry later."
+waiting_for_release = "Fix pushed! CI is now building the release (~15 min). I'll download and restart automatically when it's ready..."
+release_ready = "New release downloaded from CI. Restarting now..."
 success = "I found and fixed an issue automatically!\n\nFix: {summary}\n\nRestarting now — please resend your message in a few seconds..."
 
 [messages.errors]

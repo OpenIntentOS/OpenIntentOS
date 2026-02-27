@@ -3,10 +3,12 @@
 //! When the bot encounters a code bug (panic, internal error), this module:
 //! 1. Analyzes the error and reads recent logs
 //! 2. Spawns a repair agent that reads source, fixes the bug
-//! 3. Runs `cargo check` -> `cargo test` -> `cargo build --release`
-//! 4. Commits the fix to git and pushes to remote
-//! 5. Restarts the process with the new binary
-//! 6. Notifies the user that the fix is deployed
+//! 3. Runs `cargo check` -> `cargo test` to verify the fix
+//! 4. Commits the fix to git and pushes to remote (triggers CI auto-release)
+//! 5. Polls GitHub releases until the new binary is published by CI
+//! 6. Downloads and atomically replaces the running binary
+//! 7. Restarts the process with the new binary
+//! 8. Notifies the user that the fix is deployed
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -256,16 +258,6 @@ pub async fn attempt_repair(
         };
     }
 
-    notifier.send_msg(keys::REPAIR_BUILDING).await;
-
-    if let Err(e) = run_shell(repo_path, "cargo build --release", 600).await {
-        warn!(error = %e, "cargo build --release failed after repair");
-        notifier.send_msg(keys::REPAIR_BUILD_FAILED).await;
-        return RepairOutcome::Failed {
-            reason: format!("cargo build --release failed: {e}"),
-        };
-    }
-
     // Step 4: Commit the fix.
     notifier.send_msg(keys::REPAIR_COMMITTING).await;
 
@@ -278,14 +270,36 @@ pub async fn attempt_repair(
         }
     };
 
-    // Step 5: Push to remote.
+    // Step 5: Push to remote (this triggers the CI auto-release workflow).
     notifier.send_msg(keys::REPAIR_PUSHING).await;
 
-    if let Err(e) = run_shell(repo_path, "git push", 60).await {
+    let pushed = if let Err(e) = run_shell(repo_path, "git push", 60).await {
         warn!(error = %e, "git push failed after self-repair commit");
         notifier.send_msg(keys::REPAIR_PUSH_FAILED).await;
+        false
     } else {
-        info!("self-repair fix pushed to remote");
+        info!("self-repair fix pushed to remote, CI will now build and publish the release");
+        true
+    };
+
+    // Step 6: Wait for CI to publish the new release, then download and install it.
+    // CI auto-release takes ~10–15 minutes to build all platforms and create the release.
+    // We poll every 30 seconds for up to 25 minutes.
+    if pushed {
+        notifier.send_msg(keys::REPAIR_WAITING_FOR_RELEASE).await;
+
+        match wait_for_release_and_update(std::time::Duration::from_secs(25 * 60)).await {
+            Ok(true) => {
+                info!(commit = %commit_hash, "CI release downloaded and installed");
+                notifier.send_msg(keys::REPAIR_RELEASE_READY).await;
+            }
+            Ok(false) => {
+                warn!("timed out waiting for CI to publish release after self-repair");
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to download CI release after self-repair");
+            }
+        }
     }
 
     info!(
@@ -350,6 +364,43 @@ pub fn restart_process() -> ! {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Poll GitHub releases every 30 seconds until a version newer than the
+/// currently-running binary appears, then download and install it.
+///
+/// Returns `Ok(true)` if the new binary was successfully installed, or
+/// `Ok(false)` if `timeout` elapsed without a new release appearing.
+async fn wait_for_release_and_update(timeout: std::time::Duration) -> Result<bool, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut interval =
+        tokio::time::interval(std::time::Duration::from_secs(30));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        interval.tick().await;
+
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+
+        match crate::update::check_and_apply_update().await {
+            Ok(outcome) if outcome.updated => {
+                info!(
+                    from = %outcome.current_version,
+                    to = %outcome.latest_version,
+                    "CI-built release downloaded and installed"
+                );
+                return Ok(true);
+            }
+            Ok(_) => {
+                info!("CI release not yet available, waiting...");
+            }
+            Err(e) => {
+                warn!(error = %e, "release check failed, will retry");
+            }
+        }
+    }
+}
 
 /// Determine whether an agent error looks like a code bug that we can fix.
 fn is_code_bug(error: &openintent_agent::error::AgentError) -> bool {
@@ -434,7 +485,7 @@ fn build_repair_system_prompt(repo_path: &Path) -> String {
          - **If `fs_str_replace` fails, re-read the file and try again.** Do NOT guess.\n\
          - **Use `shell_execute` with timeout_secs: 300** for cargo commands.\n\
          - After fixing, run `cargo check --workspace` to make sure everything compiles.\n\
-         - Do NOT run `cargo build --release` — the caller handles that.\n\
+         - Do NOT run `cargo build --release` — CI handles the release build after push.\n\
          - Do NOT create git commits — the caller handles that.\n\
          - If you cannot identify the bug after 3 attempts, STOP and explain what you found.\n\
          {rules_section}\
@@ -557,4 +608,68 @@ async fn commit_fix(repo_path: &Path, error_summary: &str) -> Result<String, Str
         .unwrap_or_else(|_| "unknown".to_string());
 
     Ok(hash.trim().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that `wait_for_release_and_update` returns `Ok(false)` when the
+    /// timeout is shorter than one poll interval (30 s).  We use a 1 ms
+    /// timeout so the test completes instantly.
+    #[tokio::test]
+    async fn wait_for_release_times_out() {
+        let result =
+            wait_for_release_and_update(std::time::Duration::from_millis(1)).await;
+        // Should time out before ever calling check_and_apply_update.
+        assert_eq!(result, Ok(false));
+    }
+
+    /// Verify that the `is_code_bug` classifier correctly identifies panics.
+    #[test]
+    fn is_code_bug_detects_panics() {
+        use openintent_agent::error::AgentError;
+
+        assert!(is_code_bug(&AgentError::Internal(
+            "thread panicked at index out of bounds".into()
+        )));
+        assert!(is_code_bug(&AgentError::Internal(
+            "called unwrap on None".into()
+        )));
+        // Transient / external errors should not trigger repair.
+        assert!(!is_code_bug(&AgentError::LlmRequestFailed {
+            reason: "connection refused".into()
+        }));
+        assert!(!is_code_bug(&AgentError::ConfigError {
+            reason: "missing key".into()
+        }));
+    }
+
+    /// Verify that `run_shell` captures stdout on success.
+    #[tokio::test]
+    async fn run_shell_success() {
+        let out = run_shell(Path::new("/tmp"), "echo hello", 5).await;
+        assert!(out.is_ok());
+        assert!(out.unwrap().contains("hello"));
+    }
+
+    /// Verify that `run_shell` returns an error on non-zero exit.
+    #[tokio::test]
+    async fn run_shell_failure() {
+        let out = run_shell(Path::new("/tmp"), "false", 5).await;
+        assert!(out.is_err());
+    }
+
+    /// Verify that `run_shell` times out correctly.
+    #[tokio::test]
+    async fn run_shell_timeout() {
+        let out = run_shell(Path::new("/tmp"), "sleep 60", 1).await;
+        assert!(out.is_err());
+        let msg = out.unwrap_err();
+        assert!(msg.contains("timed out"), "expected timeout, got: {msg}");
+    }
 }
