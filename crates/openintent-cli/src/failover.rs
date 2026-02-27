@@ -59,7 +59,31 @@ pub struct FailoverResult {
 /// Ordered list of fallback candidates. Free-tier providers first, then
 /// local Ollama as ultimate fallback.
 const FALLBACK_CHAIN: &[FallbackCandidate] = &[
-    // NVIDIA NIM free-tier models (verified available for our account)
+    // DeepSeek direct (most reliable free-tier, prioritize first)
+    FallbackCandidate {
+        name: "DeepSeek",
+        model: "deepseek-chat",
+        base_url: DEEPSEEK_BASE_URL,
+        key_env: "DEEPSEEK_API_KEY",
+        provider: LlmProvider::OpenAI,
+    },
+    // Google Gemini (free tier, good reliability)
+    FallbackCandidate {
+        name: "Google Gemini Flash",
+        model: "gemini-2.5-flash",
+        base_url: GOOGLE_BASE_URL,
+        key_env: "GOOGLE_API_KEY",
+        provider: LlmProvider::OpenAI,
+    },
+    // Groq free-tier
+    FallbackCandidate {
+        name: "Groq",
+        model: "llama-3.3-70b-versatile",
+        base_url: GROQ_BASE_URL,
+        key_env: "GROQ_API_KEY",
+        provider: LlmProvider::OpenAI,
+    },
+    // NVIDIA NIM free-tier models (stream decoding can be unreliable)
     FallbackCandidate {
         name: "NVIDIA Qwen 3.5 397B",
         model: "qwen/qwen3.5-397b-a17b",
@@ -79,30 +103,6 @@ const FALLBACK_CHAIN: &[FallbackCandidate] = &[
         model: "nvidia/nemotron-3-nano-30b-a3b",
         base_url: NVIDIA_BASE_URL,
         key_env: "NVIDIA_API_KEY",
-        provider: LlmProvider::OpenAI,
-    },
-    // Google Gemini (free tier)
-    FallbackCandidate {
-        name: "Google Gemini Flash",
-        model: "gemini-2.5-flash",
-        base_url: GOOGLE_BASE_URL,
-        key_env: "GOOGLE_API_KEY",
-        provider: LlmProvider::OpenAI,
-    },
-    // DeepSeek direct
-    FallbackCandidate {
-        name: "DeepSeek",
-        model: "deepseek-chat",
-        base_url: DEEPSEEK_BASE_URL,
-        key_env: "DEEPSEEK_API_KEY",
-        provider: LlmProvider::OpenAI,
-    },
-    // Groq free-tier
-    FallbackCandidate {
-        name: "Groq",
-        model: "llama-3.3-70b-versatile",
-        base_url: GROQ_BASE_URL,
-        key_env: "GROQ_API_KEY",
         provider: LlmProvider::OpenAI,
     },
     // Ollama local (always available, no key needed)
@@ -237,6 +237,8 @@ pub fn is_provider_error(error: &str) -> bool {
         || error.contains("does not exist")
         || error.contains("503 Service Unavailable")
         || error.contains("502 Bad Gateway")
+        || error.contains("error decoding response body")
+        || error.contains("stream read error")
 }
 
 // ---------------------------------------------------------------------------
