@@ -639,7 +639,14 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                  - Use emoji to mark categories.\n\
                  - For research results, present them in well-organized tables with columns.\n\
                  - You can use Telegram tools to send photos, documents, or additional messages.\n\
-                 - Do NOT simplify or shorten your response just because it's Telegram. Give full, rich answers.\n",
+                 - Do NOT simplify or shorten your response just because it's Telegram. Give full, rich answers.\n\n\
+                 **IMPORTANT: Multi-task handling:**\n\
+                 When the user sends multiple tasks or requirements in a single message:\n\
+                 1. Process each task/requirement one by one.\n\
+                 2. After completing EACH task, immediately send the result to the user using \
+                 `telegram_send_message` with chat_id=\"{chat_id}\".\n\
+                 3. Do NOT wait until all tasks are done to reply. Send incremental results.\n\
+                 4. Label each result clearly (e.g. \"✅ 需求 1 — Clip 完成\" or \"✅ Task 1 — Lead Done\").\n",
             ));
 
             if !skill_prompt_ext.is_empty() {
