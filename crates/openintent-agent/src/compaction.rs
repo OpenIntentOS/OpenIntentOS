@@ -40,7 +40,9 @@ impl Default for CompactionConfig {
         Self {
             max_messages: 50,
             keep_recent: 10,
-            model: "claude-sonnet-4-20250514".to_owned(),
+            // Empty string defers to the LLM client's currently active model,
+            // which respects provider overrides (OpenAI, DeepSeek, Anthropic, etc.).
+            model: String::new(),
         }
     }
 }
@@ -340,6 +342,7 @@ mod tests {
         let config = CompactionConfig::default();
         assert_eq!(config.max_messages, 50);
         assert_eq!(config.keep_recent, 10);
-        assert_eq!(config.model, "claude-sonnet-4-20250514");
+        // Empty string means "use the LLM client's current active model".
+        assert!(config.model.is_empty());
     }
 }
