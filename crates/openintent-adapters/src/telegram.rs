@@ -1,11 +1,13 @@
 //! Telegram Bot API adapter for OpenIntentOS.
 //!
 //! Provides tools for interacting with the Telegram Bot API, enabling the AI
-//! agent to send and receive messages, photos, and manage webhooks via
-//! Telegram bots.  Supports five tools:
+//! agent to send and receive messages, photos, files, videos, and manage
+//! webhooks via Telegram bots.
 //!
 //! - `telegram_send_message` — Send a text message to a chat
 //! - `telegram_send_photo` — Send a photo to a chat
+//! - `telegram_send_document` — Send a local file as a document
+//! - `telegram_send_video` — Send a local video file
 //! - `telegram_get_updates` — Poll for recent messages/updates
 //! - `telegram_get_chat` — Get information about a chat
 //! - `telegram_set_webhook` — Set a webhook URL for push-based updates
@@ -253,6 +255,116 @@ impl TelegramAdapter {
             "success": true,
             "data": json_resp.get("result").cloned().unwrap_or(json!({})),
         }))
+    }
+
+    /// Send a local file as a document to a chat via multipart upload.
+    async fn tool_send_document(&self, params: Value) -> Result<Value> {
+        let url = self.api_url("sendDocument")?;
+        let chat_id = params.get("chat_id").and_then(|v| v.as_str())
+            .ok_or_else(|| AdapterError::InvalidParams {
+                tool_name: "telegram_send_document".into(),
+                reason: "missing required string field `chat_id`".into(),
+            })?
+            .to_string();
+        let file_path = params.get("file_path").and_then(|v| v.as_str())
+            .ok_or_else(|| AdapterError::InvalidParams {
+                tool_name: "telegram_send_document".into(),
+                reason: "missing required string field `file_path`".into(),
+            })?;
+        let caption = params.get("caption").and_then(|v| v.as_str()).map(String::from);
+
+        // Read the file from disk.
+        let file_bytes = tokio::fs::read(file_path).await.map_err(|e| {
+            AdapterError::ExecutionFailed {
+                tool_name: "telegram_send_document".into(),
+                reason: format!("failed to read file `{file_path}`: {e}"),
+            }
+        })?;
+        let file_name = std::path::Path::new(file_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".to_string());
+
+        debug!(url = %url, chat_id = %chat_id, file_path = %file_path, "sending Telegram document");
+
+        let part = reqwest::multipart::Part::bytes(file_bytes)
+            .file_name(file_name);
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id)
+            .part("document", part);
+        if let Some(cap) = caption {
+            form = form.text("caption", cap);
+        }
+
+        let response = self.http.post(&url).multipart(form).send().await.map_err(|e| {
+            AdapterError::ExecutionFailed {
+                tool_name: "telegram_send_document".into(),
+                reason: format!("failed to send document: {e}"),
+            }
+        })?;
+        let json_resp: Value = response.json().await.map_err(|e| AdapterError::ExecutionFailed {
+            tool_name: "telegram_send_document".into(),
+            reason: format!("failed to parse response: {e}"),
+        })?;
+        Self::parse_telegram_response(&json_resp, "telegram_send_document")?;
+        Ok(json!({ "success": true, "data": json_resp.get("result").cloned().unwrap_or(json!({})) }))
+    }
+
+    /// Send a local video file to a chat via multipart upload.
+    async fn tool_send_video(&self, params: Value) -> Result<Value> {
+        let url = self.api_url("sendVideo")?;
+        let chat_id = params.get("chat_id").and_then(|v| v.as_str())
+            .ok_or_else(|| AdapterError::InvalidParams {
+                tool_name: "telegram_send_video".into(),
+                reason: "missing required string field `chat_id`".into(),
+            })?
+            .to_string();
+        let file_path = params.get("file_path").and_then(|v| v.as_str())
+            .ok_or_else(|| AdapterError::InvalidParams {
+                tool_name: "telegram_send_video".into(),
+                reason: "missing required string field `file_path`".into(),
+            })?;
+        let caption = params.get("caption").and_then(|v| v.as_str()).map(String::from);
+
+        let file_bytes = tokio::fs::read(file_path).await.map_err(|e| {
+            AdapterError::ExecutionFailed {
+                tool_name: "telegram_send_video".into(),
+                reason: format!("failed to read file `{file_path}`: {e}"),
+            }
+        })?;
+        let file_name = std::path::Path::new(file_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "video.mp4".to_string());
+
+        debug!(url = %url, chat_id = %chat_id, file_path = %file_path, "sending Telegram video");
+
+        let part = reqwest::multipart::Part::bytes(file_bytes)
+            .file_name(file_name)
+            .mime_str("video/mp4")
+            .map_err(|e| AdapterError::ExecutionFailed {
+                tool_name: "telegram_send_video".into(),
+                reason: format!("invalid mime type: {e}"),
+            })?;
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id)
+            .part("video", part);
+        if let Some(cap) = caption {
+            form = form.text("caption", cap);
+        }
+
+        let response = self.http.post(&url).multipart(form).send().await.map_err(|e| {
+            AdapterError::ExecutionFailed {
+                tool_name: "telegram_send_video".into(),
+                reason: format!("failed to send video: {e}"),
+            }
+        })?;
+        let json_resp: Value = response.json().await.map_err(|e| AdapterError::ExecutionFailed {
+            tool_name: "telegram_send_video".into(),
+            reason: format!("failed to parse response: {e}"),
+        })?;
+        Self::parse_telegram_response(&json_resp, "telegram_send_video")?;
+        Ok(json!({ "success": true, "data": json_resp.get("result").cloned().unwrap_or(json!({})) }))
     }
 
     /// Get recent messages/updates from the bot.
@@ -652,6 +764,50 @@ impl Adapter for TelegramAdapter {
                 }),
             },
             ToolDefinition {
+                name: "telegram_send_document".into(),
+                description: "Send a local file as a document to a Telegram chat. Use this to deliver files (PDF, CSV, ZIP, etc.) to the user.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "chat_id": {
+                            "type": "string",
+                            "description": "Unique identifier for the target chat"
+                        },
+                        "file_path": {
+                            "type": "string",
+                            "description": "Absolute path to the local file to send"
+                        },
+                        "caption": {
+                            "type": "string",
+                            "description": "Document caption, 0-1024 characters"
+                        }
+                    },
+                    "required": ["chat_id", "file_path"]
+                }),
+            },
+            ToolDefinition {
+                name: "telegram_send_video".into(),
+                description: "Send a local video file to a Telegram chat. Use this to deliver video files (MP4) to the user. Max 50MB.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "chat_id": {
+                            "type": "string",
+                            "description": "Unique identifier for the target chat"
+                        },
+                        "file_path": {
+                            "type": "string",
+                            "description": "Absolute path to the local video file to send (MP4 format)"
+                        },
+                        "caption": {
+                            "type": "string",
+                            "description": "Video caption, 0-1024 characters"
+                        }
+                    },
+                    "required": ["chat_id", "file_path"]
+                }),
+            },
+            ToolDefinition {
                 name: "telegram_get_updates".into(),
                 description:
                     "Get recent incoming updates (messages, callback queries, etc.) for the bot"
@@ -758,6 +914,8 @@ impl Adapter for TelegramAdapter {
         match name {
             "telegram_send_message" => self.tool_send_message(params).await,
             "telegram_send_photo" => self.tool_send_photo(params).await,
+            "telegram_send_document" => self.tool_send_document(params).await,
+            "telegram_send_video" => self.tool_send_video(params).await,
             "telegram_get_updates" => self.tool_get_updates(params).await,
             "telegram_get_chat" => self.tool_get_chat(params).await,
             "telegram_set_webhook" => self.tool_set_webhook(params).await,
@@ -829,10 +987,10 @@ mod tests {
     // -- Tool definitions --
 
     #[test]
-    fn tools_returns_exactly_seven() {
+    fn tools_returns_expected_count() {
         let adapter = TelegramAdapter::new("telegram");
         let tools = adapter.tools();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 9);
     }
 
     #[test]
@@ -842,6 +1000,8 @@ mod tests {
         let expected = vec![
             "telegram_send_message",
             "telegram_send_photo",
+            "telegram_send_document",
+            "telegram_send_video",
             "telegram_get_updates",
             "telegram_get_chat",
             "telegram_set_webhook",

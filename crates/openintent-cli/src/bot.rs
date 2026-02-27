@@ -640,24 +640,35 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                  - For research results, present them in well-organized tables with columns.\n\
                  - You can use Telegram tools to send photos, documents, or additional messages.\n\
                  - Do NOT simplify or shorten your response just because it's Telegram. Give full, rich answers.\n\n\
-                 **IMPORTANT: Multi-task handling:**\n\
-                 When the user sends multiple tasks or requirements in a single message:\n\
-                 1. Process each task/requirement one by one.\n\
-                 2. After completing EACH task, immediately send the result to the user using \
-                 `telegram_send_message` with chat_id=\"{chat_id}\".\n\
-                 3. Do NOT wait until all tasks are done to reply. Send incremental results.\n\
-                 4. Label each result clearly (e.g. \"✅ 需求 1 — Clip 完成\" or \"✅ Task 1 — Lead Done\").\n",
+                 **IMPORTANT rules:**\n\
+                 - Be PRACTICAL. For research: use web_search and summarize. For simple questions: answer directly.\n\
+                 - NEVER spend more than 5 tool calls on a single sub-task.\n\
+                 - After completing each task, send results via `telegram_send_message` with chat_id=\"{chat_id}\".\n\
+                 - If a tool/script FAILS: FIX the error and RETRY. Do NOT just report errors to the user.\n\
+                 - Only report failure after trying at least 2 different approaches.\n\
+                 - When you create files (videos, CSVs, etc.), ALWAYS send them to the user via \
+                 `telegram_send_video` (.mp4) or `telegram_send_document` (other files). \
+                 NEVER just tell the user the file path.\n",
             ));
 
             if !skill_prompt_ext.is_empty() {
                 system_prompt.push_str(&skill_prompt_ext);
             }
 
-            // Simple query routing: short, non-tool messages use a cheaper model.
-            let effective_model =
-                select_model_for_query(raw_text, &model, simple_query_threshold, chat_id);
+            // Split into sub-tasks and determine per-task model routing.
+            let sub_tasks = crate::task_router::split_tasks(raw_text);
+            let is_multi_task = sub_tasks.len() > 1;
+
+            // For single tasks, use existing simple query routing.
+            // For multi-task, model/turns are set per-task in the loop below.
+            let effective_model = if is_multi_task {
+                model.clone()
+            } else {
+                select_model_for_query(raw_text, &model, simple_query_threshold, chat_id)
+            };
+            let max_turns = if is_multi_task { 20 } else { 30 };
             let agent_config = AgentConfig {
-                max_turns: 100,
+                max_turns,
                 model: effective_model,
                 temperature: Some(0.5),
                 max_tokens: Some(8192),
@@ -780,177 +791,155 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 }
             });
 
-            // Run the ReAct loop.
-            let (reply_text, token_stats) = match react_loop(&mut ctx).await {
-                Ok(response) => {
-                    let tokens = (response.input_tokens, response.output_tokens);
-                    info!(
-                        chat_id,
-                        turns = response.turns_used,
-                        input_tokens = response.input_tokens,
-                        output_tokens = response.output_tokens,
-                        "agent completed"
-                    );
-                    // Always log token usage.
-                    if response.input_tokens + response.output_tokens > 0 {
-                        tracing::info!(
+            // Run the ReAct loop — with multi-task support.
+            let (reply_text, token_stats) = if is_multi_task {
+                let result = crate::task_router::run_multi_task(
+                    &sub_tasks, &model, &system_prompt,
+                    &llm, &adapters, chat_id, &http, &telegram_api,
+                ).await;
+                (result.summary, Some((result.total_input_tokens, result.total_output_tokens)))
+            } else {
+                // Single-task path: existing behavior with error recovery.
+                match react_loop(&mut ctx).await {
+                    Ok(mut response) => {
+                        // Self-repair: if the task hit the turn limit (forced
+                        // summary), retry once with a continuation prompt so
+                        // the agent can finish the incomplete work.
+                        if response.hit_turn_limit {
+                            tracing::info!(chat_id, "task hit turn limit, self-repair retry");
+                            let continuation_prompt = format!(
+                                "Previous attempt ran out of turns. Partial result:\n\n{}\n\n\
+                                 COMPLETE the remaining work. Do NOT repeat finished steps.",
+                                response.text
+                            );
+                            let retry_config = AgentConfig {
+                                max_turns: 15,
+                                model: ctx.config.model.clone(),
+                                temperature: Some(0.5),
+                                max_tokens: Some(8192),
+                                ..AgentConfig::default()
+                            };
+                            let mut retry_ctx = AgentContext::new(
+                                llm.clone(), adapters.clone(), retry_config,
+                            )
+                            .with_system_prompt(&system_prompt)
+                            .with_user_message(&continuation_prompt);
+                            // Copy tool-start callback for status messages.
+                            retry_ctx.on_tool_start = ctx.on_tool_start.clone();
+                            match react_loop(&mut retry_ctx).await {
+                                Ok(retry_resp) => {
+                                    tracing::info!(
+                                        chat_id,
+                                        turns = retry_resp.turns_used,
+                                        "self-repair continuation completed"
+                                    );
+                                    response.text = retry_resp.text;
+                                    response.turns_used += retry_resp.turns_used;
+                                    response.input_tokens += retry_resp.input_tokens;
+                                    response.output_tokens += retry_resp.output_tokens;
+                                    response.hit_turn_limit = retry_resp.hit_turn_limit;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        chat_id, error = %e,
+                                        "self-repair continuation failed, using partial result"
+                                    );
+                                    // Keep the partial result from the forced summary.
+                                }
+                            }
+                        }
+                        let tokens = (response.input_tokens, response.output_tokens);
+                        info!(
                             chat_id,
+                            turns = response.turns_used,
                             input_tokens = response.input_tokens,
                             output_tokens = response.output_tokens,
-                            "token usage"
+                            "agent completed"
                         );
-                    }
-
-                    let text_out = if let Some(ref evo) = evolution {
-                        let mut evo = evo.lock().await;
-                        if let Some(issue_url) = evo
-                            .analyze_response(text, &response.text, "telegram", response.turns_used)
-                            .await
-                        {
-                            format!(
-                                "{}\n\n---\nI noticed I couldn't fully handle this. \
-                                 A feature request has been auto-filed: {}",
-                                response.text, issue_url
-                            )
+                        let text_out = if let Some(ref evo) = evolution {
+                            let mut evo = evo.lock().await;
+                            if let Some(issue_url) = evo
+                                .analyze_response(text, &response.text, "telegram", response.turns_used)
+                                .await
+                            {
+                                format!(
+                                    "{}\n\n---\nI noticed I couldn't fully handle this. \
+                                     A feature request has been auto-filed: {}",
+                                    response.text, issue_url
+                                )
+                            } else {
+                                response.text
+                            }
                         } else {
                             response.text
-                        }
-                    } else {
-                        response.text
-                    };
-
-                    (text_out, Some(tokens))
-                }
-                Err(e) => {
-                    let err_str = e.to_string();
-
-                    // -------------------------------------------------------
-                    // Handle provider-level errors (429 rate limit, 404 model
-                    // not found, 502/503, etc.).  Cascade through all fallback
-                    // providers until one succeeds or all are exhausted.
-                    // -------------------------------------------------------
-                    let err_text = if failover::is_provider_error(&err_str) {
-                        tracing::warn!(error = %err_str, "provider error, attempting cascading failover");
-
-                        // For auth errors, try Keychain refresh first.
-                        if err_str.contains("401") || err_str.contains("authentication_error") {
-                            if let Some(new_token) = crate::helpers::read_claude_code_keychain_token() {
-                                llm.update_api_key(new_token);
-                                tracing::info!("refreshed OAuth token from Keychain");
+                        };
+                        (text_out, Some(tokens))
+                    }
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        let err_text = if failover::is_provider_error(&err_str) {
+                            tracing::warn!(error = %err_str, "provider error, attempting cascading failover");
+                            if err_str.contains("401") || err_str.contains("authentication_error") {
+                                if let Some(new_token) = crate::helpers::read_claude_code_keychain_token() {
+                                    llm.update_api_key(new_token);
+                                    tracing::info!("refreshed OAuth token from Keychain");
+                                }
                             }
-                        }
-
-                        failover_mgr.mark_rate_limited(&model);
-
-                        let cr = crate::bot_helpers::handle_cascade_failover(
-                            &ctx, &llm, &adapters, &mut failover_mgr,
-                            &model, chat_id, &http, &telegram_api,
-                        )
-                        .await;
-                        model = cr.final_model;
-
-                        if let Some(text) = cr.reply {
-                            text
-                        } else {
-                            // All providers exhausted — restore primary so
-                            // subsequent messages don't stay stuck.
-                            llm.restore_defaults();
-                            model = primary_model.clone();
-                            chat_model_alias.remove(&chat_id);
-                            msgs.get_translated(
-                                keys::ERROR_GENERAL,
-                                &[],
-                                &user_lang,
-                                &llm,
-                                &model,
+                            failover_mgr.mark_rate_limited(&model);
+                            let cr = crate::bot_helpers::handle_cascade_failover(
+                                &ctx, &llm, &adapters, &mut failover_mgr,
+                                &model, chat_id, &http, &telegram_api,
                             )
-                            .await
-                        }
-
-                    // -------------------------------------------------------
-                    // All other errors: attempt self-repair for code bugs.
-                    // -------------------------------------------------------
-                    } else {
-                        tracing::error!(error = %e, "agent error");
-
-                        let notifier = crate::self_repair::TelegramNotifier::new(
-                            http.clone(),
-                            telegram_api.clone(),
-                            chat_id,
-                            user_lang.clone(),
-                            msgs.clone(),
-                            llm.clone(),
-                            model.clone(),
-                        );
-                        let repair_outcome = crate::self_repair::attempt_repair(
-                            &e,
-                            text,
-                            &notifier,
-                            &llm,
-                            &adapters,
-                            &model,
-                            &repo_path,
-                        )
-                        .await;
-
-                        match repair_outcome {
-                            crate::self_repair::RepairOutcome::Fixed {
-                                commit_hash,
-                                summary,
-                            } => {
-                                let _ = commit_hash;
-                                let msg = msgs
-                                    .get_translated(
-                                        keys::REPAIR_SUCCESS,
-                                        &[("summary", &summary)],
-                                        &user_lang,
-                                        &llm,
-                                        &model,
-                                    )
-                                    .await;
-                                notifier.send_raw(&msg).await;
-
-                                // Persist history before restart.
-                                let _ = sessions
-                                    .append_message(&session_key, "assistant", &msg, None, None)
-                                    .await;
-
-                                // Restart the process with the new binary.
-                                crate::self_repair::restart_process();
+                            .await;
+                            model = cr.final_model;
+                            if let Some(text) = cr.reply {
+                                text
+                            } else {
+                                llm.restore_defaults();
+                                model = primary_model.clone();
+                                chat_model_alias.remove(&chat_id);
+                                msgs.get_translated(keys::ERROR_GENERAL, &[], &user_lang, &llm, &model).await
                             }
-                            crate::self_repair::RepairOutcome::NotACodeBug => {
-                                tracing::debug!(error = %e, "not a code bug, skipping self-repair");
-                                if let Some(ref evo) = evolution {
-                                    let mut evo = evo.lock().await;
-                                    let _ = evo.report_error(text, "telegram", &e).await;
+                        } else {
+                            tracing::error!(error = %e, "agent error");
+                            let notifier = crate::self_repair::TelegramNotifier::new(
+                                http.clone(), telegram_api.clone(), chat_id,
+                                user_lang.clone(), msgs.clone(), llm.clone(), model.clone(),
+                            );
+                            let repair_outcome = crate::self_repair::attempt_repair(
+                                &e, text, &notifier, &llm, &adapters, &model, &repo_path,
+                            ).await;
+                            match repair_outcome {
+                                crate::self_repair::RepairOutcome::Fixed { commit_hash, summary } => {
+                                    let _ = commit_hash;
+                                    let msg = msgs.get_translated(
+                                        keys::REPAIR_SUCCESS, &[("summary", &summary)],
+                                        &user_lang, &llm, &model,
+                                    ).await;
+                                    notifier.send_raw(&msg).await;
+                                    let _ = sessions.append_message(&session_key, "assistant", &msg, None, None).await;
+                                    crate::self_repair::restart_process();
                                 }
-                                msgs.get_translated(
-                                    keys::ERROR_GENERAL,
-                                    &[],
-                                    &user_lang,
-                                    &llm,
-                                    &model,
-                                )
-                                .await
-                            }
-                            crate::self_repair::RepairOutcome::Failed { reason } => {
-                                tracing::warn!(reason = %reason, "self-repair failed");
-                                if let Some(ref evo) = evolution {
-                                    let mut evo = evo.lock().await;
-                                    let _ = evo.report_error(text, "telegram", &e).await;
+                                crate::self_repair::RepairOutcome::NotACodeBug => {
+                                    tracing::debug!(error = %e, "not a code bug, skipping self-repair");
+                                    if let Some(ref evo) = evolution {
+                                        let mut evo = evo.lock().await;
+                                        let _ = evo.report_error(text, "telegram", &e).await;
+                                    }
+                                    msgs.get_translated(keys::ERROR_GENERAL, &[], &user_lang, &llm, &model).await
                                 }
-                                msgs.get_translated(
-                                    keys::ERROR_REPAIR_FAILED,
-                                    &[],
-                                    &user_lang,
-                                    &llm,
-                                    &model,
-                                )
-                                .await
+                                crate::self_repair::RepairOutcome::Failed { reason } => {
+                                    tracing::warn!(reason = %reason, "self-repair failed");
+                                    if let Some(ref evo) = evolution {
+                                        let mut evo = evo.lock().await;
+                                        let _ = evo.report_error(text, "telegram", &e).await;
+                                    }
+                                    msgs.get_translated(keys::ERROR_REPAIR_FAILED, &[], &user_lang, &llm, &model).await
+                                }
                             }
-                        }
-                    };
-                    (err_text, None)
+                        };
+                        (err_text, None)
+                    }
                 }
             };
 

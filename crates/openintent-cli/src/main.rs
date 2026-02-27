@@ -24,6 +24,7 @@ mod onboarding;
 mod repl;
 mod self_repair;
 mod self_update_adapter;
+mod task_router;
 mod update;
 
 use std::path::Path;

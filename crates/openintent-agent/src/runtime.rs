@@ -213,6 +213,10 @@ pub struct AgentResponse {
 
     /// Total output tokens generated across all turns in this invocation.
     pub output_tokens: u32,
+
+    /// Whether the response was a forced summary because max turns was hit.
+    /// When true, the task is likely incomplete and may benefit from a retry.
+    pub hit_turn_limit: bool,
 }
 
 impl AgentResponse {
@@ -224,6 +228,7 @@ impl AgentResponse {
             task_id,
             input_tokens: 0,
             output_tokens: 0,
+            hit_turn_limit: false,
         }
     }
 
@@ -258,6 +263,11 @@ pub async fn react_loop(ctx: &mut AgentContext) -> Result<AgentResponse> {
     // Accumulate token usage across all turns.
     let mut total_input: u32 = 0;
     let mut total_output: u32 = 0;
+
+    // Track consecutive failures of the same tool to detect stuck loops.
+    let mut consecutive_fail_tool: Option<String> = None;
+    let mut consecutive_fail_count: u32 = 0;
+    const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
     tracing::info!(
         task_id = %task_id,
@@ -387,16 +397,102 @@ pub async fn react_loop(ctx: &mut AgentContext) -> Result<AgentResponse> {
                 // Execute all tool calls and collect results (with policy check).
                 let results = execute_tool_calls(&calls, ctx).await?;
 
+                // Track consecutive failures of the same tool.
+                let failed_tools: Vec<&str> = results
+                    .iter()
+                    .filter(|r| r.is_error)
+                    .zip(calls.iter())
+                    .map(|(_, c)| c.name.as_str())
+                    .collect();
+                if failed_tools.len() == 1 {
+                    let tool_name = failed_tools[0].to_string();
+                    if consecutive_fail_tool.as_deref() == Some(&tool_name) {
+                        consecutive_fail_count += 1;
+                    } else {
+                        consecutive_fail_tool = Some(tool_name);
+                        consecutive_fail_count = 1;
+                    }
+                } else if failed_tools.is_empty() {
+                    consecutive_fail_tool = None;
+                    consecutive_fail_count = 0;
+                }
+
                 // Append each tool result to the conversation.
                 for result in results {
                     ctx.messages
                         .push(Message::tool_result(&result.tool_call_id, &result.content));
                 }
+
+                // If the same tool has failed too many times, inject a guidance
+                // message so the LLM changes its approach instead of looping.
+                if consecutive_fail_count >= MAX_CONSECUTIVE_FAILURES {
+                    let stuck_tool = consecutive_fail_tool.as_deref().unwrap_or("unknown");
+                    tracing::warn!(
+                        task_id = %task_id,
+                        tool = stuck_tool,
+                        failures = consecutive_fail_count,
+                        "tool stuck loop detected, injecting guidance"
+                    );
+                    ctx.messages.push(Message::user(&format!(
+                        "SYSTEM: The tool `{stuck_tool}` has failed {consecutive_fail_count} \
+                         times in a row. You MUST use a different approach. \
+                         Do NOT call `{stuck_tool}` again with the same arguments. \
+                         Consider using `fs_write_file` to overwrite the file, \
+                         or skip this step and move on to the next part of your task. \
+                         If you cannot complete this task, summarize what you have done so far."
+                    )));
+                    // Reset counter so the guidance doesn't repeat every turn.
+                    consecutive_fail_count = 0;
+                    consecutive_fail_tool = None;
+                }
             }
         }
     }
 
-    Err(AgentError::MaxTurnsExceeded { task_id, max_turns })
+    // Max turns exhausted.  Instead of discarding all the work done so far,
+    // make one final LLM call WITHOUT tools to force a text summary of
+    // whatever the agent has gathered.
+    tracing::warn!(
+        task_id = %task_id,
+        max_turns,
+        "max turns reached, requesting final summary"
+    );
+
+    let summary_request = ChatRequest {
+        model: ctx.config.model.clone(),
+        messages: {
+            let mut msgs = ctx.messages.clone();
+            msgs.push(Message::user(
+                "You have reached your turn limit. Summarize the results of your work so far \
+                 in a clear, complete response to the user. Include all findings and data gathered."
+            ));
+            msgs
+        },
+        tools: vec![], // No tools — force text output.
+        temperature: ctx.config.temperature,
+        max_tokens: ctx.config.max_tokens,
+        stream: true,
+    };
+
+    match ctx.llm.stream_chat(&summary_request).await {
+        Ok((LlmResponse::Text(text), usage)) => {
+            total_input = total_input.saturating_add(usage.input_tokens);
+            total_output = total_output.saturating_add(usage.output_tokens);
+            tracing::info!(
+                task_id = %task_id,
+                turns = max_turns + 1,
+                "forced summary after max turns"
+            );
+            let mut resp = AgentResponse::new(text, max_turns + 1, task_id)
+                .with_usage(total_input, total_output);
+            resp.hit_turn_limit = true;
+            Ok(resp)
+        }
+        _ => {
+            // If even the summary call fails, fall back to the old error.
+            Err(AgentError::MaxTurnsExceeded { task_id, max_turns })
+        }
+    }
 }
 
 /// Execute a batch of tool calls, returning their results.
