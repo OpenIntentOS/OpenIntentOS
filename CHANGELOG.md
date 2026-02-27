@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.7] - 2026-02-27
+- feat: add logo, fix bot autostart, i18n upgrade notifications
+
+
 ## [0.1.6] - 2026-02-27
 - docs: backfill CHANGELOG.md with full version history
 
