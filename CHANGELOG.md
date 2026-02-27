@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.8] - 2026-02-27
+- fix: provider failover on 429, db health check, model name
+
+
 ## [0.1.7] - 2026-02-27
 - feat: add logo, fix bot autostart, i18n upgrade notifications
 
