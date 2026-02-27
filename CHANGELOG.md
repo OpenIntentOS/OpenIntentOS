@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.9] - 2026-02-27
+- feat: self-repair loop, multi-task routing, telegram file delivery
+- feat: instruct agent to send per-task results via telegram_send_message
+- fix: prioritize DeepSeek over NVIDIA in failover chain, detect stream errors
+- fix: use active model for context compaction instead of hardcoded claude model
+
+
 ## [0.1.8] - 2026-02-27
 - fix: provider failover on 429, db health check, model name
 
