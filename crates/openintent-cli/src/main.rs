@@ -305,6 +305,20 @@ async fn cmd_serve(bind: String, port: u16) -> Result<()> {
     );
     println!("  Adapters: filesystem, shell, web_search, web_fetch, http_request, cron, memory,");
     println!("            github, email, browser, feishu, calendar");
+
+    // Spawn Telegram bot as a concurrent background task when configured.
+    // Both the web server and the bot share the same tokio runtime — one
+    // process handles everything, as the system service expects.
+    if env_non_empty("TELEGRAM_BOT_TOKEN").is_some() {
+        println!("  Telegram: bot gateway starting...");
+        tokio::spawn(async {
+            if let Err(e) = bot::cmd_bot(30, None).await {
+                tracing::error!(error = %e, "Telegram bot crashed");
+            }
+        });
+    } else {
+        println!("  Telegram: not configured (set TELEGRAM_BOT_TOKEN to enable)");
+    }
     println!();
 
     let server = openintent_web::WebServer::new(web_config, llm, raw_adapters, db);

@@ -14,15 +14,18 @@ use crate::failover::{self, FailoverManager};
 use crate::messages::{self, Messages, keys};
 
 /// Send the /start welcome message to a chat.
-pub async fn send_start_message(http: &reqwest::Client, telegram_api: &str, chat_id: i64) {
-    let text = "Hello! I'm OpenIntentOS. Send me any message and I'll help you. \
-                I have access to filesystem, shell, web search, email, GitHub, and more.\
-                \n\nDev commands:\
-                \n/dev <instruction> - Create a self-development task\
-                \n/tasks - List your dev tasks\
-                \n/taskstatus <id> - Check task status\
-                \n/merge <id> - Merge a completed task\
-                \n/cancel <id> - Cancel a task";
+pub async fn send_start_message(
+    http: &reqwest::Client,
+    telegram_api: &str,
+    chat_id: i64,
+    msgs: &Messages,
+    llm: &Arc<LlmClient>,
+    model: &str,
+    user_lang: &str,
+) {
+    let text = msgs
+        .get_translated(keys::BOT_START, &[], user_lang, llm, model)
+        .await;
     let _ = http
         .post(format!("{telegram_api}/sendMessage"))
         .json(&serde_json::json!({ "chat_id": chat_id, "text": text }))
@@ -450,6 +453,9 @@ pub async fn send_pending_update_notification(
     http: &reqwest::Client,
     telegram_api: &str,
     bot_state: &BotStateStore,
+    msgs: &Messages,
+    llm: &Arc<LlmClient>,
+    model: &str,
 ) {
     let from = match bot_state.get(KEY_UPDATE_FROM).await.ok().flatten() {
         Some(v) => v,
@@ -469,10 +475,19 @@ pub async fn send_pending_update_notification(
     let _ = bot_state.delete(KEY_UPDATE_TO).await;
     let _ = bot_state.delete(KEY_UPDATE_CHATS).await;
 
-    let message = format!("Updated v{from} → {to}. Running the latest version.");
-
     for chat_str in chats_raw.split(',') {
         if let Ok(cid) = chat_str.trim().parse::<i64>() {
+            // Determine each chat's language (defaults to "en" at startup).
+            let user_lang = get_chat_language(http, telegram_api, cid).await;
+            let message = msgs
+                .get_translated(
+                    keys::UPDATE_CONFIRMED,
+                    &[("from", &from), ("to", &to)],
+                    &user_lang,
+                    llm,
+                    model,
+                )
+                .await;
             let _ = http
                 .post(format!("{telegram_api}/sendMessage"))
                 .json(&serde_json::json!({

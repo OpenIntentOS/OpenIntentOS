@@ -14,15 +14,19 @@ use tracing_subscriber::EnvFilter;
 // ---------------------------------------------------------------------------
 
 /// Initialize the tracing subscriber with the given default log level.
+///
+/// Uses `try_init` so it is safe to call from multiple entry points
+/// (e.g., both `serve` and the bot task spawned inside it) — subsequent
+/// calls are silently ignored if a subscriber is already installed.
 pub fn init_tracing(default_level: &str) {
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
 
-    tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
         .compact()
-        .init();
+        .try_init();
 }
 
 // ---------------------------------------------------------------------------

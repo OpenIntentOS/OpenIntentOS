@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" width="160" alt="OpenIntentOS" />
+</p>
+
 <h1 align="center">OpenIntentOS</h1>
 <h3 align="center">The Intent-Driven AI Operating System</h3>
 
@@ -15,7 +19,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust%202024-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-0.1.0-green?style=flat-square" alt="v0.1.0" />
+  <img src="https://img.shields.io/github/v/release/OpenIntentOS/OpenIntentOS?style=flat-square&color=green" alt="latest release" />
   <img src="https://img.shields.io/badge/binary-~10MB-brightgreen?style=flat-square" alt="Binary size" />
   <img src="https://img.shields.io/badge/cold%20start-%3C200ms-brightgreen?style=flat-square" alt="Cold start" />
   <img src="https://img.shields.io/badge/providers-7%20cascade-brightgreen?style=flat-square" alt="LLM providers" />
@@ -23,7 +27,7 @@
 
 ---
 
-> **v0.1.0 — Early Release (February 2026)**
+> **v0.1.6 — Early Release (February 2026)**
 >
 > OpenIntentOS is under active development. Core systems are production-stable. New adapters and capabilities ship weekly. Pin to a specific commit for stability until v1.0. [Report issues here.](https://github.com/OpenIntentOS/OpenIntentOS/issues)
 
@@ -375,7 +379,7 @@ cd OpenIntentOS
 cargo build --release
 # Binary: ./target/release/openintent-cli
 export TELEGRAM_BOT_TOKEN="..." OPENAI_API_KEY="..."
-./target/release/openintent-cli bot
+./target/release/openintent serve
 ```
 
 ---

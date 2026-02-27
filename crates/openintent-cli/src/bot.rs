@@ -206,7 +206,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     println!();
 
     // Confirm upgrade to the user who triggered it (if bot restarted after update).
-    send_pending_update_notification(&http, &telegram_api, &bot_state).await;
+    send_pending_update_notification(&http, &telegram_api, &bot_state, &msgs, &llm, &model).await;
 
     // Send startup notification with latest changes to all recent active chats.
     send_startup_notification(&http, &telegram_api, &sessions, &llm, &model, &msgs).await;
@@ -412,7 +412,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
 
             // Handle /start command.
             if text == "/start" {
-                send_start_message(&http, &telegram_api, chat_id).await;
+                send_start_message(&http, &telegram_api, chat_id, &msgs, &llm, &model, &user_lang).await;
                 continue;
             }
 

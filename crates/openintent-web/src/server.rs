@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::http::{HeaderValue, Method};
-use axum::response::Html;
+use axum::http::{HeaderValue, Method, header};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
@@ -77,6 +77,8 @@ impl WebServer {
         Router::new()
             // Embedded frontend.
             .route("/", get(|| async { Html(INDEX_HTML) }))
+            // Static assets.
+            .route("/assets/logo.png", get(serve_logo))
             // REST API.
             .route("/api/status", get(api::status))
             .route("/api/health", get(api::status)) // Health check alias
@@ -301,4 +303,23 @@ async fn health_monitor_task(state: Arc<AppState>) {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Static asset: logo
+// ---------------------------------------------------------------------------
+
+/// Serve the embedded project logo as a PNG image.
+///
+/// The logo bytes are compiled into the binary with `include_bytes!` so no
+/// external files are needed at runtime.
+async fn serve_logo() -> Response {
+    // Path is relative to the crate root (openintent-web), resolved at
+    // compile time.  The logo lives at workspace-root/assets/logo.png.
+    static LOGO: &[u8] = include_bytes!("../../../assets/logo.png");
+    (
+        [(header::CONTENT_TYPE, "image/png")],
+        LOGO,
+    )
+        .into_response()
 }

@@ -45,6 +45,10 @@ pub mod keys {
     pub const BOT_TOKEN_USAGE: &str = "bot.token_usage";
     pub const BOT_TOKENS_ON: &str = "bot.tokens_on";
     pub const BOT_TOKENS_OFF: &str = "bot.tokens_off";
+    pub const BOT_START: &str = "bot.start";
+
+    // Update notifications
+    pub const UPDATE_CONFIRMED: &str = "update.confirmed";
 
     // Tool status
     pub const STATUS_RESEARCHING: &str = "status.researching";
@@ -344,6 +348,8 @@ fn builtin_defaults() -> HashMap<String, String> {
     m.insert("bot.token_usage".into(), "📊 tokens: ↑{input} ↓{output} (total: {total})".into());
     m.insert("bot.tokens_on".into(), "Token usage display enabled for this chat.".into());
     m.insert("bot.tokens_off".into(), "Token usage display disabled for this chat.".into());
+    m.insert("bot.start".into(), "Hello! I'm OpenIntentOS. Send me any message and I'll help you. I have access to filesystem, shell, web search, email, GitHub, and more.\n\nDev commands:\n/dev <instruction> - Create a self-development task\n/tasks - List your dev tasks\n/taskstatus <id> - Check task status\n/merge <id> - Merge a completed task\n/cancel <id> - Cancel a task".into());
+    m.insert("update.confirmed".into(), "✅ Updated v{from} → {to}. Now running the latest version.".into());
 
     m
 }

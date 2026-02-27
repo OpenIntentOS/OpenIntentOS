@@ -319,7 +319,7 @@ SCRIPT
   cat > "$INSTALL_DIR/uninstall.sh" <<'SCRIPT'
 #!/usr/bin/env bash
 echo "Uninstalling OpenIntentOS..."
-PID_FILE="$HOME/.openintentos/bot.pid"
+PID_FILE="$HOME/.openintentos/openintent.pid"
 [ -f "$PID_FILE" ] && kill "$(cat "$PID_FILE")" 2>/dev/null || true
 
 OS="$(uname -s)"
@@ -440,7 +440,9 @@ SERVICE
       systemctl --user daemon-reload
       systemctl --user enable openintentos
       systemctl --user start openintentos
-      ok "systemd user service installed (auto-starts on login)"
+      # Enable lingering so the service starts at boot without requiring login.
+      loginctl enable-linger "$(whoami)" 2>/dev/null || true
+      ok "systemd user service installed (auto-starts on boot)"
     else
       # Fallback: cron @reboot
       (crontab -l 2>/dev/null | grep -v openintentos; \
