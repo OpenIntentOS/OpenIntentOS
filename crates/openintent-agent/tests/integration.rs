@@ -19,7 +19,8 @@ fn compaction_config_defaults() {
     let config = CompactionConfig::default();
     assert_eq!(config.max_messages, 50);
     assert_eq!(config.keep_recent, 10);
-    assert!(!config.model.is_empty());
+    // model defaults to empty string to defer to the active LLM client model
+    assert_eq!(config.model, "");
 }
 
 #[test]

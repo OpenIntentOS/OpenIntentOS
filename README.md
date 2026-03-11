@@ -66,6 +66,40 @@ That's it. The installer will:
 
 ---
 
+## No API Key? Start for Free
+
+You don't need a paid subscription to get started. Pick any one:
+
+### 🇨🇳 China — No VPN Required
+
+| Provider | Free Tier | Register |
+|----------|-----------|---------|
+| **硅基流动 SiliconFlow** ⭐ | 14M tokens/month, hosts DeepSeek/Qwen/GLM | [siliconflow.cn](https://siliconflow.cn) |
+| **DeepSeek** | ¥10 free credit | [platform.deepseek.com](https://platform.deepseek.com) |
+| **Moonshot Kimi** | Free trial credit | [platform.moonshot.cn](https://platform.moonshot.cn) |
+| **智谱 GLM-4-Flash** | Permanently free | [open.bigmodel.cn](https://open.bigmodel.cn) |
+
+### 🌍 International
+
+| Provider | Free Tier | Register |
+|----------|-----------|---------|
+| **NVIDIA NIM** ⭐ | 1000 credits/month, 400B+ models | [build.nvidia.com](https://build.nvidia.com) |
+| **Google Gemini** | Generous free limits | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| **Groq** | Free, fastest inference | [console.groq.com](https://console.groq.com) |
+
+### Run Locally (No Internet)
+
+```bash
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen2.5
+
+# OpenIntentOS will auto-detect Ollama — no key needed
+openintent serve
+```
+
+---
+
 ## What is OpenIntentOS?
 
 OpenIntentOS is an **Intent-Driven AI Operating System** — not a chatbot, not a Python wrapper around an LLM, not a "multi-agent framework."
@@ -113,13 +147,16 @@ This is the core reliability feature. When your primary provider fails for any r
 ```
 Primary fails (429 / 401 / 404 / 502 / 503)
        │
-       ├─► NVIDIA NIM    qwen/qwen3.5-397b-a17b     (free tier)
-       ├─► NVIDIA NIM    moonshotai/kimi-k2.5
-       ├─► NVIDIA NIM    nvidia/nemotron-3-nano-30b-a3b
-       ├─► Google Gemini gemini-2.5-flash
-       ├─► DeepSeek      deepseek-chat
-       ├─► Groq          llama-3.3-70b-versatile
-       └─► Ollama        llama3.2  (local, offline)
+       ├─► DeepSeek               deepseek-chat           (free credit)
+       ├─► SiliconFlow 硅基流动   DeepSeek-V3             (free 14M/month, 🇨🇳)
+       ├─► Moonshot Kimi           moonshot-v1-8k          (free credit, 🇨🇳)
+       ├─► Zhipu GLM-4-Flash       glm-4-flash             (permanently free, 🇨🇳)
+       ├─► Google Gemini           gemini-2.5-flash        (free tier)
+       ├─► Groq                    llama-3.3-70b-versatile (free tier)
+       ├─► NVIDIA NIM              qwen/qwen3.5-397b-a17b  (free tier)
+       ├─► NVIDIA NIM              moonshotai/kimi-k2.5
+       ├─► NVIDIA NIM              nvidia/nemotron-3-nano-30b-a3b
+       └─► Ollama                  qwen2.5:latest          (local, offline)
 ```
 
 Each provider has a 120-second cooldown after failure. After cascade exhaustion, the bot restores the primary and retries on the next message. Per-chat model overrides are preserved across failovers.
@@ -327,19 +364,22 @@ openintent-cli          (binary — single executable)
 
 ### Model Aliases
 
-| Alias | Provider | Model |
-|-------|----------|-------|
-| `gpt4o` | OpenAI | gpt-4o |
-| `o3` | OpenAI | o3-mini |
-| `nvidia` | NVIDIA NIM | qwen/qwen3.5-397b-a17b |
-| `nvidia-kimi` | NVIDIA NIM | moonshotai/kimi-k2.5 |
-| `nemotron` | NVIDIA NIM | nvidia/nemotron-3-nano-30b-a3b |
-| `gemini` | Google | gemini-2.5-flash |
-| `deepseek` | DeepSeek | deepseek-chat |
-| `r1` | DeepSeek | deepseek-reasoner |
-| `groq` | Groq | llama-3.3-70b-versatile |
-| `ollama` | Local | llama3.2 |
-| `claude` | Anthropic | claude-sonnet-4-6 |
+| Alias | Provider | Model | Free? |
+|-------|----------|-------|-------|
+| `claude` | Anthropic | claude-sonnet-4-6 | |
+| `gpt4o` | OpenAI | gpt-4o | |
+| `deepseek` | DeepSeek | deepseek-chat | ✓ credit |
+| `siliconflow` / `sf` | SiliconFlow 硅基流动 | DeepSeek-V3 | ✓ 14M/mo 🇨🇳 |
+| `sf-qwen` | SiliconFlow | Qwen3-235B | ✓ 🇨🇳 |
+| `moonshot` / `kimi-cn` | Moonshot Kimi | moonshot-v1-8k | ✓ credit 🇨🇳 |
+| `glm` / `glm-flash` | Zhipu GLM | glm-4-flash | ✓ free 🇨🇳 |
+| `tongyi` | Tongyi Qwen | qwen-turbo | ✓ tier 🇨🇳 |
+| `nvidia` | NVIDIA NIM | qwen/qwen3.5-397b-a17b | ✓ 1000/mo |
+| `gemini` | Google | gemini-2.5-flash | ✓ tier |
+| `groq` | Groq | llama-3.3-70b-versatile | ✓ free |
+| `grok` | xAI | grok-3 | |
+| `mistral` | Mistral | mistral-large | |
+| `ollama` / `local` | Ollama | qwen2.5 | ✓ local |
 
 ---
 

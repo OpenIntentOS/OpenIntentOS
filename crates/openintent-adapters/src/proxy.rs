@@ -10,11 +10,13 @@
 //!   - `NO_PROXY` / `no_proxy`       — comma-separated list of bypass hosts
 //!
 //! Usage:
-//! ```rust
+//! ```rust,no_run
+//! use std::time::Duration;
+//! use openintent_adapters::proxy;
 //! let client = proxy::build_client(Duration::from_secs(30))
 //!     .user_agent("MyAdapter/1.0")
 //!     .build()
-//!     .unwrap_or_default();
+//!     .unwrap();
 //! ```
 
 use std::time::Duration;

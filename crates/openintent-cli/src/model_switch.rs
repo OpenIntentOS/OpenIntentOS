@@ -24,6 +24,10 @@ const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
 const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 const MISTRAL_BASE_URL: &str = "https://api.mistral.ai/v1";
 const OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
+const SILICONFLOW_BASE_URL: &str = "https://api.siliconflow.cn/v1";
+const MOONSHOT_BASE_URL: &str = "https://api.moonshot.cn/v1";
+const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
+const TONGYI_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -125,6 +129,27 @@ const ALIASES: &[AliasEntry] = &[
     // -- Ollama (local, no key needed) ----------------------------------------
     AliasEntry { alias: "ollama", provider: "Ollama", model: "qwen2.5:latest", base_url: OLLAMA_BASE_URL, key_env: "" },
     AliasEntry { alias: "local", provider: "Ollama", model: "qwen2.5:latest", base_url: OLLAMA_BASE_URL, key_env: "" },
+
+    // -- SiliconFlow (硅基流动) — OpenAI-compatible, free 14M tokens/month ----
+    AliasEntry { alias: "siliconflow", provider: "SiliconFlow", model: "deepseek-ai/DeepSeek-V3", base_url: SILICONFLOW_BASE_URL, key_env: "SILICONFLOW_API_KEY" },
+    AliasEntry { alias: "sf", provider: "SiliconFlow", model: "deepseek-ai/DeepSeek-V3", base_url: SILICONFLOW_BASE_URL, key_env: "SILICONFLOW_API_KEY" },
+    AliasEntry { alias: "sf-qwen", provider: "SiliconFlow", model: "Qwen/Qwen3-235B-A22B", base_url: SILICONFLOW_BASE_URL, key_env: "SILICONFLOW_API_KEY" },
+    AliasEntry { alias: "sf-glm", provider: "SiliconFlow", model: "THUDM/glm-4-9b-chat", base_url: SILICONFLOW_BASE_URL, key_env: "SILICONFLOW_API_KEY" },
+
+    // -- Moonshot AI (月之暗面 Kimi) — free trial credit ----------------------
+    AliasEntry { alias: "moonshot", provider: "Moonshot", model: "moonshot-v1-8k", base_url: MOONSHOT_BASE_URL, key_env: "MOONSHOT_API_KEY" },
+    AliasEntry { alias: "kimi-cn", provider: "Moonshot", model: "moonshot-v1-8k", base_url: MOONSHOT_BASE_URL, key_env: "MOONSHOT_API_KEY" },
+    AliasEntry { alias: "kimi-32k", provider: "Moonshot", model: "moonshot-v1-32k", base_url: MOONSHOT_BASE_URL, key_env: "MOONSHOT_API_KEY" },
+
+    // -- Zhipu AI (智谱 GLM) — glm-4-flash permanently free -------------------
+    AliasEntry { alias: "glm", provider: "Zhipu", model: "glm-4-flash", base_url: ZHIPU_BASE_URL, key_env: "ZHIPU_API_KEY" },
+    AliasEntry { alias: "glm4", provider: "Zhipu", model: "glm-4", base_url: ZHIPU_BASE_URL, key_env: "ZHIPU_API_KEY" },
+    AliasEntry { alias: "glm-flash", provider: "Zhipu", model: "glm-4-flash", base_url: ZHIPU_BASE_URL, key_env: "ZHIPU_API_KEY" },
+
+    // -- Alibaba Tongyi (通义千问) — free tier --------------------------------
+    AliasEntry { alias: "tongyi", provider: "Tongyi", model: "qwen-turbo", base_url: TONGYI_BASE_URL, key_env: "DASHSCOPE_API_KEY" },
+    AliasEntry { alias: "qwen-cn", provider: "Tongyi", model: "qwen-plus", base_url: TONGYI_BASE_URL, key_env: "DASHSCOPE_API_KEY" },
+    AliasEntry { alias: "qwen-turbo", provider: "Tongyi", model: "qwen-turbo", base_url: TONGYI_BASE_URL, key_env: "DASHSCOPE_API_KEY" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -185,6 +210,23 @@ pub const PROVIDER_GROUPS: &[(&str, &[(&str, &str)])] = &[
     ]),
     ("Ollama (local)", &[
         ("Qwen 2.5", "ollama"),
+    ]),
+    ("SiliconFlow 硅基流动 (free)", &[
+        ("DeepSeek-V3", "siliconflow"),
+        ("Qwen3-235B", "sf-qwen"),
+        ("GLM-4-9B", "sf-glm"),
+    ]),
+    ("Moonshot Kimi (CN)", &[
+        ("Kimi 8K", "kimi-cn"),
+        ("Kimi 32K", "kimi-32k"),
+    ]),
+    ("Zhipu GLM (CN free)", &[
+        ("GLM-4-Flash (free)", "glm-flash"),
+        ("GLM-4", "glm4"),
+    ]),
+    ("Tongyi Qwen (CN)", &[
+        ("Qwen Turbo", "tongyi"),
+        ("Qwen Plus", "qwen-cn"),
     ]),
 ];
 
@@ -380,6 +422,58 @@ fn try_slash_format(target: &str, llm: &Arc<LlmClient>) -> Option<ModelSwitch> {
                 model: model_name.to_string(),
             });
         }
+        "siliconflow" | "sf" => {
+            let key = crate::helpers::env_non_empty("SILICONFLOW_API_KEY")?;
+            llm.update_api_key(key);
+            llm.switch_provider(
+                LlmProvider::OpenAI,
+                SILICONFLOW_BASE_URL.to_string(),
+                model_name.to_string(),
+            );
+            return Some(ModelSwitch {
+                provider_name: "SiliconFlow".to_string(),
+                model: model_name.to_string(),
+            });
+        }
+        "moonshot" | "kimi-cn" => {
+            let key = crate::helpers::env_non_empty("MOONSHOT_API_KEY")?;
+            llm.update_api_key(key);
+            llm.switch_provider(
+                LlmProvider::OpenAI,
+                MOONSHOT_BASE_URL.to_string(),
+                model_name.to_string(),
+            );
+            return Some(ModelSwitch {
+                provider_name: "Moonshot".to_string(),
+                model: model_name.to_string(),
+            });
+        }
+        "zhipu" | "glm" => {
+            let key = crate::helpers::env_non_empty("ZHIPU_API_KEY")?;
+            llm.update_api_key(key);
+            llm.switch_provider(
+                LlmProvider::OpenAI,
+                ZHIPU_BASE_URL.to_string(),
+                model_name.to_string(),
+            );
+            return Some(ModelSwitch {
+                provider_name: "Zhipu".to_string(),
+                model: model_name.to_string(),
+            });
+        }
+        "tongyi" | "qwen-cn" | "dashscope" => {
+            let key = crate::helpers::env_non_empty("DASHSCOPE_API_KEY")?;
+            llm.update_api_key(key);
+            llm.switch_provider(
+                LlmProvider::OpenAI,
+                TONGYI_BASE_URL.to_string(),
+                model_name.to_string(),
+            );
+            return Some(ModelSwitch {
+                provider_name: "Tongyi".to_string(),
+                model: model_name.to_string(),
+            });
+        }
         _ => {}
     }
 
@@ -410,6 +504,10 @@ fn resolve_api_key(provider: &str, key_env: &str) -> Option<String> {
         "NVIDIA" => crate::helpers::env_non_empty("NVIDIA_API_KEY"),
         "Google" => crate::helpers::env_non_empty("GOOGLE_API_KEY"),
         "OpenRouter" => crate::helpers::env_non_empty("OPENROUTER_API_KEY"),
+        "SiliconFlow" => crate::helpers::env_non_empty("SILICONFLOW_API_KEY"),
+        "Moonshot" => crate::helpers::env_non_empty("MOONSHOT_API_KEY"),
+        "Zhipu" => crate::helpers::env_non_empty("ZHIPU_API_KEY"),
+        "Tongyi" => crate::helpers::env_non_empty("DASHSCOPE_API_KEY"),
         _ => crate::helpers::env_non_empty(key_env),
     }
 }
@@ -578,6 +676,10 @@ mod tests {
         assert_eq!(extract_model_target("switch to nvidia"), Some("nvidia".into()));
         assert_eq!(extract_model_target("use nemotron"), Some("nemotron".into()));
         assert_eq!(extract_model_target("切换到nvidia-kimi"), Some("nvidia-kimi".into()));
+        assert_eq!(extract_model_target("切换到siliconflow"), Some("siliconflow".into()));
+        assert_eq!(extract_model_target("用glm"), Some("glm".into()));
+        assert_eq!(extract_model_target("切换到moonshot"), Some("moonshot".into()));
+        assert_eq!(extract_model_target("用tongyi"), Some("tongyi".into()));
     }
 
     #[test]

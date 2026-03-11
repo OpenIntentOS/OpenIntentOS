@@ -5,7 +5,7 @@
 //! ## Authentication
 //!
 //! Set env vars:
-//! ```
+//! ```text
 //! WECHAT_OA_APP_ID=wx1234567890abcdef
 //! WECHAT_OA_APP_SECRET=your_app_secret_here
 //! ```

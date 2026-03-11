@@ -156,6 +156,21 @@ impl Adapter for CalendarAdapter {
             });
         }
 
+        let known = matches!(
+            name,
+            "calendar_list_events"
+                | "calendar_create_event"
+                | "calendar_delete_event"
+                | "calendar_search_events"
+                | "calendar_get_event"
+        );
+        if !known {
+            return Err(AdapterError::ToolNotFound {
+                adapter_id: self.id.clone(),
+                tool_name: name.to_string(),
+            });
+        }
+
         let caldav_url = self.resolve_caldav_url(&params)?;
         let username = self.resolve_username(&params);
         let password = self.resolve_password(&params);

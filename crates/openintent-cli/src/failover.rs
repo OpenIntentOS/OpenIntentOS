@@ -27,6 +27,9 @@ const GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/
 const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
 const CHATGPT_WEB_BASE_URL: &str = "https://chatgpt.com";
 const OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
+const SILICONFLOW_BASE_URL: &str = "https://api.siliconflow.cn/v1";
+const MOONSHOT_BASE_URL: &str = "https://api.moonshot.cn/v1";
+const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -66,6 +69,30 @@ const FALLBACK_CHAIN: &[FallbackCandidate] = &[
         model: "deepseek-chat",
         base_url: DEEPSEEK_BASE_URL,
         key_env: "DEEPSEEK_API_KEY",
+        provider: LlmProvider::OpenAI,
+    },
+    // SiliconFlow (硅基流动) — free, accessible from China
+    FallbackCandidate {
+        name: "SiliconFlow DeepSeek-V3",
+        model: "deepseek-ai/DeepSeek-V3",
+        base_url: SILICONFLOW_BASE_URL,
+        key_env: "SILICONFLOW_API_KEY",
+        provider: LlmProvider::OpenAI,
+    },
+    // Moonshot Kimi — free trial, accessible from China
+    FallbackCandidate {
+        name: "Moonshot Kimi",
+        model: "moonshot-v1-8k",
+        base_url: MOONSHOT_BASE_URL,
+        key_env: "MOONSHOT_API_KEY",
+        provider: LlmProvider::OpenAI,
+    },
+    // Zhipu GLM-4-Flash — permanently free, accessible from China
+    FallbackCandidate {
+        name: "Zhipu GLM-4-Flash",
+        model: "glm-4-flash",
+        base_url: ZHIPU_BASE_URL,
+        key_env: "ZHIPU_API_KEY",
         provider: LlmProvider::OpenAI,
     },
     // Google Gemini (free tier, good reliability)

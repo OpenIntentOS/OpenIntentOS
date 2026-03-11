@@ -9,6 +9,11 @@
 - feat: proxy support for all adapters (HTTPS_PROXY / ALL_PROXY)
 - feat: WeCom robot webhook skill, Tencent/Aliyun SMS skills, Weibo post skill
 - feat: ChatGPT Pro browser-based auto token extraction
+- feat: Chinese domestic AI providers — SiliconFlow, Moonshot, Zhipu GLM, Tongyi Qwen
+- feat: auto-detect China region (OPENINTENT_REGION / LANG / TZ) in onboarding
+- feat: redesigned onboarding wizard — 3-step AI-provider / channel / summary flow
+- feat: failover chain extended with SiliconFlow, Moonshot, Zhipu (after DeepSeek)
+- fix: test suite — all tests pass
 
 ## [0.1.9] - 2026-02-27
 - feat: self-repair loop, multi-task routing, telegram file delivery

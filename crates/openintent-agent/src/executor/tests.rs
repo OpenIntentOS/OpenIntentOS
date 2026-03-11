@@ -587,4 +587,3 @@
         assert_eq!(results[0].status, StepStatus::Completed);
         assert_eq!(results[1].status, StepStatus::Completed);
     }
-}

@@ -161,6 +161,22 @@ impl Adapter for FeishuAdapter {
             });
         }
 
+        let known = matches!(
+            name,
+            "feishu_send_message"
+                | "feishu_list_chats"
+                | "feishu_get_chat_messages"
+                | "feishu_create_doc"
+                | "feishu_search_users"
+                | "feishu_get_user_info"
+        );
+        if !known {
+            return Err(AdapterError::ToolNotFound {
+                adapter_id: self.id.clone(),
+                tool_name: name.to_string(),
+            });
+        }
+
         let token = self.resolve_token()?;
 
         match name {

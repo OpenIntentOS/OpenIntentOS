@@ -129,6 +129,10 @@ const DEFAULT_MODEL_GROQ: &str = "llama-3.3-70b-versatile";
 const DEFAULT_MODEL_XAI: &str = "grok-3";
 const DEFAULT_MODEL_MISTRAL: &str = "mistral-large-latest";
 const DEFAULT_MODEL_OLLAMA: &str = "qwen2.5:latest";
+const DEFAULT_MODEL_SILICONFLOW: &str = "deepseek-ai/DeepSeek-V3";
+const DEFAULT_MODEL_MOONSHOT: &str = "moonshot-v1-8k";
+const DEFAULT_MODEL_ZHIPU: &str = "glm-4-flash";
+const DEFAULT_MODEL_TONGYI: &str = "qwen-turbo";
 
 const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
 const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
@@ -138,6 +142,10 @@ const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
 const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 const MISTRAL_BASE_URL: &str = "https://api.mistral.ai/v1";
 const OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
+const SILICONFLOW_BASE_URL: &str = "https://api.siliconflow.cn/v1";
+const MOONSHOT_BASE_URL: &str = "https://api.moonshot.cn/v1";
+const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
+const TONGYI_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
 /// Resolve which LLM provider, API key, and model to use.
 ///
@@ -262,6 +270,50 @@ pub fn resolve_llm_config() -> LlmClientConfig {
         Some(LlmClientConfig::openai_compatible(key, model, base))
     };
 
+    let try_siliconflow = || -> Option<LlmClientConfig> {
+        let key = env_non_empty("SILICONFLOW_API_KEY")?;
+        let model = model_override
+            .clone()
+            .unwrap_or_else(|| DEFAULT_MODEL_SILICONFLOW.to_owned());
+        let base = base_url_override
+            .clone()
+            .unwrap_or_else(|| SILICONFLOW_BASE_URL.to_owned());
+        Some(LlmClientConfig::openai_compatible(key, model, base))
+    };
+
+    let try_moonshot = || -> Option<LlmClientConfig> {
+        let key = env_non_empty("MOONSHOT_API_KEY")?;
+        let model = model_override
+            .clone()
+            .unwrap_or_else(|| DEFAULT_MODEL_MOONSHOT.to_owned());
+        let base = base_url_override
+            .clone()
+            .unwrap_or_else(|| MOONSHOT_BASE_URL.to_owned());
+        Some(LlmClientConfig::openai_compatible(key, model, base))
+    };
+
+    let try_zhipu = || -> Option<LlmClientConfig> {
+        let key = env_non_empty("ZHIPU_API_KEY")?;
+        let model = model_override
+            .clone()
+            .unwrap_or_else(|| DEFAULT_MODEL_ZHIPU.to_owned());
+        let base = base_url_override
+            .clone()
+            .unwrap_or_else(|| ZHIPU_BASE_URL.to_owned());
+        Some(LlmClientConfig::openai_compatible(key, model, base))
+    };
+
+    let try_tongyi = || -> Option<LlmClientConfig> {
+        let key = env_non_empty("DASHSCOPE_API_KEY")?;
+        let model = model_override
+            .clone()
+            .unwrap_or_else(|| DEFAULT_MODEL_TONGYI.to_owned());
+        let base = base_url_override
+            .clone()
+            .unwrap_or_else(|| TONGYI_BASE_URL.to_owned());
+        Some(LlmClientConfig::openai_compatible(key, model, base))
+    };
+
     let try_ollama = || -> LlmClientConfig {
         let model = model_override
             .clone()
@@ -302,6 +354,18 @@ pub fn resolve_llm_config() -> LlmClientConfig {
             }),
             "mistral" => try_mistral().unwrap_or_else(|| {
                 exit_no_key("mistral", "MISTRAL_API_KEY");
+            }),
+            "siliconflow" | "sf" => try_siliconflow().unwrap_or_else(|| {
+                exit_no_key("siliconflow", "SILICONFLOW_API_KEY");
+            }),
+            "moonshot" | "kimi-cn" => try_moonshot().unwrap_or_else(|| {
+                exit_no_key("moonshot", "MOONSHOT_API_KEY");
+            }),
+            "zhipu" | "glm" => try_zhipu().unwrap_or_else(|| {
+                exit_no_key("zhipu", "ZHIPU_API_KEY");
+            }),
+            "tongyi" | "qwen-cn" | "dashscope" => try_tongyi().unwrap_or_else(|| {
+                exit_no_key("tongyi", "DASHSCOPE_API_KEY");
             }),
             "ollama" | "local" => try_ollama(),
             "chatgpt-web" | "chatgpt-pro" | "chatgpt" => {
@@ -351,6 +415,18 @@ pub fn resolve_llm_config() -> LlmClientConfig {
         return cfg;
     }
     if let Some(cfg) = try_mistral() {
+        return cfg;
+    }
+    if let Some(cfg) = try_siliconflow() {
+        return cfg;
+    }
+    if let Some(cfg) = try_moonshot() {
+        return cfg;
+    }
+    if let Some(cfg) = try_zhipu() {
+        return cfg;
+    }
+    if let Some(cfg) = try_tongyi() {
         return cfg;
     }
 

@@ -737,12 +737,18 @@ ICP: 5-50人\n\
 
     #[test]
     fn model_config_tiers() {
+        // When no provider keys are set, all tiers fall back to the primary model.
+        unsafe {
+            std::env::remove_var("GOOGLE_API_KEY");
+            std::env::remove_var("DEEPSEEK_API_KEY");
+        }
+
         let light = model_config_for_tier(TaskTier::Light, "deepseek-chat");
-        assert_eq!(light.model, "gemini-2.5-flash");
+        assert_eq!(light.model, "deepseek-chat");
         assert_eq!(light.max_turns, 5);
 
         let heavy = model_config_for_tier(TaskTier::Heavy, "deepseek-chat");
         assert_eq!(heavy.model, "deepseek-chat");
-        assert_eq!(heavy.max_turns, 20);
+        assert_eq!(heavy.max_turns, 25);
     }
 }

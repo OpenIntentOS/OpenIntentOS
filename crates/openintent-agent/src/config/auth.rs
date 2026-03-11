@@ -27,6 +27,7 @@ pub enum AuthProvider {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuth2Config {
     pub client_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<String>, // Optional for PKCE flows
     pub auth_url: String,
     pub token_url: String,
@@ -41,33 +42,43 @@ pub struct OAuth2Config {
 pub struct AuthProfile {
     pub name: String,
     pub provider: AuthProvider,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    
+
     // OAuth2 specific
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub oauth2: Option<OAuth2Config>,
-    
+
     // API Key specific
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key_header: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key_query_param: Option<String>,
-    
+
     // Bearer token specific
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bearer_token: Option<String>,
-    
+
     // Basic auth specific
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
-    
+
     // Custom headers
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_headers: Option<HashMap<String, String>>,
-    
+
     // Validation settings
     #[serde(default)]
     pub validate_ssl: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
-    
+
     // Metadata
     #[serde(default)]
     pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
 }
 

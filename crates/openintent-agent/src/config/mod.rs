@@ -362,6 +362,8 @@ test = "value"
 
 [endpoints]
 api_base = "http://localhost:8080"
+
+[features]
         "#).unwrap();
 
         let manager = ConfigManager::with_file_watching(config_path).unwrap();
