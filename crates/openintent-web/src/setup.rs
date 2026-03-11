@@ -15,6 +15,8 @@ use axum::routing::{get, post};
 use tokio::time::timeout;
 use tracing::{info, warn};
 
+use crate::setup_chatgpt;
+
 // ── public types ────────────────────────────────────────────────────────────
 
 /// Response for `/api/setup/status`.
@@ -59,6 +61,7 @@ const LLM_KEY_VARS: &[&str] = &[
     "OPENROUTER_API_KEY",
     "XAI_API_KEY",
     "MISTRAL_API_KEY",
+    "CHATGPT_SESSION_TOKEN",
 ];
 
 /// Returns `true` if at least one LLM API key environment variable is set and
@@ -306,9 +309,12 @@ pub async fn serve_setup(
     let app = Router::new()
         .route("/", get(root_handler))
         .route("/setup", get(|| async { Html(SETUP_HTML) }))
+        .route("/setup/chatgpt", get(setup_chatgpt::get_chatgpt_setup))
         .route("/onboarding", get(get_onboarding))
         .route("/api/setup/status", get(get_status))
         .route("/api/setup/save", post(post_save))
+        .route("/api/setup/chatgpt", post(setup_chatgpt::post_chatgpt_setup))
+        .route("/api/setup/chatgpt/callback", get(setup_chatgpt::chatgpt_callback))
         .route("/api/onboarding/save", post(post_onboarding_save));
 
     let addr = format!("{bind}:{port}");
@@ -431,6 +437,10 @@ input:focus{border-color:var(--accent)}
       <button class="provider-btn" onclick="pick('nvidia')">
         <div class="provider-name">NVIDIA NIM</div>
         <span class="provider-badge badge-free">Free credits</span>
+      </button>
+      <button class="provider-btn" onclick="window.location.href='/setup/chatgpt'">
+        <div class="provider-name">ChatGPT Pro</div>
+        <span class="provider-badge badge-paid">$200/mo</span>
       </button>
       <button class="provider-btn" id="ollama-btn" style="display:none" onclick="pick('ollama')">
         <div class="provider-name">Ollama (local)</div>

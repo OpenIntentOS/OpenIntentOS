@@ -74,6 +74,26 @@ impl BotStateStore {
             .await
     }
 
+    /// List all key-value pairs whose key starts with the given prefix.
+    #[instrument(skip(self))]
+    pub async fn list_by_prefix(&self, prefix: &str) -> StoreResult<Vec<(String, String)>> {
+        let prefix = prefix.to_string();
+        self.db
+            .execute(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT key, value FROM bot_state WHERE key LIKE ?1",
+                )?;
+                let pattern = format!("{prefix}%");
+                let rows = stmt
+                    .query_map(rusqlite::params![pattern], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
     /// Get a value parsed as i64, returning `None` if not found or unparseable.
     pub async fn get_i64(&self, key: &str) -> StoreResult<Option<i64>> {
         let val = self.get(key).await?;

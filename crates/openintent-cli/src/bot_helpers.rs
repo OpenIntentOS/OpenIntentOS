@@ -13,6 +13,29 @@ use tracing::info;
 use crate::failover::{self, FailoverManager};
 use crate::messages::{self, Messages, keys};
 
+/// Send a plain text message to a Telegram chat.
+pub async fn send_text(http: &reqwest::Client, api: &str, chat_id: i64, text: &str) {
+    let _ = http
+        .post(format!("{api}/sendMessage"))
+        .json(&serde_json::json!({ "chat_id": chat_id, "text": text }))
+        .send()
+        .await;
+}
+
+/// Send a Markdown-formatted message to a Telegram chat.
+pub async fn send_markdown(http: &reqwest::Client, api: &str, chat_id: i64, text: &str) {
+    let _ = http
+        .post(format!("{api}/sendMessage"))
+        .json(&serde_json::json!({
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": true,
+        }))
+        .send()
+        .await;
+}
+
 /// Send the /start welcome message to a chat.
 pub async fn send_start_message(
     http: &reqwest::Client,
@@ -537,4 +560,105 @@ pub async fn send_token_stats(
         }))
         .send()
         .await;
+}
+
+// ---------------------------------------------------------------------------
+// ChatGPT Pro setup via Telegram
+// ---------------------------------------------------------------------------
+
+/// Auto-extract the ChatGPT Pro access token using the browser adapter (CDP).
+///
+/// Navigates Chrome to `chatgpt.com/api/auth/session`, reads the JSON response,
+/// extracts `accessToken`, and saves it to `.env`.
+///
+/// Requires: Chrome running with `--remote-debugging-port=9222` and the user
+/// already logged in to chatgpt.com in that browser.
+pub async fn auto_extract_chatgpt_token(
+    adapters: &[Arc<dyn openintent_agent::runtime::ToolAdapter>],
+) -> Result<String, String> {
+    let browser = adapters
+        .iter()
+        .find(|a| a.adapter_id() == "browser")
+        .ok_or("Browser adapter not available")?;
+
+    // Navigate to the session endpoint (reuses the browser's cookies).
+    browser
+        .execute(
+            "browser_navigate",
+            serde_json::json!({ "url": "https://chatgpt.com/api/auth/session" }),
+        )
+        .await
+        .map_err(|e| format!("Navigate failed: {e}"))?;
+
+    // Wait for the page to finish loading.
+    browser
+        .execute(
+            "browser_evaluate",
+            serde_json::json!({
+                "expression": "new Promise(function(r){ \
+                    if(document.readyState==='complete') r('ok'); \
+                    else window.addEventListener('load',function(){r('ok')}); \
+                })"
+            }),
+        )
+        .await
+        .map_err(|e| format!("Page load wait failed: {e}"))?;
+
+    // Read the page text (should be raw JSON).
+    let page_result = browser
+        .execute("browser_get_page_content", serde_json::json!({}))
+        .await
+        .map_err(|e| format!("Read page failed: {e}"))?;
+
+    // The execute() returns a JSON string; parse it to extract the content field.
+    let result_val: serde_json::Value = serde_json::from_str(&page_result)
+        .map_err(|_| "Failed to parse page result".to_owned())?;
+
+    let text = result_val["content"]
+        .as_str()
+        .ok_or_else(|| "Empty page content".to_owned())?;
+
+    // Parse the session JSON and extract accessToken.
+    let v: serde_json::Value = serde_json::from_str(text.trim())
+        .map_err(|_| "Not logged in to ChatGPT, or session expired.".to_owned())?;
+
+    let token = v["accessToken"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "No accessToken found. Please log in to chatgpt.com first.".to_owned())?;
+
+    // Save to .env.
+    openintent_web::setup_chatgpt::write_chatgpt_env(std::path::Path::new(".env"), token)
+        .map_err(|e| format!("Failed to save token: {e}"))?;
+
+    info!("ChatGPT Pro token auto-extracted via browser adapter");
+    Ok("**ChatGPT Pro configured!** Token saved successfully.".to_owned())
+}
+
+
+/// Print the startup banner to stdout.
+pub fn print_bot_banner(
+    bot_name: &str,
+    provider: &str,
+    model: &str,
+    evolution: &str,
+    allowed_users: Option<&Vec<i64>>,
+    poll_timeout: u64,
+) {
+    println!();
+    println!("  OpenIntentOS Telegram Bot Gateway v{}", env!("CARGO_PKG_VERSION"));
+    println!("  Bot: @{bot_name}");
+    println!("  Provider: {provider}");
+    println!("  Model: {model}");
+    println!("  Evolution: {evolution}");
+    println!("  DevWorker: enabled");
+    match allowed_users {
+        Some(ids) => println!("  Allowed users: {ids:?}"),
+        None => println!("  Allowed users: everyone"),
+    }
+    println!("  Long-poll timeout: {poll_timeout}s");
+    println!();
+    println!("  Bot is running. Send messages to @{bot_name} on Telegram.");
+    println!("  Press Ctrl+C to stop.");
+    println!();
 }

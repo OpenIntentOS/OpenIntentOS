@@ -20,6 +20,7 @@ toml = { workspace = true }
 openintent-kernel = { workspace = true }
 openintent-store = { workspace = true }
 skills = { path = "../skills" }
+base64 = "0.22"
 notify = "6.0"
 jsonschema = "0.18"
 tempfile = "3.0"

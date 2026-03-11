@@ -273,6 +273,73 @@ fn write_onboarding_env(briefing_enabled: bool, telegram_token: &str) -> anyhow:
 }
 
 // ---------------------------------------------------------------------------
+// ChatGPT Pro terminal setup wizard
+// ---------------------------------------------------------------------------
+
+/// Interactive terminal wizard for setting up ChatGPT Pro.
+///
+/// Guides the user through opening the ChatGPT session endpoint and pasting
+/// the JSON response.  Falls back gracefully when no browser is available.
+pub fn setup_chatgpt_interactive() -> anyhow::Result<()> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+
+    writeln!(out)?;
+    writeln!(out, "  ChatGPT Pro Setup")?;
+    writeln!(out, "  =================")?;
+    writeln!(out)?;
+    writeln!(out, "  1. Open https://chatgpt.com in your browser and log in.")?;
+    writeln!(out)?;
+    writeln!(out, "  2. After logging in, open this URL in the same browser:")?;
+    writeln!(out, "     https://chatgpt.com/api/auth/session")?;
+    writeln!(out)?;
+    writeln!(out, "  3. Select all the text on that page (Ctrl+A / Cmd+A),")?;
+    writeln!(out, "     copy it (Ctrl+C / Cmd+C), then paste it below.")?;
+    writeln!(out)?;
+    write!(out, "  Paste JSON here (then press Enter): ")?;
+    out.flush()?;
+
+    let mut line = String::new();
+    stdin.lock().read_line(&mut line)?;
+    let trimmed = line.trim();
+
+    if trimmed.is_empty() {
+        writeln!(out)?;
+        writeln!(out, "  Skipped. Run `openintent setup-chatgpt` to try again.")?;
+        writeln!(out)?;
+        return Ok(());
+    }
+
+    // Parse JSON and extract accessToken.
+    let v: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
+        anyhow::anyhow!("Invalid JSON: {e}. Make sure you copied the entire page content.")
+    })?;
+
+    let token = v["accessToken"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No `accessToken` found in the JSON. \
+                 Make sure you are logged in and copied the full page from \
+                 https://chatgpt.com/api/auth/session"
+            )
+        })?;
+
+    // Write to .env.
+    openintent_web::setup_chatgpt::write_chatgpt_env(Path::new(".env"), token)?;
+
+    writeln!(out)?;
+    writeln!(out, "  Token saved! ChatGPT Pro is now configured.")?;
+    writeln!(out, "  Run `openintent serve` to start.")?;
+    writeln!(out)?;
+
+    info!("ChatGPT Pro session token saved via terminal wizard");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

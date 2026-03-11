@@ -6,8 +6,19 @@ author: OpenIntentOS
 tags: [email, automation, productivity, ai]
 requires:
   env: []
-  bins: []
+  bins: [python3]
   config: []
+tools:
+  - name: classify
+    description: Classify a single email by category and priority using heuristic rules
+    script: ./classify.py
+    args:
+      - name: input
+        type: stdin-json
+        required: true
+        description: |
+          JSON object with fields: subject (string), sender (string, email address),
+          content (string, email body), received_date (string, ISO 8601)
 ---
 
 # Email Automation Skill
@@ -85,3 +96,48 @@ User: "What important emails did I receive today?"
 ```
 
 This skill leverages OpenIntentOS's existing email infrastructure while adding intelligent automation and AI-powered analysis on top.
+
+## classify.py — Email Classifier Script
+
+The `classify.py` script takes a single email as JSON on stdin and returns a classification result.
+
+### Input (stdin)
+
+```json
+{
+  "subject": "Invoice #1234 due in 3 days",
+  "sender": "billing@stripe.com",
+  "content": "Your invoice is due on ...",
+  "received_date": "2026-03-11T09:00:00"
+}
+```
+
+### Output
+
+```json
+{
+  "category": "financial",
+  "priority": "high",
+  "action_required": true,
+  "confidence": 0.85,
+  "reasoning": "Financial or billing related email",
+  "timestamp": "2026-03-11T09:00:01.000000"
+}
+```
+
+### Categories
+
+| Category | Description |
+|----------|-------------|
+| `work` | Professional/project emails |
+| `financial` | Invoices, billing, payments |
+| `newsletter` | Digests and periodic updates |
+| `social` | Social media notifications |
+| `spam_promotional` | Promotional or spam content |
+| `personal` | Personal/unclassified emails |
+
+### Usage
+
+```bash
+echo '{"subject":"Urgent: review needed","sender":"boss@company.com","content":"Please review ASAP","received_date":"2026-03-11T08:00:00"}' | ./classify.py
+```

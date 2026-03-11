@@ -6,7 +6,16 @@ author: OpenIntentOS
 tags: [search, web, research, utility]
 requires:
   env: []
-  bins: []
+  bins: [curl, python3]
+tools:
+  - name: web_search
+    description: Search the web using DuckDuckGo and return top results as structured JSON
+    script: ./web_search.sh
+    args:
+      - name: query
+        type: string
+        required: true
+        description: Search query string
 ---
 
 # Web Search Plus
@@ -51,3 +60,35 @@ web_search("your query")
 - Include source URLs for verification
 
 This skill enhances your web search capabilities by providing intelligent query strategies and result presentation guidelines.
+
+## Script Tool
+
+The `web_search.sh` script queries the DuckDuckGo Instant Answer API and returns structured JSON.
+
+```bash
+./web_search.sh "OpenIntentOS automation"
+./web_search.sh "Rust async runtime comparison"
+```
+
+### Output
+
+```json
+{
+  "query": "OpenIntentOS automation",
+  "abstract": {
+    "title": "...",
+    "text": "...",
+    "url": "https://...",
+    "source": "..."
+  },
+  "answer": "",
+  "results": [
+    {"title": "...", "url": "https://...", "snippet": "..."},
+    ...
+  ]
+}
+```
+
+- Up to 5 related results are returned from `RelatedTopics`.
+- When `jq` is not installed, a simplified flat JSON is returned.
+- No API key required for the DuckDuckGo Instant Answer API.

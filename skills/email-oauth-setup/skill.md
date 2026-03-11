@@ -1,68 +1,89 @@
 ---
-name: "Email OAuth Setup"
-description: "Automatically configure OAuth 2.0 authentication for email providers to enable secure, passwordless email access"
-version: "1.0.0"
-author: "OpenIntentOS"
-category: "email"
-tags: ["oauth", "email", "authentication", "gmail", "outlook"]
-scripts:
-  - name: "setup"
-    description: "Set up OAuth authentication for an email provider"
-    file: "setup.sh"
-    parameters:
-      - name: "email"
-        description: "Email address to configure"
+name: email-oauth-setup
+description: Configure OAuth 2.0 authentication for Gmail, Outlook, or Yahoo email accounts
+version: 1.0.0
+author: OpenIntentOS
+tags: [email, oauth, authentication, gmail, outlook, yahoo]
+requires:
+  bins: [bash, curl, python3]
+  env:
+    - GMAIL_CLIENT_ID
+    - GMAIL_CLIENT_SECRET
+tools:
+  - name: setup
+    description: Run interactive OAuth setup for an email provider, launching a browser auth flow and storing tokens in the vault
+    script: ./setup.sh
+    args:
+      - name: email
+        type: string
         required: true
-        type: "string"
-      - name: "provider"
-        description: "Email provider (gmail, outlook, yahoo, or auto-detect)"
+        description: Email address to configure (provider is auto-detected from domain)
+      - name: provider
+        type: string
         required: false
-        type: "string"
-        default: "auto"
-      - name: "scopes"
-        description: "Custom OAuth scopes (comma-separated)"
+        description: "Override provider detection: gmail, outlook, or yahoo (default: auto)"
+      - name: scopes
+        type: string
         required: false
-        type: "string"
+        description: Comma-separated custom OAuth scopes to request (optional override)
 ---
 
 # Email OAuth Setup
 
-Automatically configure OAuth 2.0 authentication for email providers to enable secure, passwordless email access.
-
-## Features
-
-- **Auto-detect email provider** (Gmail, Outlook, Yahoo, etc.)
-- **Generate OAuth configuration** with proper scopes and endpoints
-- **Launch browser authorization flow** with PKCE security
-- **Store encrypted tokens** in OpenIntentOS vault
-- **Auto-refresh tokens** when expired
-- **Support multiple accounts** per provider
+Automatically configures OAuth 2.0 authentication for email providers (Gmail, Outlook/Office 365, Yahoo). After running setup, tokens are stored in the OpenIntentOS vault and email tools can authenticate without passwords.
 
 ## Supported Providers
 
-| Provider | OAuth Endpoint | Scopes |
-|----------|----------------|--------|
-| **Gmail** | `accounts.google.com` | `https://mail.google.com/` |
-| **Outlook/Office 365** | `login.microsoftonline.com` | `https://outlook.office.com/IMAP.AccessAsUser.All` |
-| **Yahoo** | `api.login.yahoo.com` | `mail-r` |
-| **Custom** | User-defined | User-defined |
+| Provider | Domains | OAuth Endpoint |
+|----------|---------|----------------|
+| Gmail | `@gmail.com` | `accounts.google.com` |
+| Outlook | `@outlook.com`, `@*.onmicrosoft.com` | `login.microsoftonline.com` |
+| Yahoo | `@yahoo.com`, `@yahoo.*` | `api.login.yahoo.com` |
+
+## Required Environment Variables
+
+Set the credentials for the provider you want to configure:
+
+```bash
+# Gmail
+export GMAIL_CLIENT_ID="your-client-id.googleusercontent.com"
+export GMAIL_CLIENT_SECRET="your-client-secret"
+
+# Outlook
+export OUTLOOK_CLIENT_ID="your-outlook-client-id"
+export OUTLOOK_CLIENT_SECRET="your-outlook-client-secret"
+
+# Yahoo
+export YAHOO_CLIENT_ID="your-yahoo-client-id"
+export YAHOO_CLIENT_SECRET="your-yahoo-client-secret"
+```
+
+Obtain credentials from each provider's developer console.
 
 ## Usage
 
 ```bash
-# Auto-setup for Gmail
-openintent skill email-oauth-setup --provider gmail --email user@gmail.com
+# Auto-detect provider from email domain
+./setup.sh --email user@gmail.com
 
-# Setup for Office 365 with custom scopes
-openintent skill email-oauth-setup --provider outlook --email user@company.com --scopes "Mail.Send,Mail.Read"
+# Specify provider explicitly
+./setup.sh --provider outlook --email user@company.com
 
-# Interactive setup (detect provider)
-openintent skill email-oauth-setup --email user@example.com
+# Custom scopes
+./setup.sh --email user@gmail.com --scopes "https://mail.google.com/,https://www.googleapis.com/auth/calendar"
 ```
 
-The skill will:
-1. **Detect provider** from email domain
-2. **Launch OAuth flow** in your default browser
-3. **Store tokens securely** in the vault
-4. **Test email connection** automatically
-5. **Create email credential** for use with email tools
+## What Happens
+
+1. Provider is detected from the email domain (or overridden by --provider).
+2. The script launches a local OAuth callback server and opens the authorization URL in your browser.
+3. After you grant permission, the authorization code is exchanged for access and refresh tokens.
+4. Tokens are stored in the OpenIntentOS vault, encrypted at rest.
+5. The email connection is tested automatically.
+
+## Security
+
+- Uses PKCE (Proof Key for Code Exchange) to prevent authorization code interception.
+- CSRF protection via random state parameter.
+- Only the minimum required scopes are requested.
+- All tokens are encrypted before storage.

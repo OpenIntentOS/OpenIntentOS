@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 
 use crate::error::{AdapterError, Result};
+use crate::proxy;
 use crate::traits::{Adapter, AdapterType, AuthRequirement, HealthStatus, ToolDefinition};
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -64,9 +65,8 @@ pub struct WebFetchAdapter {
 impl WebFetchAdapter {
     /// Create a new web fetch adapter.
     pub fn new(id: impl Into<String>) -> Self {
-        let client = reqwest::Client::builder()
+        let client = proxy::build_client(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .user_agent(BROWSER_USER_AGENT)
-            .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .redirect(reqwest::redirect::Policy::limited(10))
             .build()
             .unwrap_or_default();

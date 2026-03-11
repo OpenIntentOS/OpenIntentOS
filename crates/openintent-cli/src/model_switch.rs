@@ -62,7 +62,13 @@ const ALIASES: &[AliasEntry] = &[
     AliasEntry { alias: "claude-opus", provider: "Anthropic", model: "claude-opus-4-20250514", base_url: "https://api.anthropic.com", key_env: "ANTHROPIC_API_KEY" },
     AliasEntry { alias: "opus", provider: "Anthropic", model: "claude-opus-4-20250514", base_url: "https://api.anthropic.com", key_env: "ANTHROPIC_API_KEY" },
 
-    // -- OpenAI (direct) ------------------------------------------------------
+    // -- ChatGPT Web (Pro subscribers, session-token based) -------------------
+    AliasEntry { alias: "chatgpt", provider: "ChatGptWeb", model: "gpt-4o", base_url: "https://chatgpt.com", key_env: "CHATGPT_SESSION_TOKEN" },
+    AliasEntry { alias: "chatgpt-web", provider: "ChatGptWeb", model: "gpt-4o", base_url: "https://chatgpt.com", key_env: "CHATGPT_SESSION_TOKEN" },
+    AliasEntry { alias: "chatgpt-o3", provider: "ChatGptWeb", model: "o3", base_url: "https://chatgpt.com", key_env: "CHATGPT_SESSION_TOKEN" },
+    AliasEntry { alias: "chatgpt-o4-mini", provider: "ChatGptWeb", model: "o4-mini", base_url: "https://chatgpt.com", key_env: "CHATGPT_SESSION_TOKEN" },
+
+    // -- OpenAI (direct API) --------------------------------------------------
     AliasEntry { alias: "gpt-4o", provider: "OpenAI", model: "gpt-4o", base_url: "https://api.openai.com/v1", key_env: "OPENAI_API_KEY" },
     AliasEntry { alias: "gpt4o", provider: "OpenAI", model: "gpt-4o", base_url: "https://api.openai.com/v1", key_env: "OPENAI_API_KEY" },
     AliasEntry { alias: "gpt-4", provider: "OpenAI", model: "gpt-4o", base_url: "https://api.openai.com/v1", key_env: "OPENAI_API_KEY" },
@@ -132,7 +138,12 @@ pub const PROVIDER_GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Claude Haiku 4.5", "haiku"),
         ("Claude Opus 4", "opus"),
     ]),
-    ("OpenAI", &[
+    ("ChatGPT Web (Pro)", &[
+        ("GPT-4o", "chatgpt"),
+        ("o3", "chatgpt-o3"),
+        ("o4-mini", "chatgpt-o4-mini"),
+    ]),
+    ("OpenAI API", &[
         ("GPT-4o", "gpt-4o"),
         ("o1", "o1"),
         ("o3-mini", "o3"),
@@ -394,6 +405,7 @@ fn resolve_api_key(provider: &str, key_env: &str) -> Option<String> {
             crate::helpers::env_non_empty("ANTHROPIC_API_KEY")
                 .or_else(|| crate::helpers::read_claude_code_keychain_token())
         }
+        "ChatGptWeb" => crate::helpers::env_non_empty("CHATGPT_SESSION_TOKEN"),
         "Ollama" => Some("ollama".to_string()),
         "NVIDIA" => crate::helpers::env_non_empty("NVIDIA_API_KEY"),
         "Google" => crate::helpers::env_non_empty("GOOGLE_API_KEY"),
@@ -406,6 +418,7 @@ fn resolve_api_key(provider: &str, key_env: &str) -> Option<String> {
 fn to_llm_provider(provider: &str) -> LlmProvider {
     match provider {
         "Anthropic" => LlmProvider::Anthropic,
+        "ChatGptWeb" => LlmProvider::ChatGptWeb,
         _ => LlmProvider::OpenAI, // All others use OpenAI-compatible API
     }
 }

@@ -19,13 +19,17 @@ use openintent_store::{BotStateStore, DevTaskStore, SessionStore};
 use crate::adapters::init_adapters;
 use crate::bot_config::{load_bot_config, select_model_for_query};
 use crate::bot_helpers::{
-    check_restart_signal, notify_recovered_tasks, send_pending_update_notification,
-    send_start_message, send_startup_notification, send_token_stats, split_telegram_message,
+    check_restart_signal, notify_recovered_tasks, print_bot_banner, send_markdown,
+    send_pending_update_notification, send_start_message, send_startup_notification, send_text,
+    send_token_stats, split_telegram_message,
 };
 use crate::dev_commands;
 use crate::dev_worker::{DevWorker, ProgressCallback};
 use crate::failover::{self, FailoverManager};
-use crate::helpers::{env_non_empty, init_tracing, load_system_prompt, resolve_llm_config};
+use crate::helpers::{
+    env_non_empty, init_tracing, is_jwt_expired, jwt_seconds_remaining, load_system_prompt,
+    resolve_llm_config,
+};
 use crate::messages::{self, Messages, keys};
 
 /// Run the Telegram bot gateway.
@@ -120,6 +124,20 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     let dev_task_store = DevTaskStore::new(db.clone());
     let bot_state = BotStateStore::new(db.clone());
 
+    // Restore persisted per-chat model aliases from previous session.
+    if let Ok(saved) = bot_state.list_by_prefix("chat_model:").await {
+        for (key, alias) in saved {
+            if let Some(id_str) = key.strip_prefix("chat_model:") {
+                if let Ok(cid) = id_str.parse::<i64>() {
+                    chat_model_alias.insert(cid, alias);
+                }
+            }
+        }
+        if !chat_model_alias.is_empty() {
+            info!(count = chat_model_alias.len(), "restored persisted model aliases");
+        }
+    }
+
     // Initialize adapters.
     let cwd = std::env::current_dir().context("failed to get current directory")?;
     let initialized = init_adapters(cwd.clone(), db, true).await?;
@@ -128,6 +146,34 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
 
     let restart_signal = crate::self_update_adapter::RestartSignal::default();
     adapters.push(std::sync::Arc::new(crate::self_update_adapter::SelfUpdateAdapter::new(restart_signal.clone())));
+
+    // Set browser adapter as proxy for ChatGPT Web requests
+    // (bypasses Cloudflare TLS fingerprint blocking).
+    if let Some(browser) = adapters.iter().find(|a| a.adapter_id() == "browser") {
+        llm.set_browser_proxy(Arc::clone(browser)).await;
+        info!("ChatGPT Web requests will be proxied through browser adapter");
+    }
+
+    // Warn if the ChatGPT session token is expired or about to expire.
+    if matches!(llm.provider(), openintent_agent::llm::LlmProvider::ChatGptWeb) {
+        if let Ok(token) = std::env::var("CHATGPT_SESSION_TOKEN") {
+            if is_jwt_expired(&token) {
+                tracing::warn!(
+                    "ChatGPT session token has expired — send /chatgpt in Telegram to refresh"
+                );
+            } else if let Some(secs) = jwt_seconds_remaining(&token) {
+                let hours = secs / 3600;
+                if hours < 24 {
+                    tracing::warn!(
+                        hours_remaining = hours,
+                        "ChatGPT session token expires soon — send /chatgpt to refresh"
+                    );
+                } else {
+                    info!(hours_remaining = hours, "ChatGPT session token valid");
+                }
+            }
+        }
+    }
 
     // Initialize the self-evolution engine.
     let evolution = EvolutionEngine::from_env();
@@ -184,26 +230,10 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     notify_recovered_tasks(&http, &telegram_api, &dev_task_store).await;
 
     // Print banner.
-    println!();
-    println!(
-        "  OpenIntentOS Telegram Bot Gateway v{}",
-        env!("CARGO_PKG_VERSION")
+    print_bot_banner(
+        &bot_name, &provider_label, &model, evolution_status,
+        allowed_user_ids.as_ref(), poll_timeout,
     );
-    println!("  Bot: @{bot_name}");
-    println!("  Provider: {provider_label}");
-    println!("  Model: {model}");
-    println!("  Evolution: {evolution_status}");
-    println!("  DevWorker: enabled");
-    if let Some(ref ids) = allowed_user_ids {
-        println!("  Allowed users: {:?}", ids);
-    } else {
-        println!("  Allowed users: everyone");
-    }
-    println!("  Long-poll timeout: {poll_timeout}s");
-    println!();
-    println!("  Bot is running. Send messages to @{bot_name} on Telegram.");
-    println!("  Press Ctrl+C to stop.");
-    println!();
 
     // Confirm upgrade to the user who triggered it (if bot restarted after update).
     send_pending_update_notification(&http, &telegram_api, &bot_state, &msgs, &llm, &model).await;
@@ -296,7 +326,8 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                         crate::model_switch::try_switch_model(&synthetic, &llm)
                     {
                         model = switch_result.model.clone();
-                        chat_model_alias.insert(cb_chat_id, synthetic);
+                        chat_model_alias.insert(cb_chat_id, synthetic.clone());
+                        let _ = bot_state.set(&format!("chat_model:{cb_chat_id}"), &synthetic).await;
                         let reply = format!(
                             "Switched to **{}** (`{}`)",
                             switch_result.provider_name, switch_result.model
@@ -419,43 +450,19 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
             // Handle /clear command.
             if text == "/clear" {
                 chat_histories.remove(&chat_id);
-                let _ = http
-                    .post(format!("{telegram_api}/sendMessage"))
-                    .json(&serde_json::json!({
-                        "chat_id": chat_id,
-                        "text": "Conversation cleared. Send a new message to start fresh.",
-                    }))
-                    .send()
-                    .await;
+                send_text(&http, &telegram_api, chat_id, "Conversation cleared. Send a new message to start fresh.").await;
                 continue;
             }
 
             // Handle /tokens on|off command.
             if text == "/tokens on" {
                 chat_show_tokens.insert(chat_id, true);
-                let reply = msgs.get(keys::BOT_TOKENS_ON);
-                let _ = http
-                    .post(format!("{telegram_api}/sendMessage"))
-                    .json(&serde_json::json!({
-                        "chat_id": chat_id,
-                        "text": reply,
-                    }))
-                    .send()
-                    .await;
+                send_text(&http, &telegram_api, chat_id, &msgs.get(keys::BOT_TOKENS_ON)).await;
                 continue;
             }
-
             if text == "/tokens off" {
                 chat_show_tokens.insert(chat_id, false);
-                let reply = msgs.get(keys::BOT_TOKENS_OFF);
-                let _ = http
-                    .post(format!("{telegram_api}/sendMessage"))
-                    .json(&serde_json::json!({
-                        "chat_id": chat_id,
-                        "text": reply,
-                    }))
-                    .send()
-                    .await;
+                send_text(&http, &telegram_api, chat_id, &msgs.get(keys::BOT_TOKENS_OFF)).await;
                 continue;
             }
 
@@ -464,30 +471,15 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 let instruction = text.trim_start_matches("/dev ").trim();
                 let reply =
                     dev_commands::handle_dev_command(&dev_task_store, chat_id, instruction).await;
-                let _ = http
-                    .post(format!("{telegram_api}/sendMessage"))
-                    .json(&serde_json::json!({
-                        "chat_id": chat_id,
-                        "text": reply,
-                    }))
-                    .send()
-                    .await;
+                send_text(&http, &telegram_api, chat_id, &reply).await;
                 continue;
             }
 
             // Handle /tasks command.
             if text == "/tasks" {
                 let reply = dev_commands::handle_tasks_command(&dev_task_store, chat_id).await;
-                let chunks = split_telegram_message(&reply, 4000);
-                for chunk in &chunks {
-                    let _ = http
-                        .post(format!("{telegram_api}/sendMessage"))
-                        .json(&serde_json::json!({
-                            "chat_id": chat_id,
-                            "text": chunk,
-                        }))
-                        .send()
-                        .await;
+                for chunk in &split_telegram_message(&reply, 4000) {
+                    send_text(&http, &telegram_api, chat_id, chunk).await;
                 }
                 continue;
             }
@@ -497,14 +489,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 let task_id = text.trim_start_matches("/merge ").trim();
                 let reply =
                     dev_commands::handle_merge_command(&dev_task_store, task_id, chat_id).await;
-                let _ = http
-                    .post(format!("{telegram_api}/sendMessage"))
-                    .json(&serde_json::json!({
-                        "chat_id": chat_id,
-                        "text": reply,
-                    }))
-                    .send()
-                    .await;
+                send_text(&http, &telegram_api, chat_id, &reply).await;
                 continue;
             }
 
@@ -513,14 +498,7 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 let task_id = text.trim_start_matches("/cancel ").trim();
                 let reply =
                     dev_commands::handle_cancel_command(&dev_task_store, task_id, chat_id).await;
-                let _ = http
-                    .post(format!("{telegram_api}/sendMessage"))
-                    .json(&serde_json::json!({
-                        "chat_id": chat_id,
-                        "text": reply,
-                    }))
-                    .send()
-                    .await;
+                send_text(&http, &telegram_api, chat_id, &reply).await;
                 continue;
             }
 
@@ -529,22 +507,14 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 let task_id = text.trim_start_matches("/taskstatus ").trim();
                 let reply =
                     dev_commands::handle_task_status_command(&dev_task_store, task_id).await;
-                let chunks = split_telegram_message(&reply, 4000);
-                for chunk in &chunks {
-                    let _ = http
-                        .post(format!("{telegram_api}/sendMessage"))
-                        .json(&serde_json::json!({
-                            "chat_id": chat_id,
-                            "text": chunk,
-                        }))
-                        .send()
-                        .await;
+                for chunk in &split_telegram_message(&reply, 4000) {
+                    send_text(&http, &telegram_api, chat_id, chunk).await;
                 }
                 continue;
             }
 
-            // Handle /models command — show inline keyboard with available models.
-            if text == "/models" {
+            // Handle /model or /models command — show inline keyboard with available models.
+            if text == "/models" || text == "/model" {
                 let keyboard = crate::model_switch::build_models_keyboard();
                 let _ = http
                     .post(format!("{telegram_api}/sendMessage"))
@@ -558,11 +528,31 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
                 continue;
             }
 
+            // Handle /chatgpt command — auto-extract token via browser adapter.
+            if text == "/chatgpt" {
+                send_text(&http, &telegram_api, chat_id,
+                    "Extracting ChatGPT token from browser...").await;
+                match crate::bot_helpers::auto_extract_chatgpt_token(&adapters).await {
+                    Ok(msg) => {
+                        send_markdown(&http, &telegram_api, chat_id, &msg).await;
+                    }
+                    Err(e) => {
+                        let fallback = format!(
+                            "Auto-extract failed: {e}\n\n\
+                             Fallback: open http://localhost:23517/setup/chatgpt"
+                        );
+                        send_text(&http, &telegram_api, chat_id, &fallback).await;
+                    }
+                }
+                continue;
+            }
+
             // Handle model switching (natural language or /model command).
             if let Some(switch_result) = crate::model_switch::try_switch_model(text, &llm) {
                 model = switch_result.model.clone();
-                // Store the alias so we can re-apply after failover resets.
+                // Store the alias and persist to database for cross-restart survival.
                 chat_model_alias.insert(chat_id, text.to_string());
+                let _ = bot_state.set(&format!("chat_model:{chat_id}"), text).await;
                 let reply = format!(
                     "Switched to **{}** (`{}`)",
                     switch_result.provider_name, switch_result.model
@@ -994,3 +984,4 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
         }
     }
 }
+

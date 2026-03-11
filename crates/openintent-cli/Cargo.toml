@@ -36,5 +36,6 @@ dotenvy = { workspace = true }
 toml = { workspace = true }
 serde = { workspace = true }
 tempfile = { workspace = true }
+base64 = "0.22"
 tar = "0.4"
 flate2 = "1"

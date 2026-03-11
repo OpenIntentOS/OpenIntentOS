@@ -61,6 +61,7 @@ async fn main() -> Result<()> {
         Commands::Run { session } => repl::cmd_run(session).await,
         Commands::Serve { bind, port } => cmd_serve(bind, port).await,
         Commands::Setup => cmd_setup().await,
+        Commands::SetupChatgpt => cmd_setup_chatgpt().await,
         Commands::Status => cmd_status().await,
         Commands::Sessions { action } => cmd_sessions(action).await,
         Commands::Tui { session } => cmd_tui(session).await,
@@ -397,6 +398,21 @@ async fn cmd_setup() -> Result<()> {
     println!();
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand: setup-chatgpt
+// ---------------------------------------------------------------------------
+
+async fn cmd_setup_chatgpt() -> Result<()> {
+    init_tracing("info");
+
+    println!();
+    println!("  If the web server is running, you can also use the browser wizard:");
+    println!("  http://localhost:23517/setup/chatgpt");
+    println!();
+
+    onboarding::setup_chatgpt_interactive()
 }
 
 // ---------------------------------------------------------------------------

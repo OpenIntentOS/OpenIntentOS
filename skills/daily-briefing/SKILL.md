@@ -4,13 +4,18 @@ description: Delivers a personalized morning briefing with tasks, emails, calend
 version: "1.0.0"
 requires:
   env: []
-  bins: []
+  bins: [curl, python3]
 tags:
   - productivity
   - briefing
   - automation
   - morning
 author: OpenIntentOS Contributors
+tools:
+  - name: briefing
+    description: Run the morning briefing aggregator to get weather, a motivational quote, and top tech news
+    script: ./briefing.sh
+    args: []
 ---
 
 # daily-briefing
@@ -61,3 +66,17 @@ OpenIntentOS v{version} — uptime {duration}, memory OK
 - If `BRIEFING_ENABLED=false` in the environment, skip the cron trigger but still respond to manual triggers.
 - For the cron trigger: check `BRIEFING_TIME` env var. Default to `07:00` if unset. The value is in 24-hour `HH:MM` format, local timezone.
 - Do not repeat the same briefing within the same calendar day unless explicitly asked.
+
+## Script Tool
+
+The `briefing.sh` script provides a quick standalone briefing covering weather, a motivational quote, and top HackerNews stories. Run it directly for an external data snapshot:
+
+```bash
+# Default location (auto-detect from IP)
+./briefing.sh
+
+# Custom location
+BRIEFING_LOCATION="London" ./briefing.sh
+```
+
+Output JSON fields: `date`, `datetime`, `weather` (loc/temp/description/humidity/wind), `quote`, `news` (array of title/url/score).

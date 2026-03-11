@@ -13,6 +13,7 @@ pub mod frontend;
 pub mod mcp;
 pub mod server;
 pub mod setup;
+pub mod setup_chatgpt;
 pub mod state;
 pub mod ws;
 

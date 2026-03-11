@@ -42,6 +42,10 @@ pub enum Commands {
     /// Run the interactive setup wizard.
     Setup,
 
+    /// Set up ChatGPT Pro session (opens guided wizard in browser).
+    #[command(name = "setup-chatgpt")]
+    SetupChatgpt,
+
     /// Show current system status.
     Status,
 

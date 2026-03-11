@@ -25,6 +25,7 @@ const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
 const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
+const CHATGPT_WEB_BASE_URL: &str = "https://chatgpt.com";
 const OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 
 // ---------------------------------------------------------------------------
@@ -104,6 +105,14 @@ const FALLBACK_CHAIN: &[FallbackCandidate] = &[
         base_url: NVIDIA_BASE_URL,
         key_env: "NVIDIA_API_KEY",
         provider: LlmProvider::OpenAI,
+    },
+    // ChatGPT Web (Pro subscribers, session token required)
+    FallbackCandidate {
+        name: "ChatGPT Web",
+        model: "gpt-4",
+        base_url: CHATGPT_WEB_BASE_URL,
+        key_env: "CHATGPT_SESSION_TOKEN",
+        provider: LlmProvider::ChatGptWeb,
     },
     // Ollama local (always available, no key needed)
     FallbackCandidate {

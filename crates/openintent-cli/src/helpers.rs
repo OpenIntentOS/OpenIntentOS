@@ -304,6 +304,13 @@ pub fn resolve_llm_config() -> LlmClientConfig {
                 exit_no_key("mistral", "MISTRAL_API_KEY");
             }),
             "ollama" | "local" => try_ollama(),
+            "chatgpt-web" | "chatgpt-pro" | "chatgpt" => {
+                let token = env_non_empty("CHATGPT_SESSION_TOKEN").unwrap_or_else(|| {
+                    exit_no_key("chatgpt-web", "CHATGPT_SESSION_TOKEN");
+                });
+                let model = model_override.unwrap_or_else(|| "gpt-4".to_owned());
+                LlmClientConfig::chatgpt_web(token, model)
+            }
             _ => {
                 let key = env_non_empty("OPENINTENT_API_KEY")
                     .or_else(|| env_non_empty("OPENAI_API_KEY"))
@@ -395,4 +402,61 @@ pub fn read_claude_code_keychain_token() -> Option<String> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_owned())
+}
+
+// ---------------------------------------------------------------------------
+// JWT utilities
+// ---------------------------------------------------------------------------
+
+/// Decode the `exp` claim from a JWT (without signature verification) and
+/// return whether the token has already expired.
+///
+/// Returns `true` if the token is definitely expired.
+/// Returns `false` if it is valid or if the expiry cannot be determined.
+pub fn is_jwt_expired(token: &str) -> bool {
+    let payload = match token.split('.').nth(1) {
+        Some(p) => p,
+        None => return false,
+    };
+
+    // Base64url decode (no padding required for this use).
+    let decoded = {
+        let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        match base64::Engine::decode(&engine, payload) {
+            Ok(b) => b,
+            Err(_) => return false,
+        }
+    };
+
+    let v: serde_json::Value = match serde_json::from_slice(&decoded) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    let exp = match v["exp"].as_i64() {
+        Some(e) => e,
+        None => return false,
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    now > exp
+}
+
+/// Return the remaining lifetime of a JWT in seconds, or `None` if
+/// the token cannot be decoded or has no `exp` claim.
+pub fn jwt_seconds_remaining(token: &str) -> Option<i64> {
+    let payload = token.split('.').nth(1)?;
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let decoded = base64::Engine::decode(&engine, payload).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    let exp = v["exp"].as_i64()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    Some(exp - now)
 }

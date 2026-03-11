@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.10] - 2026-03-11
+- feat: add WeChat OA, DingTalk, WeCom, QQ Bot, Bilibili, Douyin, XHS, Weibo adapters
+- feat: proxy support for all adapters (HTTPS_PROXY / ALL_PROXY)
+- feat: WeCom robot webhook skill, Tencent/Aliyun SMS skills, Weibo post skill
+- feat: ChatGPT Pro browser-based auto token extraction
+
 ## [0.1.9] - 2026-02-27
 - feat: self-repair loop, multi-task routing, telegram file delivery
 - feat: instruct agent to send per-task results via telegram_send_message

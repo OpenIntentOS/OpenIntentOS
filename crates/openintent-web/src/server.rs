@@ -24,6 +24,7 @@ use crate::api;
 use crate::frontend::INDEX_HTML;
 use crate::mcp;
 use crate::state::AppState;
+use crate::setup_chatgpt;
 use crate::ws;
 
 /// The OpenIntentOS web server.
@@ -93,6 +94,10 @@ impl WebServer {
                 "/api/sessions/{id}/messages",
                 get(api::get_session_messages),
             )
+            // ChatGPT Pro setup wizard (available even when main server is running).
+            .route("/setup/chatgpt", get(setup_chatgpt::get_chatgpt_setup))
+            .route("/api/setup/chatgpt", post(setup_chatgpt::post_chatgpt_setup))
+            .route("/api/setup/chatgpt/callback", get(setup_chatgpt::chatgpt_callback))
             // MCP (Model Context Protocol) endpoint.
             .route("/mcp", post(mcp::handle_mcp_request))
             // WebSocket.

@@ -82,6 +82,49 @@ pub async fn init_adapters(
     let mut calendar_adapter = openintent_adapters::CalendarAdapter::new("calendar");
     calendar_adapter.connect().await?;
 
+    let mut slack_adapter = openintent_adapters::SlackAdapter::new("slack");
+    slack_adapter.connect().await?;
+
+    let mut wechat_oa_adapter = openintent_adapters::WeChatOAAdapter::new("wechat_oa");
+    if let Err(e) = wechat_oa_adapter.connect().await {
+        tracing::warn!(error = %e, "WeChat OA adapter failed to connect (credentials not set?)");
+    }
+
+    let mut dingtalk_adapter = openintent_adapters::DingTalkAdapter::new("dingtalk");
+    if let Err(e) = dingtalk_adapter.connect().await {
+        tracing::warn!(error = %e, "DingTalk adapter failed to connect (credentials not set?)");
+    }
+
+    let mut wecom_adapter = openintent_adapters::WeComAdapter::new("wecom");
+    if let Err(e) = wecom_adapter.connect().await {
+        tracing::warn!(error = %e, "WeCom adapter failed to connect (credentials not set?)");
+    }
+
+    let mut qq_bot_adapter = openintent_adapters::QQBotAdapter::new("qq_bot");
+    if let Err(e) = qq_bot_adapter.connect().await {
+        tracing::warn!(error = %e, "QQ Bot adapter failed to connect (credentials not set?)");
+    }
+
+    let mut bilibili_adapter = openintent_adapters::BilibiliAdapter::new("bilibili");
+    if let Err(e) = bilibili_adapter.connect().await {
+        tracing::warn!(error = %e, "Bilibili adapter failed to connect (credentials not set?)");
+    }
+
+    let mut douyin_adapter = openintent_adapters::DouyinAdapter::new("douyin");
+    if let Err(e) = douyin_adapter.connect().await {
+        tracing::warn!(error = %e, "Douyin adapter failed to connect (credentials not set?)");
+    }
+
+    let mut xhs_adapter = openintent_adapters::XhsAdapter::new("xhs");
+    if let Err(e) = xhs_adapter.connect().await {
+        tracing::warn!(error = %e, "XHS adapter failed to connect (credentials not set?)");
+    }
+
+    let mut weibo_adapter = openintent_adapters::WeiboAdapter::new("weibo");
+    if let Err(e) = weibo_adapter.connect().await {
+        tracing::warn!(error = %e, "Weibo adapter failed to connect (credentials not set?)");
+    }
+
     // Build raw adapter list (for web server).
     let mut raw_adapters: Vec<Arc<dyn openintent_adapters::Adapter>> = vec![
         Arc::new(fs_adapter),
@@ -96,6 +139,15 @@ pub async fn init_adapters(
         Arc::new(browser_adapter),
         Arc::new(feishu_adapter),
         Arc::new(calendar_adapter),
+        Arc::new(slack_adapter),
+        Arc::new(wechat_oa_adapter),
+        Arc::new(dingtalk_adapter),
+        Arc::new(wecom_adapter),
+        Arc::new(qq_bot_adapter),
+        Arc::new(bilibili_adapter),
+        Arc::new(douyin_adapter),
+        Arc::new(xhs_adapter),
+        Arc::new(weibo_adapter),
     ];
 
     // Optionally add Telegram and Discord adapters.

@@ -1,38 +1,17 @@
 //! Multi-provider LLM client.
 //!
-//! Supports the **Anthropic Messages API** and the **OpenAI Chat Completions
+//! Supports the **Anthropic Messages API**, the **OpenAI Chat Completions
 //! API** (including OpenAI-compatible endpoints such as Ollama, Together, and
-//! vLLM) with both streaming SSE and non-streaming modes.
+//! vLLM), and the **ChatGPT Web API** (for Pro subscribers) with both
+//! streaming SSE and non-streaming modes.
 
 use std::sync::{Arc, RwLock};
 
-use futures::StreamExt;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
-use serde_json::{Value, json};
-
 use crate::error::{AgentError, Result};
-use crate::llm::streaming::SseParser;
-use crate::llm::streaming_openai::OpenAiStreamAccumulator;
-use crate::llm::types::{
-    ChatRequest, LlmResponse, Message, Role, StreamDelta, StreamEvent, ToolCall, ToolDefinition,
-    Usage,
-};
+use crate::llm::types::{ChatRequest, LlmResponse, Usage};
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Default Anthropic API base URL.
-const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
-
-/// Default OpenAI API base URL.
-const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
-
-/// Anthropic API version header value.
-const ANTHROPIC_VERSION: &str = "2023-06-01";
-
-/// Anthropic beta header required for OAuth token authentication.
-const ANTHROPIC_OAUTH_BETA: &str = "oauth-2025-04-20";
+// Re-export sub-modules used by the rest of the crate.
+pub use crate::llm::openai::{messages_to_openai, parse_response as parse_openai_response, tools_to_openai};
 
 // ---------------------------------------------------------------------------
 // Provider enum
@@ -45,6 +24,8 @@ pub enum LlmProvider {
     Anthropic,
     /// OpenAI Chat Completions API (also covers OpenAI-compatible endpoints).
     OpenAI,
+    /// ChatGPT Web API (for Pro subscribers, session-token based).
+    ChatGptWeb,
 }
 
 // ---------------------------------------------------------------------------
@@ -54,15 +35,10 @@ pub enum LlmProvider {
 /// Configuration for connecting to a single LLM provider endpoint.
 #[derive(Debug, Clone)]
 pub struct LlmClientConfig {
-    /// Which provider this configuration targets.
     pub provider: LlmProvider,
-    /// API key for authentication.
     pub api_key: String,
-    /// Base URL for the API (e.g. `https://api.anthropic.com`).
     pub base_url: String,
-    /// Default model identifier.
     pub default_model: String,
-    /// Default maximum tokens per response.
     pub max_tokens: u32,
 }
 
@@ -72,7 +48,7 @@ impl LlmClientConfig {
         Self {
             provider: LlmProvider::Anthropic,
             api_key: api_key.into(),
-            base_url: ANTHROPIC_BASE_URL.to_owned(),
+            base_url: crate::llm::anthropic::BASE_URL.to_owned(),
             default_model: model.into(),
             max_tokens: 4096,
         }
@@ -83,14 +59,13 @@ impl LlmClientConfig {
         Self {
             provider: LlmProvider::OpenAI,
             api_key: api_key.into(),
-            base_url: OPENAI_BASE_URL.to_owned(),
+            base_url: crate::llm::openai::BASE_URL.to_owned(),
             default_model: model.into(),
             max_tokens: 4096,
         }
     }
 
-    /// Create a configuration for any OpenAI-compatible API (e.g. Ollama,
-    /// Together, vLLM).
+    /// Create a configuration for any OpenAI-compatible API.
     pub fn openai_compatible(
         api_key: impl Into<String>,
         model: impl Into<String>,
@@ -104,26 +79,50 @@ impl LlmClientConfig {
             max_tokens: 4096,
         }
     }
+
+    /// Create a configuration for the ChatGPT Web API (Pro subscribers).
+    ///
+    /// The `session_token` is the `__Secure-next-auth.session-token` cookie
+    /// value from a logged-in chatgpt.com session.
+    pub fn chatgpt_web(
+        session_token: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider: LlmProvider::ChatGptWeb,
+            api_key: session_token.into(),
+            base_url: crate::llm::chatgpt_web::BASE_URL.to_owned(),
+            default_model: model.into(),
+            max_tokens: 16384,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 
-/// An LLM client that communicates with either the Anthropic Messages API or
-/// the OpenAI Chat Completions API.
-///
-/// Supports both streaming and non-streaming modes, tool use, and system
-/// prompts.  The API key can be hot-swapped at runtime (e.g. after an OAuth
-/// token refresh) via [`update_api_key`] and provider failover via
-/// [`switch_provider`].
-#[derive(Debug, Clone)]
+/// An LLM client that communicates with Anthropic, OpenAI, or ChatGPT Web.
+#[derive(Clone)]
 pub struct LlmClient {
     config: Arc<LlmClientConfig>,
-    /// Swappable runtime overrides — allows token refresh and provider failover
-    /// without re-creating the client.
     overrides: Arc<RwLock<RuntimeOverrides>>,
     http: reqwest::Client,
+    /// ChatGPT Web auth manager (only set when provider is ChatGptWeb).
+    chatgpt_auth: Option<Arc<crate::llm::chatgpt_web::ChatGptWebAuth>>,
+    /// Optional browser adapter for proxying ChatGPT Web requests through
+    /// Chrome (avoids Cloudflare TLS fingerprint blocks).
+    browser_proxy: Arc<tokio::sync::RwLock<Option<Arc<dyn crate::runtime::ToolAdapter>>>>,
+}
+
+impl std::fmt::Debug for LlmClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmClient")
+            .field("config", &self.config)
+            .field("chatgpt_auth", &self.chatgpt_auth.is_some())
+            .field("browser_proxy", &"<...>")
+            .finish()
+    }
 }
 
 /// Mutable runtime overrides for the LLM client.
@@ -138,10 +137,13 @@ struct RuntimeOverrides {
 impl LlmClient {
     /// Create a new client with the given configuration.
     pub fn new(config: LlmClientConfig) -> Result<Self> {
-        if config.api_key.is_empty() {
+        // ChatGPT Web uses session tokens, not API keys — allow "empty" API
+        // key check to pass for it.
+        if config.api_key.is_empty() && config.provider != LlmProvider::ChatGptWeb {
             let provider_name = match config.provider {
                 LlmProvider::Anthropic => "anthropic",
                 LlmProvider::OpenAI => "openai",
+                LlmProvider::ChatGptWeb => "chatgpt-web",
             };
             return Err(AgentError::MissingApiKey {
                 provider: provider_name.into(),
@@ -155,6 +157,21 @@ impl LlmClient {
                 reason: format!("failed to build HTTP client: {e}"),
             })?;
 
+        // Initialize ChatGPT Web auth if applicable.
+        let chatgpt_auth = if config.provider == LlmProvider::ChatGptWeb {
+            if config.api_key.is_empty() {
+                return Err(AgentError::MissingApiKey {
+                    provider: "chatgpt-web (CHATGPT_SESSION_TOKEN)".into(),
+                });
+            }
+            Some(Arc::new(crate::llm::chatgpt_web::ChatGptWebAuth::new(
+                config.api_key.clone(),
+                config.base_url.clone(),
+            )))
+        } else {
+            None
+        };
+
         let overrides = Arc::new(RwLock::new(RuntimeOverrides {
             api_key: config.api_key.clone(),
             provider: None,
@@ -166,7 +183,14 @@ impl LlmClient {
             config: Arc::new(config),
             overrides,
             http,
+            chatgpt_auth,
+            browser_proxy: Arc::new(tokio::sync::RwLock::new(None)),
         })
+    }
+
+    /// Set a browser adapter to proxy ChatGPT Web requests through Chrome.
+    pub async fn set_browser_proxy(&self, adapter: Arc<dyn crate::runtime::ToolAdapter>) {
+        *self.browser_proxy.write().await = Some(adapter);
     }
 
     /// Returns the current provider (respects runtime overrides).
@@ -178,15 +202,14 @@ impl LlmClient {
             .unwrap_or_else(|| self.config.provider.clone())
     }
 
-    /// Hot-swap the API key at runtime (e.g. after an OAuth token refresh).
+    /// Hot-swap the API key at runtime.
     pub fn update_api_key(&self, new_key: String) {
         if let Ok(mut o) = self.overrides.write() {
             o.api_key = new_key;
         }
     }
 
-    /// Switch to a different provider at runtime (e.g. failover from
-    /// Anthropic to DeepSeek when the OAuth token cannot be refreshed).
+    /// Switch to a different provider at runtime (failover).
     pub fn switch_provider(
         &self,
         provider: LlmProvider,
@@ -201,28 +224,23 @@ impl LlmClient {
     }
 
     /// Create a failover chain of providers for automatic fallback.
-    /// Returns a vector of (provider, base_url, model) tuples.
     pub fn create_failover_chain() -> Vec<(LlmProvider, String, String)> {
         vec![
-            // Primary: Anthropic Claude
             (
                 LlmProvider::Anthropic,
                 "https://api.anthropic.com".to_string(),
                 "claude-sonnet-4-20250514".to_string(),
             ),
-            // Fallback 1: OpenAI
             (
                 LlmProvider::OpenAI,
                 "https://api.openai.com/v1".to_string(),
                 "gpt-4o".to_string(),
             ),
-            // Fallback 2: DeepSeek
             (
                 LlmProvider::OpenAI,
                 "https://api.deepseek.com/v1".to_string(),
                 "deepseek-chat".to_string(),
             ),
-            // Fallback 3: Local Ollama
             (
                 LlmProvider::OpenAI,
                 "http://localhost:11434/v1".to_string(),
@@ -232,24 +250,19 @@ impl LlmClient {
     }
 
     /// Attempt to failover to the next provider in the chain.
-    /// Returns true if failover was successful, false if no more providers.
     pub async fn attempt_failover(&self, current_provider_index: usize) -> bool {
         let chain = Self::create_failover_chain();
-
         if current_provider_index + 1 >= chain.len() {
             tracing::warn!("Failover chain exhausted, no more providers available");
             return false;
         }
-
         let (provider, base_url, model) = &chain[current_provider_index + 1];
-
         tracing::info!(
             provider = ?provider,
             base_url = %base_url,
             model = %model,
             "Failing over to next provider"
         );
-
         self.switch_provider(provider.clone(), base_url.clone(), model.clone());
         true
     }
@@ -268,31 +281,22 @@ impl LlmClient {
             std::env::var("GOOGLE_API_KEY").unwrap_or_default()
         } else if base_url.contains("api.nvidia.com") {
             std::env::var("NVIDIA_API_KEY").unwrap_or_default()
+        } else if base_url.contains("chatgpt.com") {
+            std::env::var("CHATGPT_SESSION_TOKEN").unwrap_or_default()
         } else {
-            // Local providers (Ollama, LM Studio) need no key.
             String::new()
         }
     }
 
     /// Switch to the next available provider when the current one returns a
     /// quota / rate-limit error (HTTP 429).
-    ///
-    /// Iterates the failover chain in priority order, skipping:
-    /// - the currently active provider
-    /// - providers whose API key is absent (unless they are local)
-    ///
-    /// Also switches the API key so the new provider is authenticated
-    /// correctly.
-    ///
-    /// Returns `true` if a new provider was selected, `false` if the chain is
-    /// exhausted.
     pub fn failover_on_quota(&self) -> bool {
         let chain = Self::create_failover_chain();
         let current_url = self.current_base_url();
 
         for (provider, base_url, model) in &chain {
             if *base_url == current_url {
-                continue; // skip current
+                continue;
             }
 
             let api_key = Self::env_api_key_for_url(base_url);
@@ -314,10 +318,10 @@ impl LlmClient {
             );
 
             if let Ok(mut o) = self.overrides.write() {
-                o.provider      = Some(provider.clone());
-                o.base_url      = Some(base_url.clone());
+                o.provider = Some(provider.clone());
+                o.base_url = Some(base_url.clone());
                 o.default_model = Some(model.clone());
-                o.api_key       = api_key;
+                o.api_key = api_key;
             }
             return true;
         }
@@ -327,8 +331,6 @@ impl LlmClient {
     }
 
     /// Reset all runtime overrides back to the original config defaults.
-    /// This is used after a failover cascade exhausts all providers, so the
-    /// client returns to its initial (primary) state.
     pub fn restore_defaults(&self) {
         if let Ok(mut o) = self.overrides.write() {
             o.provider = None;
@@ -347,7 +349,7 @@ impl LlmClient {
     }
 
     /// Read the current base URL (snapshot, respects overrides).
-    fn current_base_url(&self) -> String {
+    pub fn current_base_url(&self) -> String {
         self.overrides
             .read()
             .ok()
@@ -364,37 +366,54 @@ impl LlmClient {
             .unwrap_or_else(|| self.config.default_model.clone())
     }
 
+    /// Resolve the effective model for a request.
+    fn effective_model(&self, request: &ChatRequest) -> String {
+        if request.model.is_empty() {
+            self.current_default_model()
+        } else {
+            request.model.clone()
+        }
+    }
+
+    /// Resolve the effective max_tokens for a request.
+    fn effective_max_tokens(&self, request: &ChatRequest) -> u32 {
+        request.max_tokens.unwrap_or(self.config.max_tokens)
+    }
+
     // -----------------------------------------------------------------------
     // Public API
     // -----------------------------------------------------------------------
 
     /// Send a chat request and return the full response (non-streaming).
-    ///
-    /// This blocks until the entire response is received and then parses it
-    /// into an [`LlmResponse`].
     pub async fn chat(&self, request: &ChatRequest) -> Result<LlmResponse> {
         match self.provider() {
             LlmProvider::Anthropic => self.chat_anthropic(request).await,
             LlmProvider::OpenAI => self.chat_openai(request).await,
+            LlmProvider::ChatGptWeb => self.chat_chatgpt_web(request).await,
         }
     }
 
-    /// Send a chat request using streaming SSE and return the aggregated
-    /// response together with token usage statistics.
-    ///
-    /// Internally consumes the SSE stream, accumulating text and tool-call
-    /// fragments until the message is complete.
+    /// Send a chat request using streaming SSE (no callback).
     pub async fn stream_chat(&self, request: &ChatRequest) -> Result<(LlmResponse, Usage)> {
         match self.provider() {
-            LlmProvider::Anthropic => self.stream_chat_anthropic(request).await,
-            LlmProvider::OpenAI => self.stream_chat_openai(request, &mut |_| {}).await,
+            LlmProvider::Anthropic => {
+                crate::llm::anthropic::consume_stream(
+                    self.send_anthropic(request, true).await?,
+                    &mut |_| {},
+                )
+                .await
+            }
+            LlmProvider::OpenAI => {
+                self.stream_chat_with_callback(request, |_| {}).await
+            }
+            LlmProvider::ChatGptWeb => {
+                self.stream_chat_with_callback(request, |_| {}).await
+            }
         }
     }
 
     /// Send a chat request using streaming SSE, invoking a callback for each
-    /// text delta so callers can render incremental output.
-    ///
-    /// Returns the aggregated response together with token usage statistics.
+    /// text delta.
     pub async fn stream_chat_with_callback<F>(
         &self,
         request: &ChatRequest,
@@ -405,21 +424,177 @@ impl LlmClient {
     {
         match self.provider() {
             LlmProvider::Anthropic => {
-                self.stream_chat_anthropic_with_callback(request, &mut on_text)
-                    .await
+                let resp = self.send_anthropic(request, true).await?;
+                crate::llm::anthropic::consume_stream(resp, &mut on_text).await
             }
-            LlmProvider::OpenAI => self.stream_chat_openai(request, &mut on_text).await,
+            LlmProvider::OpenAI => {
+                let resp = self.send_openai(request, true).await?;
+                crate::llm::openai::consume_stream(resp, &mut on_text).await
+            }
+            LlmProvider::ChatGptWeb => {
+                // Prefer browser proxy to bypass Cloudflare TLS fingerprinting.
+                let has_browser = self.browser_proxy.read().await.is_some();
+                if has_browser {
+                    let raw_sse = self.chatgpt_web_via_browser(request).await?;
+                    let has_tools = !request.tools.is_empty();
+                    crate::llm::chatgpt_web::parse_sse_text(&raw_sse, &mut on_text, has_tools)
+                } else {
+                    let resp = self.send_chatgpt_web(request).await?;
+                    let has_tools = !request.tools.is_empty();
+                    crate::llm::chatgpt_web::consume_stream(resp, &mut on_text, has_tools)
+                        .await
+                }
+            }
         }
     }
 
-    // =======================================================================
-    // Anthropic implementation
-    // =======================================================================
+    // -----------------------------------------------------------------------
+    // Provider-specific send helpers
+    // -----------------------------------------------------------------------
 
-    /// Non-streaming Anthropic chat.
+    async fn send_anthropic(
+        &self,
+        request: &ChatRequest,
+        stream: bool,
+    ) -> Result<reqwest::Response> {
+        let model = self.effective_model(request);
+        let max_tokens = self.effective_max_tokens(request);
+        let body = crate::llm::anthropic::build_request_body(
+            &request.messages,
+            &model,
+            max_tokens,
+            request.temperature,
+            &request.tools,
+            stream,
+        );
+        let resp = crate::llm::anthropic::send_request(
+            &self.http,
+            &self.current_base_url(),
+            &self.current_api_key(),
+            &body,
+        )
+        .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AgentError::LlmRequestFailed {
+                reason: format!("API returned {status}: {text}"),
+            });
+        }
+        Ok(resp)
+    }
+
+    async fn send_openai(
+        &self,
+        request: &ChatRequest,
+        stream: bool,
+    ) -> Result<reqwest::Response> {
+        let model = self.effective_model(request);
+        let max_tokens = self.effective_max_tokens(request);
+        let body = crate::llm::openai::build_request_body(
+            &request.messages,
+            &model,
+            max_tokens,
+            request.temperature,
+            &request.tools,
+            stream,
+        );
+        let resp = crate::llm::openai::send_request(
+            &self.http,
+            &self.current_base_url(),
+            &self.current_api_key(),
+            &body,
+        )
+        .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AgentError::LlmRequestFailed {
+                reason: format!("API returned {status}: {text}"),
+            });
+        }
+        Ok(resp)
+    }
+
+    async fn send_chatgpt_web(
+        &self,
+        request: &ChatRequest,
+    ) -> Result<reqwest::Response> {
+        let auth = self.chatgpt_auth.as_ref().ok_or_else(|| {
+            AgentError::MissingApiKey {
+                provider: "chatgpt-web (no auth initialized)".into(),
+            }
+        })?;
+        let model = self.effective_model(request);
+        let body = crate::llm::chatgpt_web::build_request_body(request, &model);
+        let resp = crate::llm::chatgpt_web::send_request(
+            &self.http,
+            auth,
+            &self.current_base_url(),
+            &body,
+        )
+        .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AgentError::LlmRequestFailed {
+                reason: format!("ChatGPT web API returned {status}: {text}"),
+            });
+        }
+        Ok(resp)
+    }
+
+    /// Send a ChatGPT Web request via the browser adapter (Chrome fetch proxy).
+    /// Collects all SSE events in the browser and returns them as raw text.
+    async fn chatgpt_web_via_browser(
+        &self,
+        request: &ChatRequest,
+    ) -> Result<String> {
+        let auth = self.chatgpt_auth.as_ref().ok_or_else(|| {
+            AgentError::MissingApiKey {
+                provider: "chatgpt-web (no auth initialized)".into(),
+            }
+        })?;
+        let browser = self.browser_proxy.read().await.clone()
+            .ok_or_else(|| AgentError::LlmRequestFailed {
+                reason: "browser proxy not available".into(),
+            })?;
+        let model = self.effective_model(request);
+        let body = crate::llm::chatgpt_web::build_request_body(request, &model);
+        crate::llm::chatgpt_web::fetch_via_browser(
+            &browser,
+            auth,
+            &self.current_base_url(),
+            &body,
+        )
+        .await
+    }
+
+    // -----------------------------------------------------------------------
+    // Non-streaming helpers
+    // -----------------------------------------------------------------------
+
     async fn chat_anthropic(&self, request: &ChatRequest) -> Result<LlmResponse> {
-        let body = self.build_anthropic_request_body(request, false);
-        let resp = self.send_anthropic_request(&body).await?;
+        let model = self.effective_model(request);
+        let max_tokens = self.effective_max_tokens(request);
+        let body = crate::llm::anthropic::build_request_body(
+            &request.messages,
+            &model,
+            max_tokens,
+            request.temperature,
+            &request.tools,
+            false,
+        );
+        let resp = crate::llm::anthropic::send_request(
+            &self.http,
+            &self.current_base_url(),
+            &self.current_api_key(),
+            &body,
+        )
+        .await?;
 
         let status = resp.status();
         let text = resp
@@ -428,200 +603,36 @@ impl LlmClient {
             .map_err(|e| AgentError::LlmRequestFailed {
                 reason: format!("failed to read response body: {e}"),
             })?;
-
         if !status.is_success() {
             return Err(AgentError::LlmRequestFailed {
                 reason: format!("API returned {status}: {text}"),
             });
         }
-
-        let v: Value = serde_json::from_str(&text).map_err(|e| AgentError::LlmParseFailed {
-            reason: format!("invalid JSON response: {e}"),
-        })?;
-
-        parse_anthropic_response(&v)
-    }
-
-    /// Streaming Anthropic chat (no callback).
-    async fn stream_chat_anthropic(
-        &self,
-        request: &ChatRequest,
-    ) -> Result<(LlmResponse, Usage)> {
-        self.stream_chat_anthropic_with_callback(request, &mut |_| {})
-            .await
-    }
-
-    /// Streaming Anthropic chat with a text callback.
-    async fn stream_chat_anthropic_with_callback<F>(
-        &self,
-        request: &ChatRequest,
-        on_text: &mut F,
-    ) -> Result<(LlmResponse, Usage)>
-    where
-        F: FnMut(&str),
-    {
-        let body = self.build_anthropic_request_body(request, true);
-        let resp = self.send_anthropic_request(&body).await?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AgentError::LlmRequestFailed {
-                reason: format!("API returned {status}: {text}"),
-            });
-        }
-
-        self.consume_anthropic_stream(resp, on_text).await
-    }
-
-    // -- Anthropic request building ------------------------------------------
-
-    /// Build the JSON body for the Anthropic Messages API.
-    fn build_anthropic_request_body(&self, request: &ChatRequest, stream: bool) -> Value {
-        let (system_text, messages) = messages_to_anthropic(&request.messages);
-        let default_model = self.current_default_model();
-
-        let mut body = json!({
-            "model": if request.model.is_empty() {
-                &default_model
-            } else {
-                &request.model
-            },
-            "max_tokens": request.max_tokens.unwrap_or(self.config.max_tokens),
-            "messages": messages,
-        });
-
-        if let Some(system) = system_text {
-            body["system"] = json!(system);
-        }
-
-        if let Some(temp) = request.temperature {
-            body["temperature"] = json!(temp);
-        }
-
-        if !request.tools.is_empty() {
-            body["tools"] = tools_to_anthropic(&request.tools);
-        }
-
-        if stream {
-            body["stream"] = json!(true);
-        }
-
-        body
-    }
-
-    /// Send the HTTP request to the Anthropic Messages API endpoint.
-    ///
-    /// Supports both standard API keys (`x-api-key` header) and OAuth tokens
-    /// (`Authorization: Bearer` header).  OAuth tokens are detected by their
-    /// `sk-ant-oat` prefix.
-    async fn send_anthropic_request(&self, body: &Value) -> Result<reqwest::Response> {
-        let url = format!("{}/v1/messages", self.current_base_url());
-
-        let mut headers = HeaderMap::new();
-
-        // Snapshot the current API key (may have been refreshed at runtime).
-        let api_key = self.current_api_key();
-
-        // OAuth tokens (from Claude Code) use Bearer auth + the oauth beta
-        // header; regular API keys use the x-api-key header.
-        let is_oauth = api_key.starts_with("sk-ant-oat");
-        if is_oauth {
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|e| {
-                    AgentError::LlmRequestFailed {
-                        reason: format!("invalid authorization header: {e}"),
-                    }
-                })?,
-            );
-            headers.insert(
-                "anthropic-beta",
-                HeaderValue::from_static(ANTHROPIC_OAUTH_BETA),
-            );
-        } else {
-            headers.insert(
-                "x-api-key",
-                HeaderValue::from_str(&api_key).map_err(|e| {
-                    AgentError::LlmRequestFailed {
-                        reason: format!("invalid API key header: {e}"),
-                    }
-                })?,
-            );
-        }
-
-        headers.insert(
-            "anthropic-version",
-            HeaderValue::from_static(ANTHROPIC_VERSION),
-        );
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-        tracing::debug!(url = %url, model = %body["model"], provider = "anthropic", is_oauth = is_oauth, "sending LLM request");
-
-        self.http
-            .post(&url)
-            .headers(headers)
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| AgentError::LlmRequestFailed {
-                reason: e.to_string(),
-            })
-    }
-
-    // -- Anthropic streaming -------------------------------------------------
-
-    /// Consume an Anthropic SSE stream and aggregate into a final response with usage.
-    async fn consume_anthropic_stream<F>(
-        &self,
-        resp: reqwest::Response,
-        on_text: &mut F,
-    ) -> Result<(LlmResponse, Usage)>
-    where
-        F: FnMut(&str),
-    {
-        let mut parser = SseParser::new();
-        let mut accumulator = StreamAccumulator::new();
-
-        let mut byte_stream = resp.bytes_stream();
-        let mut line_buffer = String::new();
-
-        while let Some(chunk_result) = byte_stream.next().await {
-            let chunk = chunk_result.map_err(|e| AgentError::LlmStreamError {
-                reason: format!("stream read error: {e}"),
+        let v: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| AgentError::LlmParseFailed {
+                reason: format!("invalid JSON response: {e}"),
             })?;
-
-            let text = std::str::from_utf8(&chunk).map_err(|e| AgentError::LlmStreamError {
-                reason: format!("invalid UTF-8 in stream: {e}"),
-            })?;
-
-            line_buffer.push_str(text);
-
-            while let Some(newline_pos) = line_buffer.find('\n') {
-                let line = line_buffer[..newline_pos].to_owned();
-                line_buffer = line_buffer[newline_pos + 1..].to_owned();
-
-                if let Some(event) = parser.parse_line(&line)? {
-                    accumulator.apply(&event, on_text);
-
-                    if matches!(event, StreamEvent::MessageStop) {
-                        return accumulator.into_response();
-                    }
-                }
-            }
-        }
-
-        accumulator.into_response()
+        crate::llm::anthropic::parse_response(&v)
     }
 
-    // =======================================================================
-    // OpenAI implementation
-    // =======================================================================
-
-    /// Non-streaming OpenAI chat.
     async fn chat_openai(&self, request: &ChatRequest) -> Result<LlmResponse> {
-        let body = self.build_openai_request_body(request, false);
-        let resp = self.send_openai_request(&body).await?;
+        let model = self.effective_model(request);
+        let max_tokens = self.effective_max_tokens(request);
+        let body = crate::llm::openai::build_request_body(
+            &request.messages,
+            &model,
+            max_tokens,
+            request.temperature,
+            &request.tools,
+            false,
+        );
+        let resp = crate::llm::openai::send_request(
+            &self.http,
+            &self.current_base_url(),
+            &self.current_api_key(),
+            &body,
+        )
+        .await?;
 
         let status = resp.status();
         let text = resp
@@ -630,522 +641,33 @@ impl LlmClient {
             .map_err(|e| AgentError::LlmRequestFailed {
                 reason: format!("failed to read response body: {e}"),
             })?;
-
         if !status.is_success() {
             return Err(AgentError::LlmRequestFailed {
                 reason: format!("API returned {status}: {text}"),
             });
         }
-
-        let v: Value = serde_json::from_str(&text).map_err(|e| AgentError::LlmParseFailed {
-            reason: format!("invalid JSON response: {e}"),
-        })?;
-
-        parse_openai_response(&v)
-    }
-
-    /// Streaming OpenAI chat with a text callback.
-    async fn stream_chat_openai<F>(
-        &self,
-        request: &ChatRequest,
-        on_text: &mut F,
-    ) -> Result<(LlmResponse, Usage)>
-    where
-        F: FnMut(&str),
-    {
-        let body = self.build_openai_request_body(request, true);
-        let resp = self.send_openai_request(&body).await?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AgentError::LlmRequestFailed {
-                reason: format!("API returned {status}: {text}"),
-            });
-        }
-
-        self.consume_openai_stream(resp, on_text).await
-    }
-
-    // -- OpenAI request building ---------------------------------------------
-
-    /// Build the JSON body for the OpenAI Chat Completions API.
-    fn build_openai_request_body(&self, request: &ChatRequest, stream: bool) -> Value {
-        let messages = messages_to_openai(&request.messages);
-        let default_model = self.current_default_model();
-
-        let mut body = json!({
-            "model": if request.model.is_empty() {
-                &default_model
-            } else {
-                &request.model
-            },
-            "max_tokens": request.max_tokens.unwrap_or(self.config.max_tokens),
-            "messages": messages,
-        });
-
-        if let Some(temp) = request.temperature {
-            body["temperature"] = json!(temp);
-        }
-
-        if !request.tools.is_empty() {
-            body["tools"] = tools_to_openai(&request.tools);
-        }
-
-        if stream {
-            body["stream"] = json!(true);
-        }
-
-        body
-    }
-
-    /// Send the HTTP request to the OpenAI Chat Completions API endpoint.
-    async fn send_openai_request(&self, body: &Value) -> Result<reqwest::Response> {
-        let url = format!("{}/chat/completions", self.current_base_url());
-
-        let mut headers = HeaderMap::new();
-        let auth_value = format!("Bearer {}", self.current_api_key());
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&auth_value).map_err(|e| AgentError::LlmRequestFailed {
-                reason: format!("invalid authorization header: {e}"),
-            })?,
-        );
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-        tracing::debug!(url = %url, model = %body["model"], provider = "openai", "sending LLM request");
-
-        self.http
-            .post(&url)
-            .headers(headers)
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| AgentError::LlmRequestFailed {
-                reason: e.to_string(),
-            })
-    }
-
-    // -- OpenAI streaming ----------------------------------------------------
-
-    /// Consume an OpenAI SSE stream and aggregate into a final response with usage.
-    async fn consume_openai_stream<F>(
-        &self,
-        resp: reqwest::Response,
-        on_text: &mut F,
-    ) -> Result<(LlmResponse, Usage)>
-    where
-        F: FnMut(&str),
-    {
-        let mut accumulator = OpenAiStreamAccumulator::new();
-
-        let mut byte_stream = resp.bytes_stream();
-        let mut line_buffer = String::new();
-
-        while let Some(chunk_result) = byte_stream.next().await {
-            let chunk = chunk_result.map_err(|e| AgentError::LlmStreamError {
-                reason: format!("stream read error: {e}"),
+        let v: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| AgentError::LlmParseFailed {
+                reason: format!("invalid JSON response: {e}"),
             })?;
-
-            let text = std::str::from_utf8(&chunk).map_err(|e| AgentError::LlmStreamError {
-                reason: format!("invalid UTF-8 in stream: {e}"),
-            })?;
-
-            line_buffer.push_str(text);
-
-            while let Some(newline_pos) = line_buffer.find('\n') {
-                let line = line_buffer[..newline_pos].to_owned();
-                line_buffer = line_buffer[newline_pos + 1..].to_owned();
-
-                if let Some(delta_text) = accumulator.feed_line(&line)? {
-                    on_text(&delta_text);
-                }
-
-                if accumulator.is_done() {
-                    return accumulator.into_response();
-                }
-            }
-        }
-
-        accumulator.into_response()
-    }
-}
-
-// ===========================================================================
-// Anthropic format conversion (free functions)
-// ===========================================================================
-
-/// Split the system message out (Anthropic expects it as a top-level field,
-/// not in the `messages` array) and convert the remaining messages to the
-/// Anthropic wire format.
-fn messages_to_anthropic(messages: &[Message]) -> (Option<String>, Vec<Value>) {
-    let mut system: Option<String> = None;
-    let mut wire_messages: Vec<Value> = Vec::with_capacity(messages.len());
-
-    for msg in messages {
-        match msg.role {
-            Role::System => match &mut system {
-                Some(existing) => {
-                    existing.push('\n');
-                    existing.push_str(&msg.content);
-                }
-                None => {
-                    system = Some(msg.content.clone());
-                }
-            },
-            Role::User => {
-                wire_messages.push(json!({
-                    "role": "user",
-                    "content": msg.content,
-                }));
-            }
-            Role::Assistant => {
-                if msg.tool_calls.is_empty() {
-                    wire_messages.push(json!({
-                        "role": "assistant",
-                        "content": msg.content,
-                    }));
-                } else {
-                    let mut content: Vec<Value> = Vec::new();
-                    if !msg.content.is_empty() {
-                        content.push(json!({
-                            "type": "text",
-                            "text": msg.content,
-                        }));
-                    }
-                    for tc in &msg.tool_calls {
-                        content.push(json!({
-                            "type": "tool_use",
-                            "id": tc.id,
-                            "name": tc.name,
-                            "input": tc.arguments,
-                        }));
-                    }
-                    wire_messages.push(json!({
-                        "role": "assistant",
-                        "content": content,
-                    }));
-                }
-            }
-            Role::Tool => {
-                wire_messages.push(json!({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": msg.tool_call_id,
-                        "content": msg.content,
-                    }],
-                }));
-            }
-        }
+        crate::llm::openai::parse_response(&v)
     }
 
-    (system, wire_messages)
-}
-
-/// Convert tool definitions into the Anthropic API format.
-fn tools_to_anthropic(tools: &[ToolDefinition]) -> Value {
-    let tool_values: Vec<Value> = tools
-        .iter()
-        .map(|t| {
-            json!({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.input_schema,
-            })
-        })
-        .collect();
-    json!(tool_values)
-}
-
-/// Parse a non-streaming Anthropic Messages API response.
-fn parse_anthropic_response(v: &Value) -> Result<LlmResponse> {
-    let content = v["content"]
-        .as_array()
-        .ok_or_else(|| AgentError::LlmParseFailed {
-            reason: "missing `content` array in response".into(),
+    async fn chat_chatgpt_web(&self, request: &ChatRequest) -> Result<LlmResponse> {
+        let auth = self.chatgpt_auth.as_ref().ok_or_else(|| {
+            AgentError::MissingApiKey {
+                provider: "chatgpt-web (no auth initialized)".into(),
+            }
         })?;
-
-    let mut text_parts: Vec<String> = Vec::new();
-    let mut tool_calls: Vec<ToolCall> = Vec::new();
-
-    for block in content {
-        match block["type"].as_str() {
-            Some("text") => {
-                if let Some(t) = block["text"].as_str() {
-                    text_parts.push(t.to_owned());
-                }
-            }
-            Some("tool_use") => {
-                tool_calls.push(ToolCall {
-                    id: block["id"].as_str().unwrap_or_default().to_owned(),
-                    name: block["name"].as_str().unwrap_or_default().to_owned(),
-                    arguments: block["input"].clone(),
-                });
-            }
-            _ => {}
-        }
-    }
-
-    if tool_calls.is_empty() {
-        Ok(LlmResponse::Text(text_parts.join("")))
-    } else {
-        Ok(LlmResponse::ToolCalls(tool_calls))
-    }
-}
-
-// ===========================================================================
-// OpenAI format conversion (free functions)
-// ===========================================================================
-
-/// Convert internal messages to the OpenAI Chat Completions wire format.
-///
-/// In the OpenAI format, system messages are part of the `messages` array
-/// (with `role: "system"`), tool calls are in `assistant.tool_calls`, and
-/// tool results use `role: "tool"` with a `tool_call_id`.
-pub fn messages_to_openai(messages: &[Message]) -> Vec<Value> {
-    let mut wire_messages: Vec<Value> = Vec::with_capacity(messages.len());
-
-    for msg in messages {
-        match msg.role {
-            Role::System => {
-                wire_messages.push(json!({
-                    "role": "system",
-                    "content": msg.content,
-                }));
-            }
-            Role::User => {
-                wire_messages.push(json!({
-                    "role": "user",
-                    "content": msg.content,
-                }));
-            }
-            Role::Assistant => {
-                if msg.tool_calls.is_empty() {
-                    wire_messages.push(json!({
-                        "role": "assistant",
-                        "content": msg.content,
-                    }));
-                } else {
-                    let tool_calls: Vec<Value> = msg
-                        .tool_calls
-                        .iter()
-                        .map(|tc| {
-                            json!({
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.name,
-                                    "arguments": tc.arguments.to_string(),
-                                }
-                            })
-                        })
-                        .collect();
-
-                    let mut m = json!({
-                        "role": "assistant",
-                        "tool_calls": tool_calls,
-                    });
-
-                    if !msg.content.is_empty() {
-                        m["content"] = json!(msg.content);
-                    }
-
-                    wire_messages.push(m);
-                }
-            }
-            Role::Tool => {
-                wire_messages.push(json!({
-                    "role": "tool",
-                    "tool_call_id": msg.tool_call_id,
-                    "content": msg.content,
-                }));
-            }
-        }
-    }
-
-    wire_messages
-}
-
-/// Convert tool definitions into the OpenAI Chat Completions API format.
-///
-/// OpenAI wraps each tool in `{"type": "function", "function": {...}}`.
-pub fn tools_to_openai(tools: &[ToolDefinition]) -> Value {
-    let tool_values: Vec<Value> = tools
-        .iter()
-        .map(|t| {
-            json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.input_schema,
-                }
-            })
-        })
-        .collect();
-    json!(tool_values)
-}
-
-/// Parse a non-streaming OpenAI Chat Completions API response into an
-/// [`LlmResponse`].
-pub fn parse_openai_response(v: &Value) -> Result<LlmResponse> {
-    let message = &v["choices"][0]["message"];
-
-    if message.is_null() {
-        return Err(AgentError::LlmParseFailed {
-            reason: "missing `choices[0].message` in response".into(),
-        });
-    }
-
-    // Check for tool calls first.
-    if let Some(tool_calls_arr) = message["tool_calls"].as_array()
-        && !tool_calls_arr.is_empty()
-    {
-        let calls: Result<Vec<ToolCall>> = tool_calls_arr
-            .iter()
-            .map(|tc| {
-                let func = &tc["function"];
-                let name = func["name"].as_str().unwrap_or_default().to_owned();
-                let args_str = func["arguments"].as_str().unwrap_or("{}");
-                let arguments: Value =
-                    serde_json::from_str(args_str).map_err(|e| AgentError::LlmParseFailed {
-                        reason: format!("invalid JSON in OpenAI tool call `{name}` arguments: {e}"),
-                    })?;
-
-                Ok(ToolCall {
-                    id: tc["id"].as_str().unwrap_or_default().to_owned(),
-                    name,
-                    arguments,
-                })
-            })
-            .collect();
-
-        return Ok(LlmResponse::ToolCalls(calls?));
-    }
-
-    // Fall back to text content.
-    let content = message["content"].as_str().unwrap_or_default();
-    Ok(LlmResponse::Text(content.to_owned()))
-}
-
-// ---------------------------------------------------------------------------
-// Anthropic stream accumulator (unchanged from original)
-// ---------------------------------------------------------------------------
-
-/// Accumulates fragments from Anthropic streaming events into a complete
-/// response.
-#[derive(Debug, Default)]
-struct StreamAccumulator {
-    /// Accumulated text output.
-    text: String,
-
-    /// Tool calls being built up from streaming fragments.
-    tool_calls: Vec<ToolCallBuilder>,
-
-    /// The stop reason, if received.
-    stop_reason: Option<String>,
-
-    /// Usage tracking (populated from message_start and message_delta events).
-    usage: Usage,
-}
-
-/// In-progress tool call being assembled from streaming deltas.
-#[derive(Debug)]
-struct ToolCallBuilder {
-    id: String,
-    name: String,
-    /// Accumulated JSON input string.
-    input_json: String,
-}
-
-impl StreamAccumulator {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    /// Apply a single stream event to the accumulator.
-    fn apply<F>(&mut self, event: &StreamEvent, on_text: &mut F)
-    where
-        F: FnMut(&str),
-    {
-        match event {
-            StreamEvent::MessageStart { input_tokens, .. } => {
-                self.usage.input_tokens = *input_tokens;
-            }
-
-            StreamEvent::ContentBlockStart {
-                content_type,
-                id,
-                name,
-                ..
-            } => {
-                if content_type == "tool_use" {
-                    self.tool_calls.push(ToolCallBuilder {
-                        id: id.clone().unwrap_or_default(),
-                        name: name.clone().unwrap_or_default(),
-                        input_json: String::new(),
-                    });
-                }
-            }
-
-            StreamEvent::ContentBlockDelta { delta, .. } => match delta {
-                StreamDelta::TextDelta(t) => {
-                    self.text.push_str(t);
-                    on_text(t);
-                }
-                StreamDelta::InputJsonDelta(j) => {
-                    if let Some(builder) = self.tool_calls.last_mut() {
-                        builder.input_json.push_str(j);
-                    }
-                }
-            },
-
-            StreamEvent::MessageDelta {
-                stop_reason,
-                output_tokens,
-            } => {
-                self.stop_reason = stop_reason.clone();
-                self.usage.output_tokens = *output_tokens;
-            }
-
-            _ => {}
-        }
-    }
-
-    /// Convert the accumulated state into a final [`LlmResponse`] and [`Usage`].
-    fn into_response(self) -> Result<(LlmResponse, Usage)> {
-        let usage = self.usage;
-        if self.tool_calls.is_empty() {
-            Ok((LlmResponse::Text(self.text), usage))
-        } else {
-            let calls: Result<Vec<ToolCall>> = self
-                .tool_calls
-                .into_iter()
-                .map(|b| {
-                    let arguments: Value = if b.input_json.is_empty() {
-                        Value::Object(Default::default())
-                    } else {
-                        serde_json::from_str(&b.input_json).map_err(|e| {
-                            AgentError::LlmParseFailed {
-                                reason: format!(
-                                    "invalid JSON in tool call `{}` input: {e}",
-                                    b.name
-                                ),
-                            }
-                        })?
-                    };
-
-                    Ok(ToolCall {
-                        id: b.id,
-                        name: b.name,
-                        arguments,
-                    })
-                })
-                .collect();
-
-            Ok((LlmResponse::ToolCalls(calls?), usage))
-        }
+        let model = self.effective_model(request);
+        crate::llm::chatgpt_web::chat(
+            &self.http,
+            auth,
+            &self.current_base_url(),
+            request,
+            &model,
+        )
+        .await
     }
 }
 
@@ -1156,161 +678,14 @@ impl StreamAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::types::Message;
-
-    // -- Anthropic tests (preserved from original) ---------------------------
+    use crate::llm::types::{Message, ToolCall, ToolDefinition};
 
     #[test]
-    fn build_anthropic_request_body_basic() {
-        let config = LlmClientConfig::anthropic("test-key", "claude-sonnet-4-20250514");
+    fn anthropic_config_construction() {
+        let config = LlmClientConfig::anthropic("key", "claude-sonnet-4-20250514");
         let client = LlmClient::new(config).unwrap();
-
-        let request = ChatRequest {
-            model: String::new(),
-            messages: vec![Message::system("You are helpful."), Message::user("Hello")],
-            tools: vec![],
-            temperature: Some(0.7),
-            max_tokens: Some(1024),
-            stream: false,
-        };
-
-        let body = client.build_anthropic_request_body(&request, false);
-
-        assert_eq!(body["model"], "claude-sonnet-4-20250514");
-        assert_eq!(body["system"], "You are helpful.");
-        assert_eq!(body["max_tokens"], 1024);
-        let temp = body["temperature"].as_f64().unwrap();
-        assert!((temp - 0.7).abs() < 1e-6, "temperature was {temp}");
-        assert!(body.get("stream").is_none());
-
-        let messages = body["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0]["role"], "user");
-        assert_eq!(messages[0]["content"], "Hello");
+        assert_eq!(client.provider(), LlmProvider::Anthropic);
     }
-
-    #[test]
-    fn build_anthropic_request_body_with_tools() {
-        let config = LlmClientConfig::anthropic("test-key", "claude-sonnet-4-20250514");
-        let client = LlmClient::new(config).unwrap();
-
-        let request = ChatRequest {
-            model: "claude-sonnet-4-20250514".into(),
-            messages: vec![Message::user("Read file.txt")],
-            tools: vec![ToolDefinition {
-                name: "read_file".into(),
-                description: "Read a file".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"}
-                    },
-                    "required": ["path"]
-                }),
-            }],
-            temperature: None,
-            max_tokens: None,
-            stream: true,
-        };
-
-        let body = client.build_anthropic_request_body(&request, true);
-        assert_eq!(body["stream"], true);
-        assert!(body["tools"].is_array());
-        assert_eq!(body["tools"][0]["name"], "read_file");
-    }
-
-    #[test]
-    fn build_anthropic_request_body_tool_results() {
-        let config = LlmClientConfig::anthropic("test-key", "claude-sonnet-4-20250514");
-        let client = LlmClient::new(config).unwrap();
-
-        let request = ChatRequest {
-            model: String::new(),
-            messages: vec![
-                Message::user("Read test.txt"),
-                Message::assistant_tool_calls(vec![ToolCall {
-                    id: "tc_01".into(),
-                    name: "read_file".into(),
-                    arguments: serde_json::json!({"path": "test.txt"}),
-                }]),
-                Message::tool_result("tc_01", "file contents here"),
-            ],
-            tools: vec![],
-            temperature: None,
-            max_tokens: None,
-            stream: false,
-        };
-
-        let body = client.build_anthropic_request_body(&request, false);
-        let messages = body["messages"].as_array().unwrap();
-
-        assert_eq!(messages[0]["role"], "user");
-        assert_eq!(messages[1]["role"], "assistant");
-        assert_eq!(messages[1]["content"][0]["type"], "tool_use");
-        assert_eq!(messages[1]["content"][0]["id"], "tc_01");
-        assert_eq!(messages[2]["role"], "user");
-        assert_eq!(messages[2]["content"][0]["type"], "tool_result");
-        assert_eq!(messages[2]["content"][0]["tool_use_id"], "tc_01");
-    }
-
-    #[test]
-    fn empty_api_key_returns_error() {
-        let config = LlmClientConfig::anthropic("", "claude-sonnet-4-20250514");
-        let result = LlmClient::new(config);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn parse_non_streaming_anthropic_text_response() {
-        let response_json: Value = serde_json::json!({
-            "id": "msg_01",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Hello, world!"}
-            ],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 10, "output_tokens": 5}
-        });
-
-        let result = parse_anthropic_response(&response_json).unwrap();
-        match result {
-            LlmResponse::Text(text) => assert_eq!(text, "Hello, world!"),
-            _ => panic!("expected Text response"),
-        }
-    }
-
-    #[test]
-    fn parse_non_streaming_anthropic_tool_use_response() {
-        let response_json: Value = serde_json::json!({
-            "id": "msg_01",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {
-                    "type": "tool_use",
-                    "id": "toolu_01",
-                    "name": "read_file",
-                    "input": {"path": "/tmp/test.txt"}
-                }
-            ],
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 20, "output_tokens": 15}
-        });
-
-        let result = parse_anthropic_response(&response_json).unwrap();
-        match result {
-            LlmResponse::ToolCalls(calls) => {
-                assert_eq!(calls.len(), 1);
-                assert_eq!(calls[0].id, "toolu_01");
-                assert_eq!(calls[0].name, "read_file");
-                assert_eq!(calls[0].arguments["path"], "/tmp/test.txt");
-            }
-            _ => panic!("expected ToolCalls response"),
-        }
-    }
-
-    // -- OpenAI config tests -------------------------------------------------
 
     #[test]
     fn openai_config_construction() {
@@ -1318,8 +693,6 @@ mod tests {
         assert_eq!(config.provider, LlmProvider::OpenAI);
         assert_eq!(config.api_key, "sk-test-key");
         assert_eq!(config.default_model, "gpt-4o");
-        assert_eq!(config.base_url, "https://api.openai.com/v1");
-        assert_eq!(config.max_tokens, 4096);
     }
 
     #[test]
@@ -1327,247 +700,162 @@ mod tests {
         let config =
             LlmClientConfig::openai_compatible("local-key", "llama3", "http://localhost:11434/v1");
         assert_eq!(config.provider, LlmProvider::OpenAI);
-        assert_eq!(config.api_key, "local-key");
-        assert_eq!(config.default_model, "llama3");
         assert_eq!(config.base_url, "http://localhost:11434/v1");
     }
 
     #[test]
-    fn openai_empty_api_key_returns_error() {
+    fn chatgpt_web_config_construction() {
+        let config = LlmClientConfig::chatgpt_web("session-token-abc", "gpt-4");
+        assert_eq!(config.provider, LlmProvider::ChatGptWeb);
+        assert_eq!(config.api_key, "session-token-abc");
+        assert_eq!(config.base_url, "https://chatgpt.com");
+    }
+
+    #[test]
+    fn empty_api_key_returns_error() {
+        let config = LlmClientConfig::anthropic("", "claude-sonnet-4-20250514");
+        assert!(LlmClient::new(config).is_err());
+
         let config = LlmClientConfig::openai("", "gpt-4o");
-        let result = LlmClient::new(config);
-        assert!(result.is_err());
-    }
-
-    // -- OpenAI message conversion tests -------------------------------------
-
-    #[test]
-    fn messages_to_openai_system_message() {
-        let messages = vec![Message::system("You are helpful."), Message::user("Hello")];
-        let wire = messages_to_openai(&messages);
-
-        assert_eq!(wire.len(), 2);
-        assert_eq!(wire[0]["role"], "system");
-        assert_eq!(wire[0]["content"], "You are helpful.");
-        assert_eq!(wire[1]["role"], "user");
-        assert_eq!(wire[1]["content"], "Hello");
+        assert!(LlmClient::new(config).is_err());
     }
 
     #[test]
-    fn messages_to_openai_assistant_text() {
-        let messages = vec![Message::assistant("I can help with that.")];
-        let wire = messages_to_openai(&messages);
-
-        assert_eq!(wire.len(), 1);
-        assert_eq!(wire[0]["role"], "assistant");
-        assert_eq!(wire[0]["content"], "I can help with that.");
+    fn chatgpt_web_empty_session_token_returns_error() {
+        let config = LlmClientConfig::chatgpt_web("", "gpt-4");
+        assert!(LlmClient::new(config).is_err());
     }
-
-    #[test]
-    fn messages_to_openai_tool_calls() {
-        let messages = vec![Message::assistant_tool_calls(vec![ToolCall {
-            id: "call_abc".into(),
-            name: "read_file".into(),
-            arguments: serde_json::json!({"path": "test.txt"}),
-        }])];
-        let wire = messages_to_openai(&messages);
-
-        assert_eq!(wire.len(), 1);
-        assert_eq!(wire[0]["role"], "assistant");
-
-        let tc = &wire[0]["tool_calls"][0];
-        assert_eq!(tc["id"], "call_abc");
-        assert_eq!(tc["type"], "function");
-        assert_eq!(tc["function"]["name"], "read_file");
-        // Arguments are serialized as a JSON string.
-        let args_str = tc["function"]["arguments"].as_str().unwrap();
-        let args: Value = serde_json::from_str(args_str).unwrap();
-        assert_eq!(args["path"], "test.txt");
-    }
-
-    #[test]
-    fn messages_to_openai_tool_result() {
-        let messages = vec![Message::tool_result("call_abc", "file contents")];
-        let wire = messages_to_openai(&messages);
-
-        assert_eq!(wire.len(), 1);
-        assert_eq!(wire[0]["role"], "tool");
-        assert_eq!(wire[0]["tool_call_id"], "call_abc");
-        assert_eq!(wire[0]["content"], "file contents");
-    }
-
-    // -- OpenAI tool definition conversion -----------------------------------
-
-    #[test]
-    fn tools_to_openai_format() {
-        let tools = vec![ToolDefinition {
-            name: "read_file".into(),
-            description: "Read a file from disk".into(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"}
-                },
-                "required": ["path"]
-            }),
-        }];
-
-        let wire = tools_to_openai(&tools);
-        let arr = wire.as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["type"], "function");
-        assert_eq!(arr[0]["function"]["name"], "read_file");
-        assert_eq!(arr[0]["function"]["description"], "Read a file from disk");
-        assert_eq!(arr[0]["function"]["parameters"]["type"], "object");
-    }
-
-    // -- OpenAI non-streaming response parsing -------------------------------
-
-    #[test]
-    fn parse_openai_text_response() {
-        let response_json: Value = serde_json::json!({
-            "id": "chatcmpl-abc",
-            "object": "chat.completion",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Hello from OpenAI!"
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
-        });
-
-        let result = parse_openai_response(&response_json).unwrap();
-        match result {
-            LlmResponse::Text(text) => assert_eq!(text, "Hello from OpenAI!"),
-            _ => panic!("expected Text response"),
-        }
-    }
-
-    #[test]
-    fn parse_openai_tool_call_response() {
-        let response_json: Value = serde_json::json!({
-            "id": "chatcmpl-abc",
-            "object": "chat.completion",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call_xyz",
-                        "type": "function",
-                        "function": {
-                            "name": "read_file",
-                            "arguments": "{\"path\":\"/tmp/test.txt\"}"
-                        }
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {"prompt_tokens": 20, "completion_tokens": 15}
-        });
-
-        let result = parse_openai_response(&response_json).unwrap();
-        match result {
-            LlmResponse::ToolCalls(calls) => {
-                assert_eq!(calls.len(), 1);
-                assert_eq!(calls[0].id, "call_xyz");
-                assert_eq!(calls[0].name, "read_file");
-                assert_eq!(calls[0].arguments["path"], "/tmp/test.txt");
-            }
-            _ => panic!("expected ToolCalls response"),
-        }
-    }
-
-    // -- Provider detection --------------------------------------------------
 
     #[test]
     fn provider_detection() {
-        let anthropic_config = LlmClientConfig::anthropic("key", "claude-sonnet-4-20250514");
-        let anthropic_client = LlmClient::new(anthropic_config).unwrap();
-        assert_eq!(anthropic_client.provider(), LlmProvider::Anthropic);
+        let c1 = LlmClientConfig::anthropic("key", "claude-sonnet-4-20250514");
+        assert_eq!(LlmClient::new(c1).unwrap().provider(), LlmProvider::Anthropic);
 
-        let openai_config = LlmClientConfig::openai("key", "gpt-4o");
-        let openai_client = LlmClient::new(openai_config).unwrap();
-        assert_eq!(openai_client.provider(), LlmProvider::OpenAI);
+        let c2 = LlmClientConfig::openai("key", "gpt-4o");
+        assert_eq!(LlmClient::new(c2).unwrap().provider(), LlmProvider::OpenAI);
+
+        let c3 = LlmClientConfig::chatgpt_web("token", "gpt-4");
+        assert_eq!(LlmClient::new(c3).unwrap().provider(), LlmProvider::ChatGptWeb);
     }
-
-    // -- LlmProvider equality ------------------------------------------------
 
     #[test]
     fn llm_provider_equality() {
         assert_eq!(LlmProvider::Anthropic, LlmProvider::Anthropic);
         assert_eq!(LlmProvider::OpenAI, LlmProvider::OpenAI);
+        assert_eq!(LlmProvider::ChatGptWeb, LlmProvider::ChatGptWeb);
         assert_ne!(LlmProvider::Anthropic, LlmProvider::OpenAI);
+        assert_ne!(LlmProvider::OpenAI, LlmProvider::ChatGptWeb);
     }
 
-    // -- OpenAI request body construction ------------------------------------
+    // -- Anthropic format tests (delegate to anthropic module) ----------------
 
     #[test]
-    fn build_openai_request_body_basic() {
-        let config = LlmClientConfig::openai("sk-test", "gpt-4o");
-        let client = LlmClient::new(config).unwrap();
+    fn build_anthropic_request_body_basic() {
+        let msgs = vec![Message::system("You are helpful."), Message::user("Hello")];
+        let body =
+            crate::llm::anthropic::build_request_body(&msgs, "claude-sonnet-4-20250514", 1024, Some(0.7), &[], false);
 
-        let request = ChatRequest {
-            model: String::new(),
-            messages: vec![Message::system("You are helpful."), Message::user("Hello")],
-            tools: vec![],
-            temperature: Some(0.5),
-            max_tokens: Some(2048),
-            stream: false,
-        };
-
-        let body = client.build_openai_request_body(&request, false);
-
-        assert_eq!(body["model"], "gpt-4o");
-        assert_eq!(body["max_tokens"], 2048);
-
-        // System message should be in the messages array for OpenAI.
-        let messages = body["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0]["role"], "system");
-        assert_eq!(messages[0]["content"], "You are helpful.");
-        assert_eq!(messages[1]["role"], "user");
-
-        let temp = body["temperature"].as_f64().unwrap();
-        assert!((temp - 0.5).abs() < 1e-6);
+        assert_eq!(body["model"], "claude-sonnet-4-20250514");
+        assert_eq!(body["system"], "You are helpful.");
+        assert_eq!(body["max_tokens"], 1024);
         assert!(body.get("stream").is_none());
     }
 
     #[test]
-    fn build_openai_request_body_with_tools_and_stream() {
-        let config = LlmClientConfig::openai("sk-test", "gpt-4o");
-        let client = LlmClient::new(config).unwrap();
-
-        let request = ChatRequest {
-            model: "gpt-4o-mini".into(),
-            messages: vec![Message::user("What is the weather?")],
-            tools: vec![ToolDefinition {
-                name: "get_weather".into(),
-                description: "Get weather info".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "city": {"type": "string"}
-                    }
-                }),
-            }],
-            temperature: None,
-            max_tokens: None,
-            stream: true,
-        };
-
-        let body = client.build_openai_request_body(&request, true);
-
-        assert_eq!(body["model"], "gpt-4o-mini");
+    fn build_anthropic_request_body_with_tools() {
+        let msgs = vec![Message::user("Read file.txt")];
+        let tools = vec![ToolDefinition {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+        }];
+        let body = crate::llm::anthropic::build_request_body(
+            &msgs,
+            "claude-sonnet-4-20250514",
+            4096,
+            None,
+            &tools,
+            true,
+        );
         assert_eq!(body["stream"], true);
+        assert!(body["tools"].is_array());
+        assert_eq!(body["tools"][0]["name"], "read_file");
+    }
 
-        let tools = body["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["type"], "function");
-        assert_eq!(tools[0]["function"]["name"], "get_weather");
+    #[test]
+    fn parse_non_streaming_anthropic_text_response() {
+        let v: serde_json::Value = serde_json::json!({
+            "id": "msg_01",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hello, world!"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+        let result = crate::llm::anthropic::parse_response(&v).unwrap();
+        match result {
+            LlmResponse::Text(text) => assert_eq!(text, "Hello, world!"),
+            _ => panic!("expected Text response"),
+        }
+    }
+
+    // -- OpenAI format tests (delegate to openai module) ----------------------
+
+    #[test]
+    fn messages_to_openai_system_message() {
+        let msgs = vec![Message::system("You are helpful."), Message::user("Hello")];
+        let wire = messages_to_openai(&msgs);
+        assert_eq!(wire.len(), 2);
+        assert_eq!(wire[0]["role"], "system");
+        assert_eq!(wire[1]["role"], "user");
+    }
+
+    #[test]
+    fn messages_to_openai_tool_calls() {
+        let msgs = vec![Message::assistant_tool_calls(vec![ToolCall {
+            id: "call_abc".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "test.txt"}),
+        }])];
+        let wire = messages_to_openai(&msgs);
+        assert_eq!(wire[0]["tool_calls"][0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn build_openai_request_body_basic() {
+        let msgs = vec![Message::system("You are helpful."), Message::user("Hello")];
+        let body = crate::llm::openai::build_request_body(
+            &msgs, "gpt-4o", 2048, Some(0.5), &[], false,
+        );
+        assert_eq!(body["model"], "gpt-4o");
+        assert_eq!(body["max_tokens"], 2048);
+    }
+
+    #[test]
+    fn parse_openai_text_response() {
+        let v: serde_json::Value = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "Hello!"}}]
+        });
+        let result = parse_openai_response(&v).unwrap();
+        match result {
+            LlmResponse::Text(text) => assert_eq!(text, "Hello!"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn tools_to_openai_format() {
+        let tools = vec![ToolDefinition {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let wire = tools_to_openai(&tools);
+        assert_eq!(wire[0]["type"], "function");
+        assert_eq!(wire[0]["function"]["name"], "read_file");
     }
 }

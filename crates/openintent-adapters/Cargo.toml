@@ -31,6 +31,11 @@ readability = { version = "0.3", default-features = false }
 html2text = "0.16"
 regex = { workspace = true }
 
+# Crypto for DingTalk webhook signing
+hmac = "0.12"
+sha2 = "0.10"
+urlencoding = "2"
+
 # MQTT support
 rumqttc = "0.25"
 

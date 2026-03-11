@@ -3,8 +3,17 @@
 //! Each adapter implements the [`Adapter`] trait defined in [`traits`],
 //! providing a uniform interface for tool discovery and execution.
 
+pub mod bilibili;
 pub mod browser;
 pub mod calendar;
+pub mod dingtalk;
+pub mod douyin;
+pub mod proxy;
+pub mod qq_bot;
+pub mod wechat_oa;
+pub mod weibo;
+pub mod wecom;
+pub mod xhs;
 pub mod daily_briefing;
 pub mod cron;
 pub mod discord;
@@ -18,6 +27,7 @@ pub mod memory_tools;
 pub mod mqtt;
 pub mod shell;
 pub mod skills;
+pub mod slack;
 pub mod sqlite;
 pub mod telegram;
 pub mod telegram_oauth;
@@ -25,7 +35,15 @@ pub mod traits;
 pub mod web_fetch;
 pub mod web_search;
 
+pub use bilibili::BilibiliAdapter;
 pub use browser::BrowserAdapter;
+pub use dingtalk::DingTalkAdapter;
+pub use douyin::DouyinAdapter;
+pub use qq_bot::QQBotAdapter;
+pub use wechat_oa::WeChatOAAdapter;
+pub use weibo::WeiboAdapter;
+pub use wecom::WeComAdapter;
+pub use xhs::XhsAdapter;
 pub use daily_briefing::{BriefingConfig, DailyBriefingAdapter};
 pub use calendar::CalendarAdapter;
 pub use cron::{CronAdapter, CronJob};
@@ -40,6 +58,7 @@ pub use memory_tools::MemoryToolsAdapter;
 pub use mqtt::MqttAdapter;
 pub use shell::ShellAdapter;
 pub use skills::SkillsAdapter;
+pub use slack::SlackAdapter;
 pub use sqlite::SqliteAdapter;
 pub use telegram::TelegramAdapter;
 pub use telegram_oauth::{TelegramOAuth, TelegramOAuthConfig};
