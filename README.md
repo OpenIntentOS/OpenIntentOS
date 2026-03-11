@@ -23,11 +23,12 @@
   <img src="https://img.shields.io/badge/binary-~10MB-brightgreen?style=flat-square" alt="Binary size" />
   <img src="https://img.shields.io/badge/cold%20start-%3C200ms-brightgreen?style=flat-square" alt="Cold start" />
   <img src="https://img.shields.io/badge/providers-7%20cascade-brightgreen?style=flat-square" alt="LLM providers" />
+  <img src="https://img.shields.io/badge/adapters-20%2B-brightgreen?style=flat-square" alt="Adapters" />
 </p>
 
 ---
 
-> **v0.1.6 — Early Release (February 2026)**
+> **v0.1.10 — Early Release (March 2026)**
 >
 > OpenIntentOS is under active development. Core systems are production-stable. New adapters and capabilities ship weekly. Pin to a specific commit for stability until v1.0. [Report issues here.](https://github.com/OpenIntentOS/OpenIntentOS/issues)
 
@@ -94,6 +95,13 @@ User: Check my unread emails, summarize anything urgent, post to the team Feishu
 → [analyzing 20 emails via ReAct reasoning]
 → feishu_send_message(group="Product Team", text="...")      [0.4s]
 ✓ Done — 3 urgent threads summarized, posted to Feishu.
+```
+
+```
+User: 发一条抖音视频，标题是"周报回顾"，文件在 /tmp/weekly.mp4
+
+→ douyin_publish_video(file_path="/tmp/weekly.mp4", caption="周报回顾")   [8.2s]
+✓ 发布成功 — item_id: 7xxxxxxxxxxxxxxx
 ```
 
 ---
@@ -170,7 +178,7 @@ OpenClaw      ██████████████████████
 | **LLM cascade failover** | **7 providers** | manual | manual | manual | manual |
 | **Encrypted vault** | **AES-256-GCM** | config file | none | none | none |
 | **Wasm sandbox** | **wasmtime** | none | none | Docker | none |
-| **Chat interfaces** | **Telegram · Discord · Feishu** | Telegram · Discord | none | none | none |
+| **Chat interfaces** | **Telegram · Discord · Feishu · WeChat · DingTalk · WeCom · QQ** | Telegram · Discord | none | none | none |
 | **UI** | **CLI · TUI · Web · Desktop** | Web only | none | none | none |
 | **SIMD intent router** | **aho-corasick** | none | none | none | none |
 | **Autonomous schedules** | **cron adapter** | cron | none | none | none |
@@ -203,7 +211,8 @@ OpenClaw      ██████████████████████
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Layer 5 · Intent Interface                                     │
-│  Natural language · Telegram · Discord · Feishu · REST · Cron   │
+│  Telegram · Discord · Feishu · WeChat OA · DingTalk · WeCom     │
+│  QQ Bot · REST · Cron · Natural language                        │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 4 · Agent Runtime  (tokio, async)                        │
 │  Planner ── Executor ── Reflector ── LLM Router                 │
@@ -216,7 +225,9 @@ OpenClaw      ██████████████████████
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 2 · Adapters  (async trait, tokio)                       │
 │  Filesystem  Shell  Web Search  Web Fetch  HTTP  Browser(CDP)   │
-│  Email(IMAP) Calendar(CalDAV)  GitHub  Feishu  Cron  Memory     │
+│  Email(IMAP) Calendar(CalDAV)  GitHub  Feishu  Slack  Cron      │
+│  WeChat OA  DingTalk  WeCom  QQ Bot  Bilibili  Douyin  XHS      │
+│  Weibo  Memory  Skills(WeCom·SMS·Weibo·Twitter·Email...)        │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 1 · Runtime & Storage                                    │
 │  tokio · rusqlite WAL+mmap · moka cache · io_uring/kqueue       │
@@ -234,7 +245,7 @@ openintent-cli          (binary — single executable)
 ├── openintent-vault    AES-256-GCM encrypted secret storage
 ├── openintent-intent   intent classification + workflow engine
 │   └── openintent-agent
-├── openintent-adapters 10 built-in adapters
+├── openintent-adapters 20+ built-in adapters
 │   └── openintent-vault
 ├── openintent-auth-engine  headless OAuth via CDP
 │   └── openintent-vault
@@ -247,6 +258,8 @@ openintent-cli          (binary — single executable)
 
 ## Built-in Adapters
 
+### System & Productivity
+
 | Adapter | Capabilities |
 |---------|-------------|
 | **Filesystem** | Read, write, list, search files. UTF-8-safe 16 KB truncation on large reads. |
@@ -258,9 +271,45 @@ openintent-cli          (binary — single executable)
 | **Email (IMAP/SMTP)** | Read inbox, send messages, manage folders. OAuth 2.0 with auto token refresh. |
 | **Calendar (CalDAV)** | Create, read, update events. Works with Apple Calendar, Nextcloud, Google. |
 | **GitHub** | List repos, read issues/PRs, post comments. Used for self-repair via evolution engine. |
-| **Feishu / Lark** | Send messages to groups and DMs. Enterprise-grade messaging integration. |
 | **Cron** | Schedule recurring tasks. Persistent across restarts via SQLite. |
 | **Memory** | Working, episodic, and semantic memory layers. Vector search via usearch. |
+
+### Messaging & Chat
+
+| Adapter | Capabilities | Auth |
+|---------|-------------|------|
+| **Telegram** | Send messages, files, inline keyboards. Full bot API. | `TELEGRAM_BOT_TOKEN` |
+| **Discord** | Send to channels, DMs, embeds. | `DISCORD_BOT_TOKEN` |
+| **Slack** | Post to channels, DMs, threads. | `SLACK_BOT_TOKEN` |
+| **Feishu / Lark** | Send to groups and DMs. Enterprise messaging. | `FEISHU_APP_*` |
+| **WeChat OA** | Send text/image/news, get followers. Official Account API. | `WECHAT_OA_APP_*` |
+| **DingTalk** | Webhook robot or enterprise app. Text, Markdown, action card. | `DINGTALK_*` |
+| **WeCom (企业微信)** | Group robot or internal app. Text, Markdown, member list. | `WECOM_CORP_*` |
+| **QQ Official Bot** | Channel messages, C2C direct messages, image push. | `QQ_BOT_APP_*` |
+
+### Content & Social
+
+| Adapter | Capabilities | Auth |
+|---------|-------------|------|
+| **Douyin (抖音)** | OAuth2, video upload & publish, video list & stats. | `DOUYIN_CLIENT_*` |
+| **XiaoHongShu (小红书)** | Publish notes, search, stats, comments. HMAC-SHA256 signed. | `XHS_APP_*` |
+| **Weibo** | OAuth2, post status, read mentions, reply. | `WEIBO_APP_*` |
+| **Bilibili Open Live** | Live room info, send danmaku, danmaku history. | `BILI_ACCESS_KEY_*` |
+
+### Skills (script-based, no Rust required)
+
+| Skill | Capabilities | Auth |
+|-------|-------------|------|
+| **wecom-bot** | WeCom group robot: text, Markdown, news card. | `WECOM_WEBHOOK_URL` |
+| **sms-tencent** | Tencent Cloud SMS, TC3-HMAC-SHA256 signed. | `TENCENTCLOUD_*` |
+| **sms-aliyun** | Alibaba Cloud SMS, HMAC-SHA1 signed. | `ALIYUN_*` |
+| **weibo-post** | Weibo post/mentions/reply via shell. | `WEIBO_ACCESS_TOKEN` |
+| **twitter-manager** | Post tweets and manage Twitter via OAuth1. | `TWITTER_*` |
+| **email-automation** | Send email via SMTP with Python. | SMTP env vars |
+| **daily-briefing** | Morning digest: weather + news + calendar. | configurable |
+| **web-search-plus** | Enhanced web search via shell. | none |
+| **weather-check** | Weather lookup by city. | `OPENWEATHER_API_KEY` |
+| **ip-lookup** | Geo-locate an IP address. | none |
 
 ---
 
