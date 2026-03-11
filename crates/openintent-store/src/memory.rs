@@ -516,6 +516,8 @@ impl SemanticMemory {
 
     /// Search memories by keyword (case-insensitive LIKE match on content).
     ///
+    /// The query is split on whitespace and each token is matched with OR,
+    /// so "coffee drink beverage" finds memories containing ANY of those words.
     /// Optionally filter by category. Results are ordered by importance
     /// descending and limited to `limit` rows.
     #[instrument(skip(self))]
@@ -525,36 +527,58 @@ impl SemanticMemory {
         category: Option<MemoryCategory>,
         limit: u32,
     ) -> StoreResult<Vec<Memory>> {
-        let pattern = format!("%{query}%");
+        // Split query into tokens; fall back to full-query pattern if empty.
+        let tokens: Vec<String> = query
+            .split_whitespace()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("%{s}%"))
+            .collect();
+        let patterns: Vec<String> = if tokens.is_empty() {
+            vec![format!("%{query}%")]
+        } else {
+            tokens
+        };
+
         let cat = category.map(|c| c.as_str().to_string());
         self.db
             .execute(move |conn| {
-                let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql + Send>>) =
-                    match &cat {
-                        Some(cat_str) => (
+                // Build OR clause: (content LIKE ?1 OR content LIKE ?2 OR ...)
+                let or_clause = patterns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("content LIKE ?{}", i + 1))
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+
+                let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql + Send>> = patterns
+                    .iter()
+                    .map(|p| Box::new(p.clone()) as Box<dyn rusqlite::types::ToSql + Send>)
+                    .collect();
+
+                let sql = match &cat {
+                    Some(cat_str) => {
+                        let cat_idx = params_vec.len() + 1;
+                        let lim_idx = params_vec.len() + 2;
+                        params_vec.push(Box::new(cat_str.clone()));
+                        params_vec.push(Box::new(limit));
+                        format!(
                             "SELECT id, category, content, embedding, importance, access_count, \
                              created_at, updated_at FROM memories \
-                             WHERE content LIKE ?1 AND category = ?2 \
-                             ORDER BY importance DESC LIMIT ?3"
-                                .to_string(),
-                            vec![
-                                Box::new(pattern) as Box<dyn rusqlite::types::ToSql + Send>,
-                                Box::new(cat_str.clone()),
-                                Box::new(limit),
-                            ],
-                        ),
-                        None => (
+                             WHERE ({or_clause}) AND category = ?{cat_idx} \
+                             ORDER BY importance DESC LIMIT ?{lim_idx}"
+                        )
+                    }
+                    None => {
+                        let lim_idx = params_vec.len() + 1;
+                        params_vec.push(Box::new(limit));
+                        format!(
                             "SELECT id, category, content, embedding, importance, access_count, \
                              created_at, updated_at FROM memories \
-                             WHERE content LIKE ?1 \
-                             ORDER BY importance DESC LIMIT ?2"
-                                .to_string(),
-                            vec![
-                                Box::new(pattern) as Box<dyn rusqlite::types::ToSql + Send>,
-                                Box::new(limit),
-                            ],
-                        ),
-                    };
+                             WHERE ({or_clause}) \
+                             ORDER BY importance DESC LIMIT ?{lim_idx}"
+                        )
+                    }
+                };
 
                 let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec
                     .iter()
