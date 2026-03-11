@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.13] - 2026-03-11
+- fix: memory search tokenizes query for multi-word OR matching
+- fix: web chat API provider failover on token/auth errors
+- test: add local real-machine e2e test script
+- test: add e2e coverage for Chinese AI providers in setup wizard
+- feat: add Chinese AI providers to web setup wizard and install.sh
+- feat: Chinese AI providers, onboarding redesign, test fixes
+- docs: update README for v0.1.10 with new adapters and channels
+
+
 ## [0.1.12] - 2026-03-11
 - fix: web chat API now failovers on expired token / auth errors (same as Telegram bot path)
 
