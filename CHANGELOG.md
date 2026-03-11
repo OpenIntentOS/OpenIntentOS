@@ -1,5 +1,8 @@
 # Changelog
 
+## [0.1.12] - 2026-03-11
+- fix: web chat API now failovers on expired token / auth errors (same as Telegram bot path)
+
 ## [0.1.11] - 2026-03-11
 - chore: bump version, finalize v0.1.10 features
 
