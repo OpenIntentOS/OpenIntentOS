@@ -1,8 +1,7 @@
 # Changelog
 
 ## [0.1.11] - 2026-03-11
-- docs: update README for v0.1.10 with new adapters and channels
-
+- chore: bump version, finalize v0.1.10 features
 
 ## [0.1.10] - 2026-03-11
 - feat: add WeChat OA, DingTalk, WeCom, QQ Bot, Bilibili, Douyin, XHS, Weibo adapters
