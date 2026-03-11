@@ -62,6 +62,11 @@ const LLM_KEY_VARS: &[&str] = &[
     "XAI_API_KEY",
     "MISTRAL_API_KEY",
     "CHATGPT_SESSION_TOKEN",
+    // Chinese domestic providers
+    "SILICONFLOW_API_KEY",
+    "MOONSHOT_API_KEY",
+    "ZHIPU_API_KEY",
+    "DASHSCOPE_API_KEY",
 ];
 
 /// Returns `true` if at least one LLM API key environment variable is set and
@@ -111,6 +116,11 @@ fn provider_env_key(provider: &str) -> Option<&'static str> {
         "openrouter" => Some("OPENROUTER_API_KEY"),
         "xai" => Some("XAI_API_KEY"),
         "mistral" => Some("MISTRAL_API_KEY"),
+        // Chinese domestic providers
+        "siliconflow" => Some("SILICONFLOW_API_KEY"),
+        "moonshot" => Some("MOONSHOT_API_KEY"),
+        "zhipu" => Some("ZHIPU_API_KEY"),
+        "tongyi" => Some("DASHSCOPE_API_KEY"),
         // Ollama and empty provider need no key.
         "ollama" | "" => None,
         _ => None,
@@ -442,6 +452,22 @@ input:focus{border-color:var(--accent)}
         <div class="provider-name">ChatGPT Pro</div>
         <span class="provider-badge badge-paid">$200/mo</span>
       </button>
+      <button class="provider-btn" onclick="pick('siliconflow')">
+        <div class="provider-name">SiliconFlow 硅基流动</div>
+        <span class="provider-badge badge-free">Free 14M tokens/mo</span>
+      </button>
+      <button class="provider-btn" onclick="pick('moonshot')">
+        <div class="provider-name">Moonshot Kimi 月之暗面</div>
+        <span class="provider-badge badge-free">Free trial</span>
+      </button>
+      <button class="provider-btn" onclick="pick('zhipu')">
+        <div class="provider-name">Zhipu GLM-4-Flash 智谱</div>
+        <span class="provider-badge badge-free">Permanently free</span>
+      </button>
+      <button class="provider-btn" onclick="pick('tongyi')">
+        <div class="provider-name">Tongyi Qwen 通义千问</div>
+        <span class="provider-badge badge-free">Free tier</span>
+      </button>
       <button class="provider-btn" id="ollama-btn" style="display:none" onclick="pick('ollama')">
         <div class="provider-name">Ollama (local)</div>
         <span class="provider-badge badge-free">Free</span>
@@ -509,7 +535,11 @@ input:focus{border-color:var(--accent)}
     groq:      { label: 'Groq API Key', placeholder: 'gsk_...', hint: '<a href="https://console.groq.com/keys" target="_blank">Get a key at console.groq.com</a>' },
     deepseek:  { label: 'DeepSeek API Key', placeholder: 'sk-...', hint: '<a href="https://platform.deepseek.com/api_keys" target="_blank">Get a key at platform.deepseek.com</a>' },
     nvidia:    { label: 'NVIDIA NIM API Key', placeholder: 'nvapi-...', hint: '<a href="https://build.nvidia.com" target="_blank">Get free credits at build.nvidia.com</a>' },
-    anthropic: { label: 'Anthropic API Key', placeholder: 'sk-ant-...', hint: '<a href="https://console.anthropic.com/settings/keys" target="_blank">Get a key at console.anthropic.com</a>' },
+    anthropic:    { label: 'Anthropic API Key', placeholder: 'sk-ant-...', hint: '<a href="https://console.anthropic.com/settings/keys" target="_blank">Get a key at console.anthropic.com</a>' },
+    siliconflow:  { label: 'SiliconFlow API Key', placeholder: 'sk-...', hint: 'Free 14M tokens/month &mdash; <a href="https://siliconflow.cn" target="_blank">Register at siliconflow.cn</a>' },
+    moonshot:     { label: 'Moonshot API Key', placeholder: 'sk-...', hint: 'Free trial credit &mdash; <a href="https://platform.moonshot.cn" target="_blank">Register at platform.moonshot.cn</a>' },
+    zhipu:        { label: 'Zhipu API Key', placeholder: 'your-key', hint: 'GLM-4-Flash is permanently free &mdash; <a href="https://open.bigmodel.cn" target="_blank">Register at open.bigmodel.cn</a>' },
+    tongyi:       { label: 'Tongyi (Dashscope) API Key', placeholder: 'sk-...', hint: 'Free tier available &mdash; <a href="https://dashscope.aliyun.com" target="_blank">Register at dashscope.aliyun.com</a>' },
   };
 
   // Fetch status on load
