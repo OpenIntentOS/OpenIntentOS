@@ -321,20 +321,21 @@ pub async fn chat(
             Err(e) => {
                 let error_str = e.to_string();
 
-                if is_quota_error(&error_str) && provider_switches < MAX_PROVIDER_SWITCHES {
-                    // 429 quota exceeded — switch to the next provider immediately.
+                if should_switch_provider(&error_str) && provider_switches < MAX_PROVIDER_SWITCHES {
+                    // Quota / auth failure — switch to the next provider immediately.
                     if state.llm.failover_on_quota() {
                         provider_switches += 1;
                         tracing::warn!(
                             attempt,
                             provider_switches,
-                            "quota exceeded, switched to next provider"
+                            error = %error_str,
+                            "provider failure, switched to next provider"
                         );
                         last_error = Some(e);
                         continue; // retry immediately with new provider
                     }
                     // Failover chain exhausted — fall through to error.
-                } else if !is_quota_error(&error_str) {
+                } else if !should_switch_provider(&error_str) {
                     // Transient error: exponential back-off before retrying.
                     tracing::warn!(
                         attempt,
@@ -372,14 +373,22 @@ pub async fn chat(
     )
 }
 
-/// Returns `true` for HTTP 429 / quota-exceeded errors that warrant a
-/// provider switch rather than a same-provider retry.
-fn is_quota_error(error: &str) -> bool {
+/// Returns `true` for errors that warrant switching to the next provider
+/// rather than retrying the same one (quota, auth, expired token, etc).
+fn should_switch_provider(error: &str) -> bool {
     error.contains("429")
         || error.contains("insufficient_quota")
         || error.contains("RESOURCE_EXHAUSTED")
         || error.contains("quota")
         || error.contains("exceeded your current quota")
+        || error.contains("session token has expired")
+        || error.contains("token expired")
+        || error.contains("token has expired")
+        || error.contains("401")
+        || error.contains("Unauthorized")
+        || error.contains("unauthorized")
+        || error.contains("invalid_api_key")
+        || error.contains("Authentication failed")
 }
 
 /// Determine if an error is potentially recoverable with retry.
