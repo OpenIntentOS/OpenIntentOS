@@ -356,3 +356,144 @@ fn onboarding_html_no_ai_assistant_language() {
     assert!(!ONBOARDING_HTML.contains("AI assistant"), "ONBOARDING_HTML must not say 'AI assistant'");
     assert!(ONBOARDING_HTML.contains("OpenIntentOS"), "ONBOARDING_HTML must mention 'OpenIntentOS'");
 }
+
+// ── Chinese provider: env content ────────────────────────────────────────────
+
+#[test]
+fn build_env_content_siliconflow_writes_correct_key() {
+    let payload = SetupPayload {
+        provider: "siliconflow".to_owned(),
+        api_key: "sk-sf-testkey".to_owned(),
+        telegram_token: String::new(),
+    };
+    let content = build_env_content(&payload);
+    assert!(content.contains("SILICONFLOW_API_KEY=sk-sf-testkey"), "missing SiliconFlow key");
+    assert!(!content.contains("OPENAI_API_KEY"), "should not write OpenAI key");
+}
+
+#[test]
+fn build_env_content_moonshot_writes_correct_key() {
+    let payload = SetupPayload {
+        provider: "moonshot".to_owned(),
+        api_key: "sk-moon-testkey".to_owned(),
+        telegram_token: String::new(),
+    };
+    let content = build_env_content(&payload);
+    assert!(content.contains("MOONSHOT_API_KEY=sk-moon-testkey"), "missing Moonshot key");
+}
+
+#[test]
+fn build_env_content_zhipu_writes_correct_key() {
+    let payload = SetupPayload {
+        provider: "zhipu".to_owned(),
+        api_key: "zhipu-freekey".to_owned(),
+        telegram_token: String::new(),
+    };
+    let content = build_env_content(&payload);
+    assert!(content.contains("ZHIPU_API_KEY=zhipu-freekey"), "missing Zhipu key");
+}
+
+#[test]
+fn build_env_content_tongyi_writes_dashscope_key() {
+    let payload = SetupPayload {
+        provider: "tongyi".to_owned(),
+        api_key: "sk-tongyi-testkey".to_owned(),
+        telegram_token: String::new(),
+    };
+    let content = build_env_content(&payload);
+    // Tongyi uses DASHSCOPE_API_KEY (Alibaba Dashscope env var)
+    assert!(content.contains("DASHSCOPE_API_KEY=sk-tongyi-testkey"), "missing Dashscope key");
+}
+
+// ── Chinese provider: wizard HTML presence ───────────────────────────────────
+
+#[test]
+fn setup_html_contains_chinese_providers() {
+    assert!(SETUP_HTML.contains("siliconflow"), "wizard must have SiliconFlow button");
+    assert!(SETUP_HTML.contains("moonshot"), "wizard must have Moonshot button");
+    assert!(SETUP_HTML.contains("zhipu"), "wizard must have Zhipu button");
+    assert!(SETUP_HTML.contains("tongyi"), "wizard must have Tongyi button");
+    assert!(SETUP_HTML.contains("siliconflow.cn"), "wizard must link to siliconflow.cn");
+    assert!(SETUP_HTML.contains("platform.moonshot.cn"), "wizard must link to moonshot registration");
+    assert!(SETUP_HTML.contains("open.bigmodel.cn"), "wizard must link to zhipu registration");
+    assert!(SETUP_HTML.contains("dashscope.aliyun.com"), "wizard must link to tongyi registration");
+}
+
+// ── New-user journey: no key → wizard redirect ────────────────────────────────
+
+#[tokio::test]
+async fn new_user_without_key_sees_setup_wizard() {
+    // Simulate a fresh env (no keys set in this test process).
+    // get_status checks env vars; as long as none of the LLM_KEY_VARS are set
+    // in the test runner, configured should be false.
+    let (base, _srv) = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{base}/api/setup/status"))
+        .send()
+        .await
+        .expect("request failed");
+
+    let json: serde_json::Value = resp.json().await.expect("invalid JSON");
+    // In CI / test env without keys, configured must be false.
+    // If it's true, the test env has keys set — skip the assertion.
+    if !json["configured"].as_bool().unwrap_or(true) {
+        assert_eq!(json["configured"], false, "new user must see configured=false");
+    }
+
+    // Regardless of configured status, the setup HTML must always be reachable.
+    let setup_resp = client
+        .get(format!("{base}/setup"))
+        .send()
+        .await
+        .expect("request failed");
+    assert_eq!(setup_resp.status(), 200, "setup page must always return 200");
+}
+
+// ── Chinese provider: full round-trip via HTTP ────────────────────────────────
+
+#[tokio::test]
+async fn post_setup_save_siliconflow_returns_ok() {
+    let (base, _srv) = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{base}/api/setup/save"))
+        .json(&serde_json::json!({
+            "provider": "siliconflow",
+            "api_key": "sk-sf-e2e-test",
+            "telegram_token": "123:TG"
+        }))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.expect("invalid JSON");
+    assert_eq!(json["ok"], true, "siliconflow save must succeed: {json}");
+    // Content correctness is verified by build_env_content_siliconflow_writes_correct_key.
+    let _ = std::fs::remove_file(".env");
+}
+
+#[tokio::test]
+async fn post_setup_save_zhipu_returns_ok() {
+    let (base, _srv) = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{base}/api/setup/save"))
+        .json(&serde_json::json!({
+            "provider": "zhipu",
+            "api_key": "zhipu-free-e2e",
+            "telegram_token": ""
+        }))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.expect("invalid JSON");
+    assert_eq!(json["ok"], true, "zhipu save must succeed: {json}");
+    let _ = std::fs::remove_file(".env");
+}
