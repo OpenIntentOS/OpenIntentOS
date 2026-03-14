@@ -224,8 +224,26 @@ impl LlmClient {
     }
 
     /// Create a failover chain of providers for automatic fallback.
+    ///
+    /// Ordered from most-capable to most-available.  Free / low-cost providers
+    /// (NVIDIA, Google, DeepSeek) appear early so paid quota is preserved.
     pub fn create_failover_chain() -> Vec<(LlmProvider, String, String)> {
         vec![
+            (
+                LlmProvider::OpenAI,
+                "https://integrate.api.nvidia.com/v1".to_string(),
+                "qwen/qwen3.5-397b-a17b".to_string(),
+            ),
+            (
+                LlmProvider::OpenAI,
+                "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
+                "gemini-2.5-flash".to_string(),
+            ),
+            (
+                LlmProvider::OpenAI,
+                "https://api.deepseek.com/v1".to_string(),
+                "deepseek-chat".to_string(),
+            ),
             (
                 LlmProvider::Anthropic,
                 "https://api.anthropic.com".to_string(),
@@ -235,11 +253,6 @@ impl LlmClient {
                 LlmProvider::OpenAI,
                 "https://api.openai.com/v1".to_string(),
                 "gpt-4o".to_string(),
-            ),
-            (
-                LlmProvider::OpenAI,
-                "https://api.deepseek.com/v1".to_string(),
-                "deepseek-chat".to_string(),
             ),
             (
                 LlmProvider::OpenAI,

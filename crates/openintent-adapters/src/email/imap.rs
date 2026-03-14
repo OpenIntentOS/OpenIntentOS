@@ -270,9 +270,13 @@ pub fn tls_client_config() -> Result<Arc<ClientConfig>> {
     let root_store = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
-    let config = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+    let config = ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| AdapterError::ConfigError(format!("TLS protocol config: {e}")))?
+    .with_root_certificates(root_store)
+    .with_no_client_auth();
     Ok(Arc::new(config))
 }
 

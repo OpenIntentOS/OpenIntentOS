@@ -181,6 +181,11 @@ pub async fn init_adapters(
         );
     }
 
+    // Add skill adapter to raw_adapters so both the web server and the bot get skills.
+    if skill_tool_count > 0 {
+        raw_adapters.push(Arc::new(skill_adapter));
+    }
+
     // Wrap raw adapters in the bridge for the agent side.
     let mut tool_adapters: Vec<Arc<dyn ToolAdapter>> = raw_adapters
         .iter()
@@ -188,11 +193,6 @@ pub async fn init_adapters(
             Arc::new(AdapterBridge::new(RawAdapterRef(Arc::clone(a))))
         })
         .collect();
-
-    // Add skill adapter if it has any script tools.
-    if skill_tool_count > 0 {
-        tool_adapters.push(Arc::new(AdapterBridge::new(skill_adapter)));
-    }
 
     // Load WASM plugins from the plugins directory.
     let plugins_dir = cwd.join("plugins");
