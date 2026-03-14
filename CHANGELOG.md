@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.17] - 2026-03-14
+- fix: skills in web chat, email TLS crash, and LLM failover chain
+
+
 ## [0.1.16] - 2026-03-14
 - fix: suppress unused home_dir warning in dirs.rs
 
