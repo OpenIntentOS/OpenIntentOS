@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.14] - 2026-03-14
+- feat: unified app directory layout via AppDirs (方案二)
+
+
 ## [0.1.13] - 2026-03-11
 - fix: memory search tokenizes query for multi-word OR matching
 - fix: web chat API provider failover on token/auth errors
