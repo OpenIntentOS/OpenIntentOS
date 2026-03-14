@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.15] - 2026-03-14
+- fix: resolve compiler warnings from AppDirs refactor
+
+
 ## [0.1.14] - 2026-03-14
 - feat: unified app directory layout via AppDirs (方案二)
 
