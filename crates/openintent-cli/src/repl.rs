@@ -4,7 +4,6 @@
 //! persistence, streaming output, and self-evolution support.
 
 use std::io::{self, Write as _};
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -26,16 +25,13 @@ pub async fn cmd_run(session_name: Option<String>) -> Result<()> {
     info!("starting OpenIntentOS");
 
     // 2. Create data directory and initialize SQLite.
-    let data_dir = Path::new("data");
-    if !data_dir.exists() {
-        std::fs::create_dir_all(data_dir).context("failed to create data directory")?;
-    }
+    let dirs = crate::dirs::app_dirs();
+    dirs.ensure_dirs().context("failed to create app directories")?;
 
-    let db_path = data_dir.join("openintent.db");
-    let db = openintent_store::Database::open_and_migrate(db_path.clone())
+    let db = openintent_store::Database::open_and_migrate(dirs.db_path.clone())
         .await
         .context("failed to open database")?;
-    info!(path = %db_path.display(), "store initialized");
+    info!(path = %dirs.db_path.display(), "store initialized");
 
     // 3. Resolve LLM provider, API key, and model.
     let llm_config = resolve_llm_config();

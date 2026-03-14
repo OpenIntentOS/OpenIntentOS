@@ -15,6 +15,7 @@ mod bridge;
 mod cli;
 mod dev_commands;
 mod dev_worker;
+pub(crate) mod dirs;
 mod failover;
 mod helpers;
 mod intent_classifier;
@@ -27,7 +28,6 @@ mod self_update_adapter;
 mod task_router;
 mod update;
 
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -40,6 +40,7 @@ use openintent_store::SessionStore;
 
 use crate::adapters::init_adapters;
 use crate::cli::{Cli, Commands, SessionAction, SkillAction, UserAction};
+use crate::dirs::app_dirs;
 use crate::update::cmd_update;
 use crate::helpers::{
     env_non_empty, init_tracing, load_system_prompt, read_claude_code_keychain_token,
@@ -52,7 +53,10 @@ use crate::helpers::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load .env file if present (silently ignore if missing).
+    let dirs = app_dirs();
+
+    // Load .env from the install home first, then fall back to CWD `.env`.
+    dotenvy::from_path(&dirs.env_file).ok();
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
@@ -85,16 +89,13 @@ async fn cmd_tui(_session_name: Option<String>) -> Result<()> {
 
     info!("starting OpenIntentOS TUI");
 
-    let data_dir = Path::new("data");
-    if !data_dir.exists() {
-        std::fs::create_dir_all(data_dir).context("failed to create data directory")?;
-    }
+    let dirs = app_dirs();
+    dirs.ensure_dirs().context("failed to create app directories")?;
 
-    let db_path = data_dir.join("openintent.db");
-    let db = openintent_store::Database::open_and_migrate(db_path.clone())
+    let db = openintent_store::Database::open_and_migrate(dirs.db_path.clone())
         .await
         .context("failed to open database")?;
-    info!(path = %db_path.display(), "store initialized");
+    info!(path = %dirs.db_path.display(), "store initialized");
 
     let llm_config = resolve_llm_config();
     let model = llm_config.default_model.clone();
@@ -129,15 +130,14 @@ async fn cmd_tui(_session_name: Option<String>) -> Result<()> {
 async fn cmd_sessions(action: SessionAction) -> Result<()> {
     init_tracing("warn");
 
-    let data_dir = Path::new("data");
-    let db_path = data_dir.join("openintent.db");
+    let db_path = &app_dirs().db_path;
 
     if !db_path.exists() {
         eprintln!("  Error: Database not found. Run `openintent setup` first.");
         std::process::exit(1);
     }
 
-    let db = openintent_store::Database::open_and_migrate(db_path)
+    let db = openintent_store::Database::open_and_migrate(db_path.clone())
         .await
         .context("failed to open database")?;
     let sessions = SessionStore::new(db);
@@ -263,16 +263,13 @@ async fn cmd_serve(bind: String, port: u16) -> Result<()> {
 
     info!("starting OpenIntentOS web server");
 
-    let data_dir = Path::new("data");
-    if !data_dir.exists() {
-        std::fs::create_dir_all(data_dir).context("failed to create data directory")?;
-    }
+    let dirs = app_dirs();
+    dirs.ensure_dirs().context("failed to create app directories")?;
 
-    let db_path = data_dir.join("openintent.db");
-    let db = openintent_store::Database::open_and_migrate(db_path.clone())
+    let db = openintent_store::Database::open_and_migrate(dirs.db_path.clone())
         .await
         .context("failed to open database")?;
-    info!(path = %db_path.display(), "store initialized");
+    info!(path = %dirs.db_path.display(), "store initialized");
 
     let llm_config = resolve_llm_config();
     let provider_label = format!("{:?}", llm_config.provider);
@@ -297,6 +294,7 @@ async fn cmd_serve(bind: String, port: u16) -> Result<()> {
     println!("  OpenIntentOS v{}", env!("CARGO_PKG_VERSION"));
     println!("  Provider: {provider_label}");
     println!("  Model: {model}");
+    println!("  Home:    {}", dirs.home.display());
     println!(
         "  Web UI:  http://{}:{}",
         web_config.bind_addr, web_config.port
@@ -309,8 +307,6 @@ async fn cmd_serve(bind: String, port: u16) -> Result<()> {
     println!("            github, email, browser, feishu, calendar");
 
     // Spawn Telegram bot as a concurrent background task when configured.
-    // Both the web server and the bot share the same tokio runtime — one
-    // process handles everything, as the system service expects.
     if env_non_empty("TELEGRAM_BOT_TOKEN").is_some() {
         println!("  Telegram: bot gateway starting...");
         tokio::spawn(async {
@@ -351,17 +347,12 @@ async fn cmd_setup() -> Result<()> {
     println!("  ========================");
     println!();
 
-    let data_dir = Path::new("data");
-    if !data_dir.exists() {
-        std::fs::create_dir_all(data_dir)?;
-        println!("  [+] Created data directory");
-    } else {
-        println!("  [=] Data directory already exists");
-    }
+    let dirs = app_dirs();
+    dirs.ensure_dirs().map_err(|e| anyhow::anyhow!("failed to create app directories: {e}"))?;
+    println!("  [+] App directory: {}", dirs.home.display());
 
-    let db_path = data_dir.join("openintent.db");
-    let display_path = db_path.display().to_string();
-    openintent_store::Database::open_and_migrate(db_path)
+    let display_path = dirs.db_path.display().to_string();
+    openintent_store::Database::open_and_migrate(dirs.db_path.clone())
         .await
         .context("failed to initialize database")?;
     println!("  [+] Database initialized at {display_path}");
@@ -422,21 +413,22 @@ async fn cmd_setup_chatgpt() -> Result<()> {
 async fn cmd_status() -> Result<()> {
     init_tracing("warn");
 
+    let dirs = app_dirs();
+
     println!();
     println!("  OpenIntentOS Status");
     println!("  ===================");
     println!();
+    println!("  Home:             {}", dirs.home.display());
 
-    let data_dir = Path::new("data");
-    if data_dir.exists() {
+    if dirs.data_dir.exists() {
         println!("  Data directory:   OK");
     } else {
         println!("  Data directory:   MISSING (run `openintent setup`)");
     }
 
-    let db_path = data_dir.join("openintent.db");
-    if db_path.exists() {
-        println!("  Database:         OK ({})", db_path.display());
+    if dirs.db_path.exists() {
+        println!("  Database:         OK ({})", dirs.db_path.display());
     } else {
         println!("  Database:         NOT INITIALIZED (run `openintent setup`)");
     }
@@ -457,11 +449,14 @@ async fn cmd_status() -> Result<()> {
         println!("  LLM providers:    {}", providers.join(", "));
     }
 
-    let config_path = Path::new("config/default.toml");
-    if config_path.exists() {
-        println!("  Config:           OK ({})", config_path.display());
+    if dirs.config_file.exists() {
+        println!("  Config:           OK ({})", dirs.config_file.display());
     } else {
         println!("  Config:           MISSING");
+    }
+
+    if dirs.log_file.exists() {
+        println!("  Log file:         {}", dirs.log_file.display());
     }
 
     println!();
@@ -495,15 +490,14 @@ async fn cmd_gui() -> Result<()> {
 async fn cmd_users(action: UserAction) -> Result<()> {
     init_tracing("warn");
 
-    let data_dir = Path::new("data");
-    let db_path = data_dir.join("openintent.db");
+    let db_path = &app_dirs().db_path;
 
     if !db_path.exists() {
         eprintln!("  Error: Database not found. Run `openintent setup` first.");
         std::process::exit(1);
     }
 
-    let db = openintent_store::Database::open_and_migrate(db_path)
+    let db = openintent_store::Database::open_and_migrate(db_path.clone())
         .await
         .context("failed to open database")?;
     let users = openintent_store::UserStore::new(db);
@@ -591,7 +585,7 @@ async fn cmd_users(action: UserAction) -> Result<()> {
 async fn cmd_skills(action: SkillAction) -> Result<()> {
     init_tracing("warn");
 
-    let skills_dir = openintent_skills::default_skills_dir();
+    let skills_dir = app_dirs().skills_dir.clone();
 
     match action {
         SkillAction::List => {

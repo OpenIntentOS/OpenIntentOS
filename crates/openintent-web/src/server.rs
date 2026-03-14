@@ -146,12 +146,30 @@ impl WebServer {
 /// Load the system prompt from `config/IDENTITY.md`, falling back to a
 /// sensible default if the file does not exist.
 fn load_system_prompt() -> String {
-    let identity = Path::new("config/IDENTITY.md");
+    // Resolve via OPENINTENT_HOME so install and dev both work.
+    let identity = resolve_identity_path();
     if identity.exists() {
-        std::fs::read_to_string(identity).unwrap_or_else(|_| default_system_prompt())
+        std::fs::read_to_string(&identity).unwrap_or_else(|_| default_system_prompt())
     } else {
         default_system_prompt()
     }
+}
+
+/// Resolve the path to IDENTITY.md, honouring OPENINTENT_HOME.
+fn resolve_identity_path() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("OPENINTENT_HOME") {
+        if !home.is_empty() {
+            return std::path::PathBuf::from(home).join("config").join("IDENTITY.md");
+        }
+    }
+    // Dev fallback: check CWD/config/IDENTITY.md
+    let cwd_path = std::path::Path::new("config/IDENTITY.md");
+    if cwd_path.exists() {
+        return cwd_path.to_path_buf();
+    }
+    // Production default
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    home.join(".openintentos").join("config").join("IDENTITY.md")
 }
 
 fn default_system_prompt() -> String {
@@ -171,7 +189,17 @@ fn watch_config_files(system_prompt: Arc<RwLock<String>>) {
     use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
     use std::sync::mpsc;
 
-    let config_dir = Path::new("config");
+    let config_dir = {
+        if let Ok(home) = std::env::var("OPENINTENT_HOME") {
+            if !home.is_empty() {
+                std::path::PathBuf::from(home).join("config")
+            } else {
+                std::path::PathBuf::from("config")
+            }
+        } else {
+            std::path::PathBuf::from("config")
+        }
+    };
     if !config_dir.exists() {
         tracing::debug!("config/ directory does not exist, skipping file watcher");
         return;
@@ -187,7 +215,7 @@ fn watch_config_files(system_prompt: Arc<RwLock<String>>) {
         }
     };
 
-    if let Err(e) = watcher.watch(config_dir, RecursiveMode::NonRecursive) {
+    if let Err(e) = watcher.watch(&config_dir, RecursiveMode::NonRecursive) {
         tracing::warn!(error = %e, "failed to watch config directory");
         return;
     }

@@ -186,12 +186,31 @@ fn binary_exists(name: &str) -> bool {
 ///
 /// Priority:
 /// 1. `$OPENINTENT_SKILLS_DIR` environment variable
-/// 2. `./skills/` relative to current working directory
+/// 2. `$OPENINTENT_HOME/skills/`
+/// 3. `./skills/` relative to CWD (dev fallback when IDENTITY.md exists)
+/// 4. `~/.openintentos/skills/` (production default)
 pub fn default_skills_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("OPENINTENT_SKILLS_DIR") {
-        return PathBuf::from(dir);
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
     }
-    PathBuf::from("skills")
+    if let Ok(home) = std::env::var("OPENINTENT_HOME") {
+        if !home.is_empty() {
+            return PathBuf::from(home).join("skills");
+        }
+    }
+    // Dev fallback: if ./skills exists in CWD, use it.
+    let cwd_skills = PathBuf::from("skills");
+    if cwd_skills.exists() {
+        return cwd_skills;
+    }
+    // Production default
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".openintentos")
+        .join("skills")
 }
 
 // ---------------------------------------------------------------------------

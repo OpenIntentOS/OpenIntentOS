@@ -154,7 +154,7 @@ pub async fn attempt_repair(
         .await;
 
     // Step 1: Gather diagnostic context.
-    let log_tail = read_log_tail("/tmp/openintent-bot.log", 80);
+    let log_tail = read_log_tail(&crate::dirs::app_dirs().log_file, 80);
     let recent_commits = read_recent_commits(repo_path, 10);
 
     // Step 2: Run the repair agent.
@@ -426,8 +426,8 @@ fn is_code_bug(error: &openintent_agent::error::AgentError) -> bool {
 }
 
 /// Read the tail of a log file.
-fn read_log_tail(path: &str, lines: usize) -> String {
-    let path = Path::new(path);
+fn read_log_tail(path: &std::path::Path, lines: usize) -> String {
+    let path = path;
     if !path.exists() {
         return String::new();
     }

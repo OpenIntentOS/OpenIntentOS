@@ -131,6 +131,16 @@ impl SkillAdapter {
         // Also pass full JSON as SKILL_PARAMS.
         cmd.env("SKILL_PARAMS", params.to_string());
 
+        // Inject output directory so skills write files to a central location.
+        // Skills should use $OPENINTENT_OUTPUT_DIR as their output root.
+        // e.g.  video-clip-maker → $OPENINTENT_OUTPUT_DIR/video-clip-maker/
+        let output_dir = resolve_output_dir(&tool.skill_name);
+        if let Err(e) = std::fs::create_dir_all(&output_dir) {
+            tracing::warn!(path = %output_dir.display(), error = %e, "failed to create skill output dir");
+        }
+        cmd.env("OPENINTENT_OUTPUT_DIR", &output_dir);
+        cmd.env("SKILL_OUTPUT_DIR", &output_dir); // convenience alias
+
         let child =
             cmd.spawn()
                 .map_err(|e| openintent_adapters::AdapterError::ExecutionFailed {
@@ -254,6 +264,31 @@ impl Adapter for SkillAdapter {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Resolve the output directory for a given skill.
+///
+/// Priority:
+/// 1. `$OPENINTENT_HOME/output/<skill_name>`
+/// 2. `~/.openintentos/output/<skill_name>`
+fn resolve_output_dir(skill_name: &str) -> std::path::PathBuf {
+    let base = if let Ok(home) = std::env::var("OPENINTENT_HOME") {
+        if !home.is_empty() {
+            std::path::PathBuf::from(home)
+        } else {
+            default_home()
+        }
+    } else {
+        default_home()
+    };
+    base.join("output").join(skill_name)
+}
+
+fn default_home() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".openintentos")
+}
 
 /// Sanitize a string for use in a tool name.
 ///

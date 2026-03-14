@@ -92,13 +92,10 @@ pub async fn cmd_bot(poll_timeout: u64, allowed_users: Option<String>) -> Result
     }
 
     // Database, LLM, adapters -- shared initialization.
-    let data_dir = Path::new("data");
-    if !data_dir.exists() {
-        std::fs::create_dir_all(data_dir).context("failed to create data directory")?;
-    }
+    let dirs = crate::dirs::app_dirs();
+    dirs.ensure_dirs().context("failed to create app directories")?;
 
-    let db_path = data_dir.join("openintent.db");
-    let db = openintent_store::Database::open_and_migrate(db_path.clone())
+    let db = openintent_store::Database::open_and_migrate(dirs.db_path.clone())
         .await
         .context("failed to open database")?;
 

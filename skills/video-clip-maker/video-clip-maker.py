@@ -376,7 +376,9 @@ def main():
     parser.add_argument('--url', required=True, help='YouTube video URL')
     parser.add_argument('--duration', type=int, default=60, help='Clip duration in seconds (default: 60)')
     parser.add_argument('--quality', default='1080p', choices=['720p', '1080p', '4k'], help='Video quality')
-    parser.add_argument('--output-dir', default='./output', help='Output directory')
+    # Prefer OPENINTENT_OUTPUT_DIR (injected by the skill runner), then fallback
+    default_output = os.environ.get('OPENINTENT_OUTPUT_DIR') or os.environ.get('SKILL_OUTPUT_DIR') or './output'
+    parser.add_argument('--output-dir', default=default_output, help='Output directory')
     parser.add_argument('--highlight-method', default='audio', choices=['audio', 'face', 'motion'], help='Highlight detection method')
     parser.add_argument('--subtitle-lang', default='en', help='Subtitle language')
     

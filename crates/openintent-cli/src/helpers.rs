@@ -3,11 +3,11 @@
 //! Includes tracing initialization, system prompt loading, LLM provider
 //! resolution, and environment variable utilities.
 
-use std::path::Path;
-
 use openintent_agent::LlmClientConfig;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+use crate::dirs::app_dirs;
 
 // ---------------------------------------------------------------------------
 // Tracing
@@ -44,9 +44,9 @@ pub fn load_system_prompt() -> String {
     let mut prompt = String::with_capacity(4096);
 
     // 1. Identity layer.
-    let identity_path = Path::new("config/IDENTITY.md");
-    if identity_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(identity_path) {
+    let dirs = app_dirs();
+    if dirs.identity_file.exists() {
+        if let Ok(content) = std::fs::read_to_string(&dirs.identity_file) {
             prompt.push_str(&content);
         }
     }
@@ -56,9 +56,8 @@ pub fn load_system_prompt() -> String {
     }
 
     // 2. Soul layer (behavioral guidelines).
-    let soul_path = Path::new("config/SOUL.md");
-    if soul_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(soul_path) {
+    if dirs.soul_file.exists() {
+        if let Ok(content) = std::fs::read_to_string(&dirs.soul_file) {
             prompt.push_str("\n\n");
             prompt.push_str(&content);
         }
