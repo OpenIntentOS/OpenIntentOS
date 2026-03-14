@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.16] - 2026-03-14
+- fix: suppress unused home_dir warning in dirs.rs
+
+
 ## [0.1.15] - 2026-03-14
 - fix: resolve compiler warnings from AppDirs refactor
 
