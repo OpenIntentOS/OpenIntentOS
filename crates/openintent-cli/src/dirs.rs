@@ -59,6 +59,7 @@ pub struct AppDirs {
     pub db_path: PathBuf,
 
     /// `$data_dir/vault.db`
+    #[allow(dead_code)]
     pub vault_path: PathBuf,
 
     /// `$config_dir/default.toml`
@@ -169,11 +170,13 @@ impl AppDirs {
     /// Return the output sub-directory for a given skill name.
     ///
     /// e.g. `output_for_skill("video-clip-maker")` → `$output_dir/video-clip-maker/`
+    #[allow(dead_code)]
     pub fn output_for_skill(&self, skill_name: &str) -> PathBuf {
         self.output_dir.join(skill_name)
     }
 
     /// Path to the PID file for a named process (e.g. `"bot"`, `"web"`).
+    #[allow(dead_code)]
     pub fn pid_file(&self, name: &str) -> PathBuf {
         self.run_dir.join(format!("{name}.pid"))
     }
@@ -212,31 +215,33 @@ mod tests {
 
     #[test]
     fn resolve_with_env_override() {
-        std::env::set_var("OPENINTENT_HOME", "/tmp/test-openintent-home");
+        unsafe {
+            std::env::set_var("OPENINTENT_HOME", "/tmp/test-openintent-home");
+        }
         let dirs = AppDirs::resolve();
         assert_eq!(dirs.home, PathBuf::from("/tmp/test-openintent-home"));
         assert_eq!(dirs.db_path, PathBuf::from("/tmp/test-openintent-home/data/openintent.db"));
         assert_eq!(dirs.log_file, PathBuf::from("/tmp/test-openintent-home/logs/openintent.log"));
         assert_eq!(dirs.output_dir, PathBuf::from("/tmp/test-openintent-home/output"));
-        std::env::remove_var("OPENINTENT_HOME");
+        unsafe { std::env::remove_var("OPENINTENT_HOME"); }
     }
 
     #[test]
     fn skill_output_subdir() {
-        std::env::set_var("OPENINTENT_HOME", "/tmp/oi-test");
+        unsafe { std::env::set_var("OPENINTENT_HOME", "/tmp/oi-test"); }
         let dirs = AppDirs::resolve();
         assert_eq!(
             dirs.output_for_skill("video-clip-maker"),
             PathBuf::from("/tmp/oi-test/output/video-clip-maker")
         );
-        std::env::remove_var("OPENINTENT_HOME");
+        unsafe { std::env::remove_var("OPENINTENT_HOME"); }
     }
 
     #[test]
     fn pid_file_path() {
-        std::env::set_var("OPENINTENT_HOME", "/tmp/oi-test");
+        unsafe { std::env::set_var("OPENINTENT_HOME", "/tmp/oi-test"); }
         let dirs = AppDirs::resolve();
         assert_eq!(dirs.pid_file("bot"), PathBuf::from("/tmp/oi-test/run/bot.pid"));
-        std::env::remove_var("OPENINTENT_HOME");
+        unsafe { std::env::remove_var("OPENINTENT_HOME"); }
     }
 }

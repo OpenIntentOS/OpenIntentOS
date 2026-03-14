@@ -4,7 +4,7 @@
 //! the HTTP listener.  It also spawns a background file watcher that
 //! hot-reloads `config/IDENTITY.md` whenever the file changes on disk.
 
-use std::path::Path;
+
 use std::sync::Arc;
 use std::time::Duration;
 

@@ -5,7 +5,6 @@
 //! control, session persistence, self-evolution, and self-development tasks.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};

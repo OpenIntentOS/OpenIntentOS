@@ -256,11 +256,29 @@ mod tests {
         assert_eq!(check_requirements(&skill), SkillStatus::Unavailable);
     }
 
+    /// Env-var priority tests run sequentially inside one test to avoid
+    /// data races on the process-global environment.
     #[test]
-    fn default_skills_dir_fallback() {
-        // Without env var set, should return ./skills
-        unsafe { std::env::remove_var("OPENINTENT_SKILLS_DIR") };
-        assert_eq!(default_skills_dir(), PathBuf::from("skills"));
+    fn default_skills_dir_priority() {
+        // 1. OPENINTENT_SKILLS_DIR takes highest priority.
+        unsafe {
+            std::env::remove_var("OPENINTENT_HOME");
+            std::env::set_var("OPENINTENT_SKILLS_DIR", "/custom/skills");
+        }
+        assert_eq!(default_skills_dir(), PathBuf::from("/custom/skills"));
+
+        // 2. OPENINTENT_HOME/skills when SKILLS_DIR is unset.
+        unsafe {
+            std::env::remove_var("OPENINTENT_SKILLS_DIR");
+            std::env::set_var("OPENINTENT_HOME", "/tmp/oi-skills-test");
+        }
+        assert_eq!(default_skills_dir(), PathBuf::from("/tmp/oi-skills-test/skills"));
+
+        // Cleanup.
+        unsafe {
+            std::env::remove_var("OPENINTENT_HOME");
+            std::env::remove_var("OPENINTENT_SKILLS_DIR");
+        }
     }
 
     #[test]
