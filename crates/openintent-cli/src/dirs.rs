@@ -183,6 +183,7 @@ impl AppDirs {
 }
 
 /// Portable home-directory lookup (avoids a full `dirs` crate dependency).
+#[allow(dead_code)]
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
