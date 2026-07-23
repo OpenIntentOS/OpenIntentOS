@@ -28,7 +28,7 @@
 
 ---
 
-> **v0.1.10 — Early Release (March 2026)**
+> **v0.1.12 — Early Release (March 2026)**
 >
 > OpenIntentOS is under active development. Core systems are production-stable. New adapters and capabilities ship weekly. Pin to a specific commit for stability until v1.0. [Report issues here.](https://github.com/OpenIntentOS/OpenIntentOS/issues)
 
